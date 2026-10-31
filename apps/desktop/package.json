@@ -1,0 +1,24 @@
+{
+  "name": "musaeum-desktop",
+  "private": true,
+  "version": "0.0.1",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "build:app": "cargo build --release -p musaeum-render-pdf -p gen-fixtures && tauri build --no-bundle",
+    "bench": "node ../../tools/run-bench.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

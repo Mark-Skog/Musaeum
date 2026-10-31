@@ -1,0 +1,27 @@
+[package]
+name = "musaeum-render-pdf"
+description = "Isolated worker process that rasterizes PDF tiles with PDFium into shared memory."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+memmap2.workspace = true
+musaeum-shm.workspace = true
+pdfium-render.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+[dev-dependencies]
+gen-fixtures.workspace = true
+musaeum-core.workspace = true
+
+[lints]
+workspace = true

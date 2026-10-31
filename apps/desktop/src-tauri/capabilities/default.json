@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window. Book content, in later phases, gets no capabilities at all.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

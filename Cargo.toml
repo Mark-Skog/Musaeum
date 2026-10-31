@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/musaeum-shm",
+    "crates/musaeum-core",
+    "crates/musaeum-render-pdf",
+    "apps/desktop/src-tauri",
+    "tools/gen-fixtures",
+    "tools/pool-bench",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+musaeum-core = { path = "crates/musaeum-core" }
+musaeum-shm = { path = "crates/musaeum-shm" }
+gen-fixtures = { path = "tools/gen-fixtures" }
+
+flate2 = "1"
+memmap2 = "0.9"
+# Only the raw FPDF_* bindings are used, so the image and mutex features stay off.
+pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_7881"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+thiserror = "2"
+windows-sys = "0.61"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Every unsafe block in this workspace crosses a process or FFI boundary, so each
+# one has to state why it is sound.
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = "line-tables-only"

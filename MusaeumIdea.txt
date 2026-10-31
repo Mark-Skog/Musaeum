@@ -1,0 +1,52 @@
+Atue como Arquiteto Principal de Software, Especialista em Motores de Renderização Gráfica/Tipográfica e Líder de UI/UX. Vamos iniciar do zero o planeamento e desenvolvimento de um novo projeto: Musaeum, um aplicativo de leitura e gestão: um aplicativo de leitura e gestão de livros digitais (e-books e documentos), 100% gratuito e Open Source (FOSS).
+
+1. Visão do Produto e Posicionamento
+O objetivo é criar o sucessor espiritual moderno do Calibre, superando as suas limitações visuais e de usabilidade:
+
+- Poder Funcional do Calibre + Acabamento Nível Adobe: O software deve ter a abrangência de formatos e capacidade de organização do Calibre, mas com uma interface extremamente limpa, fluida, moderna e profissional, no padrão de qualidade visual e precisão de renderização da Adobe (Acrobat/InDesign).
+- 
+- Zero Poluição Visual: Nada de interfaces datadas ou menus confusos; o foco absoluto é na clareza da biblioteca, na performance instantânea (60/120+ FPS) e no conforto de leitura.
+- 
+2. Requisitos Funcionais e Mecânicas Obrigatórias
+A. Leitura de Diretórios e Organização Hierárquica:
+
+1. Pastas e Subpastas: O programa deve ser capaz de ler, indexar e monitorizar diretamente pastas e subpastas do sistema de ficheiros do utilizador (sem obrigar a duplicar ficheiros para uma estrutura opaca se o utilizador não quiser), mantendo sincronia com a estrutura de diretórios.
+2. 
+3. Categorias e Subcategorias: Sistema completo de taxonomia permitindo organizar os livros em Categorias e Subcategorias aninhadas (árvore hierárquica multinível), além de etiquetas (tags), coleções, metadados completos (autor, série, ano, progresso de leitura) e busca instantânea.
+4. 
+B. Motor Multi-Formato Universal e Deteção de Geometria:
+
+1. Formatos Suportados: Suporte nativo de alta fidelidade para PDF, EPUB, MOBI, AZW3, DJVU, CBZ/CBR, FB2, TXT, Markdown e outros formatos de documentos.
+2. 
+3. Identificação Automática de Formato e Orientação (Retrato vs. Paisagem): O motor deve inspecionar automaticamente a geometria de cada livro e de cada página individualmente, identificando se o documento (ou páginas específicas dentro dele) está em modo Retrato (Portrait) ou Paisagem (Landscape), ajustando o viewport, o zoom e a exibição de páginas duplas sem distorcer nem cortar o conteúdo.
+4. 
+C. Sistema Híbrido de Marcações e Anotações (Texto + Imagem Escaneada):
+
+1. Marcação de Texto Nativa: Seleção fluida de palavras, frases e parágrafos para realce (highlight com múltiplas cores), sublinhado e notas de margem em livros com camada de texto (EPUB, MOBI e PDFs digitais).
+2. 
+3. Marcação sobre Imagens (Livros Escaneados): Para livros antigos ou PDFs escaneados que são puras imagens (sem camada de texto/OCR), o programa deve oferecer uma ferramenta dedicada de marcação gráfica por cima da imagem (caixas de destaque translúcidas retangulares ou traço livre com snap inteligente às linhas visuais da página), permitindo marcar, anotar e indexar trechos de livros escaneados exatamente como nos livros de texto.
+4. 
+5. Não-Destrutivo e Portátil: As marcações devem poder ser guardadas numa camada/banco local indexado e, quando aplicável (como em PDFs), exportadas no próprio ficheiro ou em relatórios de estudo.
+6. 
+D. Modos de Leitura, Animações e Física de Navegação:
+
+1. Modo Paginado (Passar Páginas para o Lado):
+2. 
+  - Possui ativada por padrão uma animação fluida e elegante de passagem de página para o lado.
+  - 
+  - Inclui uma opção clara nas configurações e na barra de leitura para desabilitar a animação (troca seca/instantânea de página) para quem preferir leitura sem transição visual.
+  - 
+3. Modo de Rolagem Contínua (Scroll para Baixo):
+4. 
+  - Ao mudar para o modo de scroll vertical contínuo, a animação lateral de página é automaticamente desativada.
+  - 
+  - O deslocamento vertical deve ter scroll suave (smooth scrolling) com inércia calibrada, pré-renderização de páginas adjacentes (zero engasgos ou telas brancas ao rolar rápido) e transição contínua.
+  - 
+3. Diretrizes de Trabalho e Primeiro Passo (Sem Código Ainda)
+Quero desenvolver este projeto com rigor arquitetónico de nível industrial. Nesta primeira resposta, não escreva código de implementação ainda. Apresente um plano diretor estruturado contendo:
+
+1. Escolha Justificada da Stack Tecnológica: Compare as melhores opções modernas para atingir performance nativa, baixo consumo de RAM e UI nível Adobe (ex.: Rust + Tauri / C++ + Qt6 / Rust + Slint ou Iced / motores de renderização como PDFium, MuPDF, Hayro, Readium/Foliate-js) e recomende a melhor combinação para este projeto.
+2. 
+3. Arquitetura de Sistemas: Como os módulos (Indexador de Pastas/Categorias, Motor de Renderização de Documentos, Camada de Anotações de Texto/Imagem em Coordenadas Normalizadas, e Motor de UI/Animação) vão ser isolados e comunicar entre si.
+4. 
+5. Plano de Fases (Roadmap Incremental): Divida o desenvolvimento do aplicativo em fases e tarefas lógicas e testáveis, do núcleo de leitura até à interface completa.
