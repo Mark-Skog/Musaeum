@@ -6,7 +6,6 @@
 
 pub mod demand;
 pub mod geometry;
-pub mod job;
 pub mod pool;
 pub mod scheduler;
 pub mod stats;

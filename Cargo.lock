@@ -1876,6 +1876,7 @@ dependencies = [
 name = "musaeum-core"
 version = "0.0.1"
 dependencies = [
+ "musaeum-sandbox",
  "musaeum-shm",
  "serde",
  "thiserror 2.0.21",
@@ -1887,6 +1888,7 @@ name = "musaeum-desktop"
 version = "0.0.1"
 dependencies = [
  "musaeum-core",
+ "musaeum-sandbox",
  "musaeum-shm",
  "serde",
  "serde_json",
@@ -1894,6 +1896,7 @@ dependencies = [
  "tauri-build",
  "webview2-com",
  "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1903,9 +1906,17 @@ dependencies = [
  "gen-fixtures",
  "memmap2",
  "musaeum-core",
+ "musaeum-sandbox",
  "musaeum-shm",
  "pdfium-render",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "musaeum-sandbox"
+version = "0.0.1"
+dependencies = [
  "windows-sys 0.61.2",
 ]
 
@@ -2379,6 +2390,7 @@ name = "pool-bench"
 version = "0.0.1"
 dependencies = [
  "musaeum-core",
+ "musaeum-sandbox",
  "musaeum-shm",
  "serde_json",
 ]

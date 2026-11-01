@@ -12,6 +12,11 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
-  build: { target: 'es2023' },
+  build: {
+    target: 'es2023',
+    rollupOptions: {
+      input: { main: 'index.html', reader: 'reader.html' },
+    },
+  },
   worker: { format: 'es' },
 });

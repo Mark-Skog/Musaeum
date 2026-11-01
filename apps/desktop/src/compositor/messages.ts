@@ -15,6 +15,11 @@ export interface InitMessage {
   direct: { slab: ArrayBuffer; ring: ArrayBuffer } | null;
   bench: BenchOptions | null;
   zoom: number;
+  /** The whole screen, in device pixels: the most the canvas can ever have to show. */
+  screenWidth: number;
+  screenHeight: number;
+  /** Overrides the tile cache's size, in tiles, to measure what it costs. */
+  gpuLayers: number | null;
 }
 
 export type ProbeRequest =
@@ -42,5 +47,7 @@ export type FromWorker =
   | ProbeReply
   | { type: 'ready'; gpu: string; pageCount: number; clockRttMs: number }
   | { type: 'hud'; text: string }
+  /** The first frame with nothing soft or missing, as wall-clock time in milliseconds. */
+  | { type: 'first-sharp'; atEpochMs: number }
   | { type: 'bench-done'; report: Record<string, unknown> }
   | { type: 'fatal'; message: string };

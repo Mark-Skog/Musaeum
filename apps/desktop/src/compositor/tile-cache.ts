@@ -5,6 +5,23 @@
  */
 
 const EMPTY = -1;
+/** The side of a tile, in device pixels. */
+const TILE_PIXELS = 512;
+/** How many screens' worth of tiles to keep. Going back a little should not mean rendering. */
+const SCREENS_KEPT = 4;
+/** Each layer costs a mebibyte of the GPU process's memory, whether it is in use or not. */
+const MIN_LAYERS = 64;
+const MAX_LAYERS = 256;
+
+/**
+ * How many tiles to keep for a screen of this size, in device pixels. A tile grid that does not
+ * line up with the screen shows one more tile along each side than the division says.
+ */
+export function layersForScreen(width: number, height: number): number {
+  const across = Math.ceil(width / TILE_PIXELS) + 1;
+  const down = Math.ceil(height / TILE_PIXELS) + 1;
+  return Math.min(MAX_LAYERS, Math.max(MIN_LAYERS, across * down * SCREENS_KEPT));
+}
 
 export class TileCache {
   private readonly layerByKey = new Map<number, number>();

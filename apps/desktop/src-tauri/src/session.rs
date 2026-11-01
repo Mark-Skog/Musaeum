@@ -6,17 +6,19 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use musaeum_core::{
     DeliveryMode, DocumentOrientation, PoolConfig, PoolStats, RenderPool, geometry_bytes,
     summarize_orientation,
 };
+use musaeum_sandbox::Policy;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::{PixelSlab, ShmRegion};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, LogicalSize, Manager, State, WebviewWindow};
 
+use crate::memory::MemorySampler;
 use crate::options::{DeliveryFault, DeliveryPath, StartupOptions};
 use crate::webview2;
 
@@ -47,12 +49,22 @@ pub struct AppState {
     options: StartupOptions,
     current: RwLock<Option<Arc<Session>>>,
     next_id: AtomicU32,
+    /// Only runs in the memory benchmark. With this on in the others, frames stalled for up to
+    /// 500 ms, probably from what reading another process's private working set costs it.
+    memory: Option<MemorySampler>,
+    started: Instant,
 }
 
 impl AppState {
     /// Creates the state with no session open.
     pub fn new(options: StartupOptions) -> Self {
         Self {
+            memory: options
+                .bench
+                .as_ref()
+                .filter(|bench| bench.scenario == "memory")
+                .map(|_| MemorySampler::start()),
+            started: Instant::now(),
             options,
             current: RwLock::new(None),
             next_id: AtomicU32::new(1),
@@ -90,6 +102,11 @@ impl AppState {
             .and_then(|session| session.pool.stats())
     }
 
+    /// The command-line options.
+    pub fn options(&self) -> &StartupOptions {
+        &self.options
+    }
+
     /// Fails the way a runtime without shared buffers would, if that is being simulated.
     fn check_shared_buffers_allowed(&self) -> Result<(), String> {
         if self
@@ -121,6 +138,7 @@ pub struct SessionInfo {
     page_count: usize,
     orientation: DocumentOrientation,
     slot_count: u32,
+    sandboxed: bool,
     open_us: u64,
     geometry_us: u64,
 }
@@ -156,6 +174,12 @@ impl OpenSessionError {
     }
 }
 
+/// Milliseconds since the app started, so the page can tell how long a cold start took.
+#[tauri::command]
+pub fn uptime_ms(state: State<'_, AppState>) -> f64 {
+    state.started.elapsed().as_secs_f64() * 1000.0
+}
+
 /// Creates the small buffers that let the page test what this runtime can do with shared
 /// memory. Runs off the main thread, because creating them needs the main thread free.
 #[tauri::command(async)]
@@ -185,6 +209,11 @@ pub fn open_session(
         document: args.pdf,
         worker_count: args.workers,
         process_memory_limit: Some(WORKER_MEMORY_LIMIT),
+        policy: if state.options.no_sandbox {
+            Policy::Unrestricted
+        } else {
+            Policy::Lockdown
+        },
         startup_timeout: STARTUP_TIMEOUT,
     };
 
@@ -240,6 +269,7 @@ pub fn open_session(
         page_count: session.pool.pages().len(),
         orientation: summarize_orientation(session.pool.pages()),
         slot_count: session.pool.slab().slot_count(),
+        sandboxed: !state.options.no_sandbox,
         open_us: stats.open_us,
         geometry_us: stats.geometry_us,
     };
@@ -291,6 +321,7 @@ pub fn bench_finish(
     let report = serde_json::json!({
         "options": state.options,
         "pool": state.current_stats(),
+        "memory": state.memory.as_ref().map(MemorySampler::report),
         "frontend": frontend,
     });
     let text = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
@@ -299,14 +330,42 @@ pub fn bench_finish(
     Ok(())
 }
 
+/// Starts counting what follows under another phase of the benchmark.
+#[tauri::command(async)]
+pub fn bench_mark_phase(state: State<'_, AppState>, name: String) {
+    if let Some(memory) = &state.memory {
+        memory.mark(&name);
+    }
+}
+
+/// Resizes the window, for the benchmark of how fast a book lays itself out again. Reachable
+/// from what the reader sends, so it does nothing outside a benchmark.
+#[tauri::command(async)]
+pub fn bench_resize_window(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if state.options.bench.is_none() {
+        return Err("not running as a benchmark".to_owned());
+    }
+    window
+        .set_size(LogicalSize::new(f64::from(width), f64::from(height)))
+        .map_err(|error| error.to_string())
+}
+
 /// Records why a benchmark could not run, then exits with an error code.
 #[tauri::command(async)]
 pub fn bench_fail(app: AppHandle, state: State<'_, AppState>, message: String) {
-    if let Some(bench) = &state.options.bench {
-        let text = serde_json::json!({ "error": message }).to_string();
-        if let Err(error) = write_report(&bench.out, &text) {
-            eprintln!("{error}");
-        }
+    // Ending the app is only for a benchmark, whose harness is waiting for an exit code.
+    let Some(bench) = &state.options.bench else {
+        eprintln!("ignoring a benchmark failure outside a benchmark: {message}");
+        return;
+    };
+    let text = serde_json::json!({ "error": message }).to_string();
+    if let Err(error) = write_report(&bench.out, &text) {
+        eprintln!("{error}");
     }
     eprintln!("benchmark failed: {message}");
     app.exit(1);

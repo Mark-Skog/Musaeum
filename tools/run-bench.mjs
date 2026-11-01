@@ -2,7 +2,8 @@
 // Runs Experiments A and B: every delivery path against every fixture, with and without a
 // busy main thread, each in a fresh process, and prints a comparison table.
 //
-//   node tools/run-bench.mjs [--scenario quick|full] [--uncapped] [--workers N]
+//   node tools/run-bench.mjs [--scenario quick|full] [--uncapped] [--workers N] [--no-sandbox]
+//                            [--gpu-layers N] [--tag NAME] [--affinity HEX]
 //                            [--paths a,b] [--pdfs scan-2000,vector-500] [--stress 0,60]
 
 import { spawnSync } from 'node:child_process';
@@ -21,7 +22,13 @@ function option(name, fallback) {
 
 const scenario = option('scenario', 'full');
 const uncapped = process.argv.includes('--uncapped');
-const workers = option('workers', '6');
+const noSandbox = process.argv.includes('--no-sandbox');
+const gpuLayers = option('gpu-layers', null);
+const tag = option('tag', '');
+// Logical processors the app may use, as Windows' `start /affinity` takes them. 55 is four
+// physical cores of a machine with two threads per core, to stand in for a smaller machine.
+const affinity = option('affinity', null);
+const workers = option('workers', null);
 const paths = option('paths', 'a,b,c').split(',');
 const pdfs = option('pdfs', 'scan-2000,vector-500').split(',');
 const stresses = option('stress', '0,60').split(',');
@@ -42,21 +49,36 @@ for (const pdf of pdfs) {
   }
   for (const stress of stresses) {
     for (const path of paths) {
-      const label = `${pdf}-path-${path}-stress-${stress}${uncapped ? '-uncapped' : ''}`;
+      const suffix = `${uncapped ? '-uncapped' : ''}${noSandbox ? '-nosandbox' : ''}${tag ? `-${tag}` : ''}`;
+      const label = `${pdf}-path-${path}-stress-${stress}${suffix}`;
       const out = join(outDir, `${label}.json`);
       const args = [
         '--pdf', pdfPath,
         '--delivery', path,
-        '--workers', workers,
         '--bench', out,
         '--scenario', scenario,
         '--main-stress-ms', stress,
       ];
+      if (workers !== null) {
+        args.push('--workers', workers);
+      }
       if (uncapped) {
         args.push('--uncapped');
       }
+      if (noSandbox) {
+        args.push('--no-sandbox');
+      }
+      if (gpuLayers !== null) {
+        args.push('--gpu-layers', gpuLayers);
+      }
       console.error(`running ${label}...`);
-      const run = spawnSync(exe, args, { stdio: 'inherit', timeout: timeoutMs });
+      const run =
+        affinity === null
+          ? spawnSync(exe, args, { stdio: 'inherit', timeout: timeoutMs })
+          : spawnSync('cmd.exe', ['/c', 'start', '""', '/wait', '/affinity', affinity, exe, ...args], {
+              stdio: 'inherit',
+              timeout: timeoutMs,
+            });
       if (run.error || run.status !== 0) {
         console.error(`  failed: ${run.error ?? `exit code ${run.status}`}`);
       }
@@ -135,6 +157,9 @@ const summary = results
     evictions: report.frontend.gpuEvictions,
     demands: report.frontend.demandsSent,
   }));
-const summaryPath = join(outDir, `summary${uncapped ? '-uncapped' : ''}.json`);
+const summaryPath = join(
+  outDir,
+  `summary${uncapped ? '-uncapped' : ''}${noSandbox ? '-nosandbox' : ''}${tag ? `-${tag}` : ''}.json`,
+);
 writeFileSync(summaryPath, JSON.stringify(summary, null, 2));
 console.log(`\nDetails in ${outDir}; summary in ${summaryPath}`);

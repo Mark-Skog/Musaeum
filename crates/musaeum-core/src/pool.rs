@@ -8,19 +8,18 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::mem::take;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsHandle;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{Ordering, fence};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::MAX_WORKERS;
 use musaeum_shm::wire::{
@@ -33,10 +32,8 @@ use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
-use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 use crate::demand::parse_demand;
-use crate::job::JobObject;
 use crate::scheduler::{CancelOrder, ReadyTile, Scheduler, TileOutcome};
 use crate::stats::{PoolStats, StatsCollector};
 
@@ -48,6 +45,9 @@ const MAX_PAGES: usize = 1 << 22;
 const MAX_WORKER_RESTARTS: u32 = 8;
 /// How often the ring's consumer position is checked while tiles are out for delivery.
 const ACK_POLL_INTERVAL: Duration = Duration::from_millis(1);
+/// How long the pool waits with nothing to do before its workers give memory back. Long enough
+/// that it only happens to someone who stopped to read.
+const TRIM_AFTER: Duration = Duration::from_secs(2);
 /// How long a worker gets to exit after being asked to.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
@@ -65,6 +65,8 @@ pub struct PoolConfig {
     pub worker_count: usize,
     /// Cap on each worker's committed memory.
     pub process_memory_limit: Option<usize>,
+    /// How much the workers may do. Anything but `Lockdown` is for comparing against it.
+    pub policy: Policy,
     /// How long to wait for the workers to report in.
     pub startup_timeout: Duration,
 }
@@ -193,7 +195,7 @@ impl RenderPool {
         }
 
         let started = Instant::now();
-        let handshake = wait_until_ready(&receiver, worker_count, startup_timeout)?;
+        let handshake = wait_until_ready(&receiver, &workers, startup_timeout)?;
         let pages: Arc<[PageGeometry]> = handshake.pages.into();
 
         let mut scheduler = Scheduler::new(worker_count, slab.slot_count());
@@ -218,6 +220,7 @@ impl RenderPool {
             cancel_times: HashMap::new(),
             cancels: Vec::new(),
             released: Vec::new(),
+            trimmed: false,
         };
         let thread = thread::Builder::new()
             .name("render-pool".into())
@@ -303,11 +306,11 @@ struct Handshake {
 
 fn wait_until_ready(
     receiver: &Receiver<Event>,
-    worker_count: usize,
+    workers: &[Option<WorkerProcess>],
     timeout: Duration,
 ) -> Result<Handshake, PoolError> {
     let deadline = Instant::now() + timeout;
-    let mut ready = vec![false; worker_count];
+    let mut ready = vec![false; workers.len()];
     let mut page_count = None;
     let mut open_us = 0;
     let mut geometry = None;
@@ -339,6 +342,11 @@ fn wait_until_ready(
                         worker,
                         reason: "workers disagree about the page count".into(),
                     });
+                }
+                if let Some(Some(process)) = workers.get(worker) {
+                    process
+                        .check_locked_down()
+                        .map_err(|reason| PoolError::BadHandshake { worker, reason })?;
                 }
                 ready[worker] = true;
             }
@@ -373,7 +381,6 @@ fn wait_until_ready(
 /// Starts worker processes and gives them what they need, and nothing more.
 struct Spawner {
     config: PoolConfig,
-    job: JobObject,
     /// The document, opened so that users can still rename or move it while reading.
     document: File,
     slab: Arc<PixelSlab>,
@@ -388,11 +395,8 @@ impl Spawner {
         events: Sender<Event>,
     ) -> Result<Self, PoolError> {
         let document = open_document(&config.document).map_err(os_error("opening the document"))?;
-        let job = JobObject::create(config.process_memory_limit)
-            .map_err(os_error("creating the job object"))?;
         Ok(Self {
             config,
-            job,
             document,
             slab,
             events,
@@ -401,21 +405,22 @@ impl Spawner {
     }
 
     fn spawn(&mut self, worker: usize, send_geometry: bool) -> Result<WorkerProcess, PoolError> {
-        let mut child = Command::new(&self.config.worker_exe)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(os_error("starting a render worker"))?;
-        let mut process = WorkerProcess::from_child(&mut child, self.next_instance)?;
-        process.child = Some(child);
+        let mut child = musaeum_sandbox::spawn(SpawnConfig {
+            exe: &self.config.worker_exe,
+            args: &[],
+            policy: self.config.policy,
+            memory_limit: self.config.process_memory_limit,
+        })
+        .map_err(os_error("starting a render worker"))?;
+        let missing = || PoolError::Os {
+            context: "taking a worker's pipes",
+            source: io::Error::other("the pipe was not created"),
+        };
+        let mut stdin = child.stdin.take().ok_or_else(missing)?;
+        let stdout = child.stdout.take().ok_or_else(missing)?;
+        let stderr = child.stderr.take().ok_or_else(missing)?;
+        let instance = self.next_instance;
         self.next_instance += 1;
-
-        let child = process.child.as_ref().expect("set just above");
-        self.job
-            .assign(child)
-            .map_err(os_error("assigning a worker to the job object"))?;
 
         let target = child.as_handle();
         let slab_handle = self
@@ -435,17 +440,24 @@ impl Spawner {
             slab_len: self.slab.region().len() as u64,
             doc_handle,
         });
-        write_frame(&mut process.stdin, &init.encode())
+        write_frame(&mut stdin, &init.encode())
             .map_err(os_error("sending the initialization message"))?;
 
-        let stdout = process.stdout.take().expect("taken only here");
         let events = self.events.clone();
-        let instance = process.instance;
         thread::Builder::new()
             .name(format!("render-reader-{worker}"))
             .spawn(move || read_worker_events(worker, instance, stdout, events))
             .map_err(os_error("spawning a reader thread"))?;
-        Ok(process)
+        thread::Builder::new()
+            .name(format!("render-stderr-{worker}"))
+            .spawn(move || forward_worker_log(worker, stderr))
+            .map_err(os_error("spawning a log thread"))?;
+        Ok(WorkerProcess {
+            instance,
+            child,
+            stdin,
+            locked_down: self.config.policy == Policy::Lockdown,
+        })
     }
 }
 
@@ -459,35 +471,32 @@ fn open_document(path: &Path) -> io::Result<File> {
 #[derive(Debug)]
 struct WorkerProcess {
     instance: u64,
-    child: Option<Child>,
-    stdin: ChildStdin,
-    stdout: Option<ChildStdout>,
+    child: SandboxedChild,
+    stdin: File,
+    locked_down: bool,
 }
 
 impl WorkerProcess {
-    fn from_child(child: &mut Child, instance: u64) -> Result<Self, PoolError> {
-        let missing = || PoolError::Os {
-            context: "taking a worker's pipes",
-            source: io::Error::other("the pipe was not created"),
-        };
-        Ok(Self {
-            instance,
-            child: None,
-            stdin: child.stdin.take().ok_or_else(missing)?,
-            stdout: Some(child.stdout.take().ok_or_else(missing)?),
-        })
+    fn kill(&self) {
+        self.child.kill();
     }
 
-    fn kill(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
+    fn reap(&self) {
+        self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    /// A worker must have dropped its startup token before it announces itself, since by
+    /// then it has parsed the document. Still holding it would mean a bug in the worker, and
+    /// that everything the sandbox promises is false.
+    fn check_locked_down(&self) -> Result<(), String> {
+        if !self.locked_down {
+            return Ok(());
         }
-    }
-
-    fn reap(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        match self.child.is_impersonating() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err("it still holds its startup token".to_owned()),
+            Err(error) => Err(format!("could not check its token: {error}")),
         }
     }
 }
@@ -498,9 +507,19 @@ impl Drop for WorkerProcess {
     }
 }
 
+/// Passes a worker's log on to this process's stderr. The pipe has to keep being drained even
+/// if nobody can see the result, or a worker writing a lot would block forever.
+fn forward_worker_log(worker: usize, mut stderr: File) {
+    let mut buffer = [0u8; 4096];
+    while let Ok(read @ 1..) = stderr.read(&mut buffer) {
+        let text = String::from_utf8_lossy(&buffer[..read]);
+        let _ = writeln!(io::stderr(), "[render worker {worker}] {}", text.trim_end());
+    }
+}
+
 /// Turns one worker's pipe into events. Any malformed frame ends the stream, and the
 /// event loop treats that exactly like a crash.
-fn read_worker_events(worker: usize, instance: u64, stdout: ChildStdout, events: Sender<Event>) {
+fn read_worker_events(worker: usize, instance: u64, stdout: File, events: Sender<Event>) {
     let mut reader = BufReader::with_capacity(64 * 1024, stdout);
     let mut pages = Vec::new();
     while let Ok(Some(frame)) = read_frame(&mut reader) {
@@ -645,6 +664,8 @@ struct EventLoop {
     cancel_times: HashMap<u64, Instant>,
     cancels: Vec<CancelOrder>,
     released: Vec<u32>,
+    /// Whether the workers have already been told to give memory back since the last work.
+    trimmed: bool,
 }
 
 impl EventLoop {
@@ -657,10 +678,19 @@ impl EventLoop {
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
-            } else {
+            } else if self.trimmed {
                 match self.receiver.recv() {
                     Ok(event) => Some(event),
                     Err(_) => break,
+                }
+            } else {
+                match self.receiver.recv_timeout(TRIM_AFTER) {
+                    Ok(event) => Some(event),
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.trim_if_idle();
+                        None
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
             };
 
@@ -681,8 +711,29 @@ impl EventLoop {
         self.stop_workers();
     }
 
+    fn trim_if_idle(&mut self) {
+        if self.scheduler.has_outstanding_work() {
+            return;
+        }
+        self.trimmed = true;
+        for process in self.workers.iter_mut().flatten() {
+            let frame = HostMessage::Trim.encode();
+            if write_frame(&mut process.stdin, &frame)
+                .and_then(|()| process.stdin.flush())
+                .is_err()
+            {
+                // The reader thread will report the exit.
+                process.kill();
+            }
+        }
+    }
+
     /// Returns `false` when the loop should stop.
     fn handle(&mut self, event: Event) -> bool {
+        // Only work counts. A poll of the statistics is not a reason to keep memory.
+        if matches!(event, Event::Demand(_) | Event::Worker { .. }) {
+            self.trimmed = false;
+        }
         match event {
             Event::Demand(encoded) => self.on_demand(&encoded),
             Event::Park(poller) => match &mut self.delivery {
@@ -710,7 +761,7 @@ impl EventLoop {
                 let _ = reply.send(self.stats.snapshot());
             }
             Event::KillWorker(worker) => {
-                if let Some(Some(process)) = self.workers.get_mut(worker) {
+                if let Some(Some(process)) = self.workers.get(worker) {
                     process.kill();
                 }
             }
@@ -793,7 +844,13 @@ impl EventLoop {
                 protocol: PROTOCOL_VERSION,
                 ..
             } => {
-                self.scheduler.on_worker_ready(worker);
+                let check = self.workers[worker]
+                    .as_ref()
+                    .map_or(Ok(()), WorkerProcess::check_locked_down);
+                match check {
+                    Ok(()) => self.scheduler.on_worker_ready(worker),
+                    Err(reason) => self.kill_for_violation(worker, &reason),
+                }
                 Ok(())
             }
             WorkerMessage::Fatal { code, detail } => {
@@ -819,15 +876,14 @@ impl EventLoop {
     fn kill_for_violation(&mut self, worker: usize, reason: &str) {
         eprintln!("killing render worker {worker}: {reason}");
         self.stats.totals.protocol_violations += 1;
-        if let Some(Some(process)) = self.workers.get_mut(worker) {
+        if let Some(Some(process)) = self.workers.get(worker) {
             process.kill();
         }
     }
 
     fn on_worker_exit(&mut self, worker: usize) {
-        if let Some(mut process) = self.workers[worker].take() {
-            process.reap();
-        }
+        // Dropping it reaps the process.
+        self.workers[worker] = None;
         // The process is gone, so nothing can write to its slot any more.
         self.scheduler.on_worker_lost(worker);
 
@@ -968,13 +1024,11 @@ impl EventLoop {
             let _ = write_frame(&mut process.stdin, &HostMessage::Shutdown.encode());
         }
         let deadline = Instant::now() + SHUTDOWN_GRACE;
-        for process in self.workers.iter_mut().flatten() {
-            if let Some(child) = &mut process.child {
-                while Instant::now() < deadline {
-                    match child.try_wait() {
-                        Ok(None) => thread::sleep(Duration::from_millis(5)),
-                        _ => break,
-                    }
+        for process in self.workers.iter().flatten() {
+            while Instant::now() < deadline {
+                match process.child.try_wait() {
+                    Ok(None) => thread::sleep(Duration::from_millis(5)),
+                    _ => break,
                 }
             }
             process.reap();

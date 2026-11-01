@@ -1,12 +1,14 @@
 //! Musaeum's desktop shell.
 //!
-//! At this stage it hosts Experiments A and B of Phase 0: a tile pipeline with two
-//! interchangeable ways of delivering pixels to the WebView, and a harness that measures
-//! them. The rendering and scheduling logic lives in `musaeum-core`; this crate only
-//! connects it to Tauri and WebView2.
+//! At this stage it hosts the experiments of Phase 0: a tile pipeline for fixed layout, a
+//! reader for fluid layout at an origin of its own, and a harness that measures them. The
+//! rendering and scheduling logic lives in `musaeum-core`; this crate only connects it to
+//! Tauri and WebView2.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod book;
+mod memory;
 mod options;
 mod protocol;
 mod session;
@@ -56,19 +58,27 @@ fn main() {
 
     let result = tauri::Builder::default()
         .manage(AppState::new(options))
+        .manage(book::BookState::default())
         .register_asynchronous_uri_scheme_protocol(
             protocol::SCHEME,
             |context, request, responder| {
                 protocol::handle(context.app_handle(), request, responder);
             },
         )
+        .register_asynchronous_uri_scheme_protocol(book::SCHEME, |context, request, responder| {
+            book::handle(context.app_handle(), request, responder);
+        })
         .invoke_handler(tauri::generate_handler![
+            book::open_book,
             session::startup_options,
+            session::uptime_ms,
             session::open_delivery_probe,
             session::open_session,
             session::close_session,
             session::pool_stats,
             session::probe_exchange,
+            session::bench_mark_phase,
+            session::bench_resize_window,
             session::bench_finish,
             session::bench_fail,
         ])

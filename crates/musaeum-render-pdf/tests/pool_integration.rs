@@ -1,4 +1,5 @@
-//! Drives `RenderPool` end to end with real worker processes, on both delivery paths.
+//! Drives `RenderPool` end to end with real worker processes, on both delivery paths, inside
+//! the same sandbox the app runs them in.
 
 use std::fs;
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use musaeum_core::{
     DeliveryMode, PoolConfig, PoolError, RenderPool, encode_demand, geometry_bytes,
 };
+use musaeum_sandbox::Policy;
 use musaeum_shm::ring::ring_len;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::{
@@ -30,6 +32,7 @@ fn config(document: PathBuf, worker_count: usize) -> PoolConfig {
         document,
         worker_count,
         process_memory_limit: Some(2 << 30),
+        policy: Policy::Lockdown,
         startup_timeout: WAIT,
     }
 }
@@ -305,6 +308,22 @@ fn a_worker_crash_is_invisible_apart_from_the_restart_counter() {
         .recv_timeout(WAIT)
         .expect("the replacement should work");
     assert_eq!(received.words.page, 0);
+}
+
+#[test]
+fn after_going_idle_the_pool_still_answers() {
+    let (pool, tiles) = start_pull(solid_pages("idle", 2), 2, 4);
+    pool.submit_demand(encode_demand(1, &[tile(0, 0, 0, 0)]));
+    assert_eq!(tiles.recv_timeout(WAIT).unwrap().words.page, 0);
+
+    // Past the point where workers are told to give memory back.
+    std::thread::sleep(Duration::from_millis(2300));
+    pool.submit_demand(encode_demand(2, &[tile(1, 0, 0, 0)]));
+    assert_eq!(tiles.recv_timeout(WAIT).unwrap().words.page, 1);
+
+    let stats = pool.stats().unwrap();
+    assert_eq!(stats.worker_restarts, 0);
+    assert_eq!(stats.protocol_violations, 0);
 }
 
 #[test]

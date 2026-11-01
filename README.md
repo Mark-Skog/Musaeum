@@ -3,8 +3,12 @@
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
 O projeto está na **Fase 0 do Plano Diretor**: validar a stack com medições antes de
-construir o produto. O que existe hoje é o pipeline de layout fixo, do PDF até a tela, e o
-harness que o mede. Ainda não há biblioteca, EPUB ou interface de produto.
+construir o produto. O que existe hoje são os dois pipelines de leitura, o de layout fixo
+(PDF) e o fluido (EPUB), o sandbox do renderizador e os harnesses que medem tudo isso. Ainda
+não há biblioteca nem interface de produto.
+
+As decisões e os números da fase estão em
+[`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -16,16 +20,25 @@ crates/
                        mensagens de controle e aritmética de tiles
   musaeum-core/        Agendador (máquina de estados pura) e supervisor dos workers,
                        sem dependência de Tauri
+  musaeum-sandbox/     Token restrito, mitigações, job object e estação de janelas isolada
   musaeum-render-pdf/  Processo isolado que rasteriza tiles com PDFium
 apps/desktop/
-  src-tauri/           Ponte Tauri: protocolo tile://, buffers do WebView2, harness
+  src-tauri/           Ponte Tauri: protocolos tile:// e book://, buffers do WebView2, harness
   src/                 Thread principal e compositor WebGL2 em Web Worker
+  src/reader/          Leitor fluido, numa origem própria, com o foliate-js atrás de um adaptador
+vendor/
+  foliate-js/          Parte do foliate-js, fixada em um commit, com uma alteração documentada
+  third-party.json     Licenças do que entra no app sem passar por um gerenciador de pacotes
 tools/
   fetch-pdfium.ps1     Baixa a build fixada do PDFium e confere o SHA-256
-  gen-fixtures/        Gera os PDFs de teste
+  gen-fixtures/        Gera os PDFs e os EPUBs de teste, incluindo um EPUB hostil
   pool-bench/          Mede o pool de render sem WebView
   run-bench.mjs        Roda a matriz dos Experimentos A e B
+  run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
+  measure-memory.mjs   Mede a RAM do app inteiro
   test-cascade.mjs     Testa a escolha automática do caminho de entrega no app real
+  test-epub-security.mjs  Abre o EPUB hostil no app real, com cada barreira isolada
+  check-licenses.mjs   Confere as licenças de todas as dependências
 ```
 
 ## Como rodar
@@ -44,18 +57,22 @@ cd ..\..
 .\target\release\gen-fixtures.exe --out fixtures
 ```
 
-Abrir um PDF de forma interativa (a roda do mouse faz a rolagem):
+Abrir um documento de forma interativa. No PDF, a roda do mouse faz a rolagem. No EPUB, as
+setas passam as páginas:
 
 ```powershell
 .\target\release\musaeum-desktop.exe --pdf fixtures\scan-2000.pdf
+.\target\release\musaeum-desktop.exe --epub fixtures\large.epub
 ```
 
-Rodar a matriz de medição. Ela abre janelas em primeiro plano, uma por vez, e escreve os
-relatórios em `bench-results/`:
+Rodar as medições. Elas abrem janelas em primeiro plano, uma por vez, e escrevem os relatórios
+em `bench-results/`. Rode com a máquina livre: outro programa usando a GPU muda os resultados.
 
 ```powershell
 node tools\run-bench.mjs
 node tools\run-bench.mjs --scenario quick --uncapped --stress 0
+node tools\run-epub-bench.mjs
+node tools\measure-memory.mjs
 ```
 
 ## Os caminhos de entrega de pixels
@@ -84,20 +101,63 @@ não troca de caminho, porque falharia em todos.
 `--delivery a|b|c` força um caminho, para medi-lo, e falha em vez de recair em outro. O padrão
 é `--delivery auto`.
 
+## O sandbox do renderizador
+
+O PDF é entrada hostil, então o worker é tratado como se já estivesse comprometido. Ele roda
+com um token restrito sem nenhum grupo utilizável, em nível de integridade baixo, com mitigações
+de processo, em um job object próprio e em uma estação de janelas separada. O worker carrega o
+PDFium, entra em lockdown e só depois lê qualquer mensagem do host. Daí em diante, só tem o que
+o host duplicou para ele: um handle somente leitura do documento e a memória compartilhada.
+
+`tests/sandbox.rs` prova isso tentando: `sandbox-probe` se comporta como um worker comprometido,
+e cada tentativa negada dentro do sandbox precisa dar certo fora dele.
+
+`--no-sandbox` existe só para medir o custo do sandbox e exige `--bench`.
+
+## O isolamento do leitor fluido
+
+Um livro é entrada hostil também, e o foliate-js não oferece proteção própria contra isso:
+
+1. **CSP com nonce:** só os scripts do leitor têm o nonce. Um `blob:` herda a política da página
+   que o criou, então um cabeçalho cobre todas as seções do livro.
+2. **Sandbox dos iframes das seções, sem `allow-scripts`:** barreira independente da CSP. Só vale
+   no Chromium, porque um bug do WebKit obriga o foliate-js a manter `allow-scripts` lá.
+3. **Origem própria por livro:** `http://book.<aleatório>.localhost`. O Tauri trata como local a
+   origem `<protocolo>.localhost` de um protocolo registrado, e um script ali conseguiria chamar
+   os comandos do app. Com o sufixo aleatório, a origem conta como remota e a ACL recusa a chamada.
+
+`tools/test-epub-security.mjs` testa cada barreira sozinha e, como controle, sem nenhuma.
+
 ## Testes
 
 ```powershell
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cd apps\desktop; npm test; npx tsc --noEmit
+cd apps\desktop; npm test; npx tsc --noEmit; cd ..\..
+node --test tools\lib\spdx.test.mjs
+node tools\check-licenses.mjs
 ```
 
 Os testes de integração em `crates/musaeum-render-pdf/tests/` usam processos reais, memória
 compartilhada real e o PDFium real, então exigem o `fetch-pdfium.ps1` antes.
 
-A escolha do caminho é testada de ponta a ponta no app compilado. As falhas são simuladas com
-`--delivery-fault`, e cada caso exige que os tiles cheguem à tela pelo caminho esperado:
+Dois testes rodam só no app compilado e abrem janelas. A escolha do caminho simula falhas com
+`--delivery-fault`, e cada caso exige que os tiles cheguem à tela pelo caminho esperado. O teste
+de segurança abre um EPUB hostil e observa de fora o que escapa, com um servidor canário:
 
 ```powershell
 node tools\test-cascade.mjs
+node tools\test-epub-security.mjs
 ```
+
+## Licenças
+
+O projeto é GPL-3.0-or-later, e `deny.toml` lista as licenças aceitas nas dependências. Qualquer
+outra licença reprova a verificação, então uma licença nova exige uma decisão. Em cada clone,
+ative o hook que roda a verificação quando uma dependência muda:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+A verificação precisa do `cargo-deny` (`cargo install cargo-deny`).

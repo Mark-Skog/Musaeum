@@ -5,7 +5,12 @@
  */
 
 import { SegmentRecorder } from '../bench/metrics';
-import { buildScenario, ScenarioPlayer, type SegmentContext } from '../bench/scenarios';
+import {
+  buildScenario,
+  type ScenarioName,
+  ScenarioPlayer,
+  type SegmentContext,
+} from '../bench/scenarios';
 import {
   type BenchOptions,
   PROBE_HOST_WORD,
@@ -27,12 +32,10 @@ import { FramePlanner } from './frame-planner';
 import { buildLayout, type DocumentLayout, lodForScale, parseGeometry, tileKey } from './layout';
 import type { FromWorker, InitMessage, ProbeRequest, ToWorker } from './messages';
 import { TileRenderer } from './renderer';
-import { TileCache } from './tile-cache';
+import { layersForScreen, TileCache } from './tile-cache';
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 
-/** 256 MiB of VRAM. A 4K screen shows about 54 tiles, so this holds several screens. */
-const GPU_LAYERS = 256;
 /** Time allowed per frame for tile uploads, out of 8.3 ms at 120 Hz. */
 const UPLOAD_BUDGET_MS = 2;
 const PAGE_GAP_PT = 12;
@@ -79,7 +82,7 @@ async function calibrateClock(baseUrl: string): Promise<HostClock> {
 }
 
 class Compositor {
-  private readonly cache = new TileCache(GPU_LAYERS);
+  private readonly cache: TileCache;
   private readonly encoder = new DemandEncoder();
   private readonly planner: FramePlanner;
   private readonly sender: DemandSender;
@@ -115,6 +118,7 @@ class Compositor {
   private lastMoveTime = 0;
   private awaitingSharp = false;
   private wasResting = true;
+  private reportedFirstSharp = false;
 
   constructor(
     private readonly layout: DocumentLayout,
@@ -126,13 +130,15 @@ class Compositor {
     delivery: Delivery | null,
     bench: BenchOptions | null,
     private readonly zoom: number,
+    private readonly gpuLayers: number,
   ) {
     const base = tileBaseUrl(session.id);
+    this.cache = new TileCache(gpuLayers);
     this.viewWidth = width;
     this.viewHeight = height;
     this.renderer = new TileRenderer(
       canvas,
-      GPU_LAYERS,
+      gpuLayers,
       () => {
         this.contextLost = true;
       },
@@ -150,7 +156,7 @@ class Compositor {
     this.applySize(width, height);
 
     if (bench !== null) {
-      const segments = buildScenario(bench.scenario);
+      const segments = buildScenario(bench.scenario as ScenarioName);
       this.player = new ScenarioPlayer(segments);
       this.segmentNames = segments.map((segment) => segment.name);
       this.recorders = segments.map((segment) => new SegmentRecorder(segment.name));
@@ -348,10 +354,19 @@ class Compositor {
     moved: boolean,
   ): void {
     this.hudFrames++;
+    const { counters } = this.planner;
+    if (
+      !this.reportedFirstSharp &&
+      counters.tilesVisible > 0 &&
+      counters.uncovered === 0 &&
+      counters.fallback === 0
+    ) {
+      this.reportedFirstSharp = true;
+      post({ type: 'first-sharp', atEpochMs: performance.timeOrigin + performance.now() });
+    }
     if (this.player === null) {
       return;
     }
-    const { counters } = this.planner;
     const resting = this.player.isResting(now);
     if (moved) {
       if (this.awaitingSharp && this.wasResting) {
@@ -429,7 +444,7 @@ class Compositor {
         scale: this.scale,
         lod: lodForScale(this.scale),
         pageCount: this.layout.pageCount,
-        gpuLayers: GPU_LAYERS,
+        gpuLayers: this.gpuLayers,
         refreshIntervalMs,
         clockRttMs: this.clock.rttMs,
         demandsSent: this.sender.sent,
@@ -470,6 +485,7 @@ async function start(message: InitMessage): Promise<void> {
     delivery,
     message.bench,
     message.zoom,
+    message.gpuLayers ?? layersForScreen(message.screenWidth, message.screenHeight),
   );
   post({
     type: 'ready',

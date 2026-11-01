@@ -38,9 +38,10 @@ const FALLBACK_SIZE: PageGeometry = PageGeometry {
     height_pt: 792.0,
 };
 
-/// Parsed pages kept open per worker. Consecutive tiles usually come from the same page,
-/// and parsing a page's content is often far more expensive than rasterizing one tile.
-const PAGE_CACHE_LEN: usize = 8;
+/// Parsed pages kept open per worker. Consecutive tiles usually come from the same page, and
+/// parsing a page's content is often far more expensive than rasterizing one tile. But each one
+/// holds its decoded images, a few megabytes per scanned page in every worker, so this stays low.
+const PAGE_CACHE_LEN: usize = 3;
 
 /// The loaded library. Not `Send` or `Sync`, because PDFium has global state and allows
 /// only one thread at a time; the compiler now enforces that here.
@@ -290,6 +291,14 @@ impl<'lib, 'data> Document<'lib, 'data> {
             FPDF_RENDER_DONE => Ok(RenderOutcome::Finished { load_us }),
             FPDF_RENDER_TOBECONTINUED => Ok(RenderOutcome::Cancelled),
             _ => Err(TileFailure::RenderFailed),
+        }
+    }
+
+    /// Closes the cached pages. They load again when they are needed.
+    pub fn release_pages(&mut self) {
+        for page in self.pages.drain(..) {
+            // SAFETY: the page is open and no render is in progress between jobs.
+            unsafe { self.pdfium.bindings.FPDF_ClosePage(page.handle) };
         }
     }
 

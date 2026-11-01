@@ -1,10 +1,12 @@
 //! Command-line options.
 //!
 //! ```text
-//! musaeum-desktop [--pdf PATH] [--delivery auto|a|b|c] [--workers N] [--pull-batch N]
-//!                 [--bench OUT.json] [--scenario full|quick|smoke] [--main-stress-ms N]
+//! musaeum-desktop [--pdf PATH | --epub PATH] [--delivery auto|a|b|c] [--workers N]
+//!                 [--pull-batch N] [--gpu-layers N] [--bench OUT.json] [--main-stress-ms N]
+//!                 [--scenario full|quick|smoke|memory|layout|security]
 //!                 [--uncapped] [--zoom Z] [--width W] [--height H]
-//!                 [--delivery-fault FAULT[,FAULT...]]
+//!                 [--delivery-fault FAULT[,FAULT...]] [--no-sandbox]
+//!                 [--epub-protection full|csp-only|sandbox-only|none]
 //! ```
 
 use std::path::PathBuf;
@@ -71,13 +73,29 @@ impl DeliveryFault {
     }
 }
 
+/// Which of a book's barriers are up. Anything but `Full` exists to show, in a benchmark, that
+/// each barrier holds on its own and that the hostile book's scripts do run without them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BookProtection {
+    /// The Content Security Policy, and sections sandboxed without scripts.
+    Full,
+    /// The policy alone, as on WebKit, where sections need `allow-scripts`.
+    CspOnly,
+    /// The section sandbox alone.
+    SandboxOnly,
+    /// Neither. Only the origin is left, so this shows what that one barrier stops.
+    None,
+}
+
 /// How to run the benchmark instead of waiting for a user.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchOptions {
     /// Where to write the report.
     pub out: PathBuf,
-    /// `full`, `quick` or `smoke`.
+    /// `full`, `quick`, `smoke` or `memory` for a PDF; `layout`, `security`, `smoke` or
+    /// `memory` for an EPUB; `memory` with no document.
     pub scenario: String,
     /// Blocks the main thread this long, five times a second, to imitate heavy UI work.
     pub main_stress_ms: u32,
@@ -93,6 +111,10 @@ pub struct BenchOptions {
 pub struct StartupOptions {
     /// The PDF to open right away, if any.
     pub pdf: Option<PathBuf>,
+    /// The EPUB to open right away, if any.
+    pub epub: Option<PathBuf>,
+    /// Which of a book's barriers are up.
+    pub book_protection: BookProtection,
     /// Delivery path to use, or `Auto` to choose one at startup.
     pub delivery: DeliveryRequest,
     /// Failures to simulate during the automatic selection.
@@ -101,6 +123,10 @@ pub struct StartupOptions {
     pub workers: usize,
     /// Most tiles in one Path A response.
     pub pull_batch: usize,
+    /// Size of the compositor's tile cache, instead of what suits the screen.
+    pub gpu_layers: Option<u32>,
+    /// Runs the render workers outside the sandbox, to measure what the sandbox costs.
+    pub no_sandbox: bool,
     /// Window width in logical pixels.
     pub width: u32,
     /// Window height in logical pixels.
@@ -109,11 +135,12 @@ pub struct StartupOptions {
     pub bench: Option<BenchOptions>,
 }
 
-/// Half the logical cores: rendering should not compete with the compositor, the
-/// WebView's own processes and the rest of the desktop.
+/// Half the logical cores, so rendering does not compete with the compositor, the WebView's own
+/// processes and the rest of the desktop, and no more than four. Six were no smoother in Phase 0's
+/// measurements, and each worker holds memory while reading.
 fn default_workers() -> usize {
     let cores = thread::available_parallelism().map_or(4, std::num::NonZero::get);
-    (cores / 2).clamp(2, 6)
+    (cores / 2).clamp(2, 4)
 }
 
 impl StartupOptions {
@@ -121,10 +148,14 @@ impl StartupOptions {
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut options = Self {
             pdf: None,
+            epub: None,
+            book_protection: BookProtection::Full,
             delivery: DeliveryRequest::Auto,
             delivery_faults: Vec::new(),
             workers: default_workers(),
             pull_batch: 4,
+            gpu_layers: None,
+            no_sandbox: false,
             width: 1600,
             height: 900,
             bench: None,
@@ -140,6 +171,16 @@ impl StartupOptions {
             let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
             match flag.as_str() {
                 "--pdf" => options.pdf = Some(PathBuf::from(value()?)),
+                "--epub" => options.epub = Some(PathBuf::from(value()?)),
+                "--epub-protection" => {
+                    options.book_protection = match value()?.as_str() {
+                        "full" => BookProtection::Full,
+                        "csp-only" => BookProtection::CspOnly,
+                        "sandbox-only" => BookProtection::SandboxOnly,
+                        "none" => BookProtection::None,
+                        other => return Err(format!("unknown protection: {other}")),
+                    }
+                }
                 "--delivery" => {
                     options.delivery = match value()?.as_str() {
                         "auto" => DeliveryRequest::Auto,
@@ -159,6 +200,8 @@ impl StartupOptions {
                 }
                 "--workers" => options.workers = parse_number(&flag, &value()?)?,
                 "--pull-batch" => options.pull_batch = parse_number(&flag, &value()?)?,
+                "--gpu-layers" => options.gpu_layers = Some(parse_number(&flag, &value()?)?),
+                "--no-sandbox" => options.no_sandbox = true,
                 "--width" => options.width = parse_number(&flag, &value()?)?,
                 "--height" => options.height = parse_number(&flag, &value()?)?,
                 "--bench" => out = Some(PathBuf::from(value()?)),
@@ -170,14 +213,28 @@ impl StartupOptions {
             }
         }
 
-        if !matches!(scenario.as_str(), "full" | "quick" | "smoke") {
-            return Err(format!(
-                "--scenario must be full, quick or smoke, got {scenario}"
-            ));
+        if options.pdf.is_some() && options.epub.is_some() {
+            return Err("open a PDF or an EPUB, not both".to_owned());
+        }
+        if !matches!(
+            scenario.as_str(),
+            "full" | "quick" | "smoke" | "memory" | "layout" | "security"
+        ) {
+            return Err(format!("unknown scenario: {scenario}"));
+        }
+        if out.is_none() && options.book_protection != BookProtection::Full {
+            return Err(
+                "--epub-protection lowers a book's defences, so it needs --bench".to_owned(),
+            );
+        }
+        if out.is_none() && options.no_sandbox {
+            return Err(
+                "--no-sandbox exposes the system to a hostile PDF, so it needs --bench".to_owned(),
+            );
         }
         if let Some(out) = out {
-            if options.pdf.is_none() {
-                return Err("--bench needs --pdf".to_owned());
+            if options.pdf.is_none() && options.epub.is_none() && scenario != "memory" {
+                return Err("--bench needs a document, except with --scenario memory".to_owned());
             }
             options.bench = Some(BenchOptions {
                 out,
@@ -216,7 +273,7 @@ mod tests {
         assert!(options.delivery_faults.is_empty());
         assert!(options.pdf.is_none());
         assert!(options.bench.is_none());
-        assert!((2..=6).contains(&options.workers));
+        assert!((2..=4).contains(&options.workers));
     }
 
     #[test]
@@ -257,6 +314,43 @@ mod tests {
             [DeliveryFault::CopiedTransfer, DeliveryFault::NotIsolated]
         );
         assert!(parse(&["--delivery-fault", "lightning"]).is_err());
+    }
+
+    #[test]
+    fn a_book_opens_with_every_barrier_up() {
+        let options = parse(&["--epub", "a.epub"]).unwrap();
+        assert_eq!(options.epub, Some(PathBuf::from("a.epub")));
+        assert_eq!(options.book_protection, BookProtection::Full);
+    }
+
+    #[test]
+    fn only_a_benchmark_can_lower_a_books_barriers() {
+        assert!(parse(&["--epub", "a.epub", "--epub-protection", "none"]).is_err());
+        let options = parse(&[
+            "--epub",
+            "a.epub",
+            "--epub-protection",
+            "csp-only",
+            "--bench",
+            "out.json",
+            "--scenario",
+            "security",
+        ])
+        .unwrap();
+        assert_eq!(options.book_protection, BookProtection::CspOnly);
+    }
+
+    #[test]
+    fn only_a_benchmark_can_run_outside_the_sandbox() {
+        assert!(parse(&["--pdf", "a.pdf", "--no-sandbox"]).is_err());
+        let options = parse(&["--pdf", "a.pdf", "--no-sandbox", "--bench", "out.json"]).unwrap();
+        assert!(options.no_sandbox);
+    }
+
+    #[test]
+    fn a_memory_benchmark_can_run_with_nothing_open() {
+        assert!(parse(&["--bench", "out.json", "--scenario", "memory"]).is_ok());
+        assert!(parse(&["--pdf", "a.pdf", "--epub", "a.epub"]).is_err());
     }
 
     #[test]

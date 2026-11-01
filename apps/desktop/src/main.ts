@@ -7,6 +7,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import { Samples } from './bench/metrics';
+import { runBook } from './book-host';
 import type { FromWorker, ToWorker } from './compositor/messages';
 import { type DeliveryEvidence, type DeliveryPlan, planDelivery } from './delivery-select';
 import { mainThreadSeesHostWrites, probeSharedBuffer } from './probe';
@@ -28,6 +29,10 @@ const SAB_RING_CAPACITY = 32;
 const BUFFER_WAIT_MS = 10_000;
 /** How often the main-thread stress test blocks the thread. */
 const STRESS_PERIOD_MS = 200;
+/** How long the memory scenario holds each resting state. */
+const MEMORY_SETTLE_MS = 15_000;
+const MEMORY_READING_MS = 30_000;
+const MEMORY_SCROLL_EVERY_MS = 1000;
 
 declare global {
   interface Window {
@@ -164,13 +169,51 @@ async function failBench(bench: BenchOptions | null, message: string): Promise<v
   }
 }
 
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The memory scenario: a person opening a document, reading for a while, and stepping away. The
+ * compositor runs as it would for that person, going idle when nothing moves, which a scripted
+ * scroll scenario would not let it do. Without `scroll`, there is nothing open to read.
+ */
+async function runMemoryScenario(
+  scroll: ((deltaPx: number) => void) | null,
+  extra: () => Record<string, unknown>,
+): Promise<void> {
+  const mark = (name: string): Promise<void> => invoke('bench_mark_phase', { name });
+  await mark(scroll === null ? 'empty' : 'opened');
+  await pause(MEMORY_SETTLE_MS);
+  if (scroll !== null) {
+    await mark('reading');
+    const ends = performance.now() + MEMORY_READING_MS;
+    while (performance.now() < ends) {
+      scroll(window.innerHeight * devicePixelRatio * 0.75);
+      await pause(MEMORY_SCROLL_EVERY_MS);
+    }
+    await mark('idle-after-reading');
+    await pause(MEMORY_SETTLE_MS);
+  }
+  await mark('end');
+  await invoke('bench_finish', { frontend: JSON.stringify(extra()) });
+}
+
 async function run(options: StartupOptions): Promise<void> {
   const hud = document.getElementById('hud') as HTMLPreElement;
   const canvas = document.getElementById('surface') as HTMLCanvasElement;
   const { bench } = options;
+  const measuringMemory = bench?.scenario === 'memory';
 
+  if (options.epub !== null) {
+    await runBook(options, (message) => void failBench(bench, message));
+    return;
+  }
   if (options.pdf === null) {
-    hud.textContent = 'Abra um PDF com: musaeum-desktop --pdf CAMINHO [--delivery auto|a|b|c]';
+    hud.textContent = 'Abra um documento com: musaeum-desktop --pdf CAMINHO ou --epub CAMINHO';
+    if (measuringMemory) {
+      await runMemoryScenario(null, () => ({}));
+    }
     return;
   }
 
@@ -184,6 +227,10 @@ async function run(options: StartupOptions): Promise<void> {
   let pump: RingPump | null = null;
   let finished = false;
   let report: Record<string, unknown> = {};
+  const nowEpochMs = (): number => performance.timeOrigin + performance.now();
+  const openRequestedAt = nowEpochMs();
+  const uptimeWhenOpening = await invoke<number>('uptime_ms');
+  let opening: Record<string, number> = {};
 
   worker.addEventListener('message', (event: MessageEvent<FromWorker>) => {
     const message = event.data;
@@ -200,6 +247,7 @@ async function run(options: StartupOptions): Promise<void> {
           frontend: JSON.stringify({
             ...message.report,
             ...report,
+            ...opening,
             userAgent: navigator.userAgent,
             devicePixelRatio,
             hardwareConcurrency: navigator.hardwareConcurrency,
@@ -213,6 +261,14 @@ async function run(options: StartupOptions): Promise<void> {
       case 'fatal':
         finished = true;
         void failBench(bench, `compositor: ${message.message}`);
+        break;
+      case 'first-sharp':
+        opening = {
+          // From asking for the document, which is what a reader who is already in the app waits.
+          openToFirstSharpMs: message.atEpochMs - openRequestedAt,
+          // From the program starting, which is what someone opening a file from outside waits.
+          coldStartToFirstSharpMs: uptimeWhenOpening + (message.atEpochMs - openRequestedAt),
+        };
         break;
       case 'probe-reply':
         break;
@@ -275,8 +331,12 @@ async function run(options: StartupOptions): Promise<void> {
       session,
       ring,
       direct: direct !== null ? { slab: direct.slab, ring: direct.ring } : null,
-      bench,
+      // The compositor plays scripted scenarios, and the memory scenario is not one of those.
+      bench: measuringMemory ? null : bench,
       zoom: bench?.zoom ?? 1.5 * devicePixelRatio,
+      screenWidth: Math.round(screen.width * devicePixelRatio),
+      screenHeight: Math.round(screen.height * devicePixelRatio),
+      gpuLayers: options.gpuLayers,
     },
     direct !== null ? [offscreen, direct.slab, direct.ring] : [offscreen],
   );
@@ -305,6 +365,12 @@ async function run(options: StartupOptions): Promise<void> {
   if (bench !== null) {
     startMainThreadStress(bench.mainStressMs);
   }
+  if (measuringMemory) {
+    const scroll = (deltaPx: number): void => send({ type: 'wheel', deltaPx });
+    void runMemoryScenario(scroll, () => report).catch((error) =>
+      failBench(bench, String(error)),
+    );
+  }
 
   let lastFrame = 0;
   const onAnimationFrame = (now: number): void => {
@@ -319,7 +385,7 @@ async function run(options: StartupOptions): Promise<void> {
   };
   // Only Path B needs the main thread for tiles, but measuring its responsiveness on both
   // paths is what shows whether the stress test really happened.
-  if (pump !== null || bench !== null) {
+  if (pump !== null || (bench !== null && !measuringMemory)) {
     requestAnimationFrame(onAnimationFrame);
   }
 }

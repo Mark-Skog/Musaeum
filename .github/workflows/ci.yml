@@ -1,0 +1,45 @@
+# Windows only for now, because that is the only system the code compiles on. macOS and Linux
+# join this matrix when the code runs there, which is what the Phase 0 gate still asks for.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust from rust-toolchain.toml
+        run: rustup show
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Check licenses
+        run: node tools/check-licenses.mjs
+      - name: Test the license checker
+        run: node --test tools/lib/spdx.test.mjs
+      - name: Fetch PDFium
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools\fetch-pdfium.ps1
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Build the frontend
+        working-directory: apps/desktop
+        run: npm run build
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test Rust, including the sandbox against the real worker
+        run: cargo test --workspace
+      - name: Test the frontend
+        working-directory: apps/desktop
+        run: npm test

@@ -86,13 +86,14 @@ export interface SessionInfo {
   pageCount: number;
   orientation: string;
   slotCount: number;
+  sandboxed: boolean;
   openUs: number;
   geometryUs: number;
 }
 
 export interface BenchOptions {
   out: string;
-  scenario: 'full' | 'quick' | 'smoke';
+  scenario: 'full' | 'quick' | 'smoke' | 'memory' | 'layout' | 'security';
   mainStressMs: number;
   uncapped: boolean;
   zoom: number;
@@ -100,10 +101,14 @@ export interface BenchOptions {
 
 export interface StartupOptions {
   pdf: string | null;
+  epub: string | null;
+  bookProtection: 'full' | 'csp-only' | 'sandbox-only' | 'none';
   delivery: DeliveryRequest;
   deliveryFaults: DeliveryFault[];
   workers: number;
   pullBatch: number;
+  gpuLayers: number | null;
+  noSandbox: boolean;
   width: number;
   height: number;
   bench: BenchOptions | null;

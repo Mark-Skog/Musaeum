@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import { TileCache } from './tile-cache';
+import { layersForScreen, TileCache } from './tile-cache';
+
+describe('layersForScreen', () => {
+  it('keeps four screens of tiles', () => {
+    expect(layersForScreen(1920, 1080)).toBe(80);
+    expect(layersForScreen(2560, 1440)).toBe(96);
+    expect(layersForScreen(3840, 2160)).toBe(216);
+  });
+
+  it('stays within what is reasonable', () => {
+    expect(layersForScreen(800, 600)).toBe(64);
+    expect(layersForScreen(7680, 4320)).toBe(256);
+  });
+});
 
 describe('TileCache', () => {
   it('fills empty layers before evicting anything', () => {

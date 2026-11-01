@@ -1,7 +1,7 @@
 //! Command line for the fixture generator.
 //!
 //! ```text
-//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N]
+//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N]
 //! ```
 
 use std::error::Error;
@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut out = PathBuf::from("fixtures");
     let mut scan_pages = 2000usize;
     let mut vector_pages = 500usize;
+    let mut canary_port = 48780u16;
 
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -21,6 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--out" => out = PathBuf::from(value()?),
             "--scan-pages" => scan_pages = value()?.parse()?,
             "--vector-pages" => vector_pages = value()?.parse()?,
+            "--canary-port" => canary_port = value()?.parse()?,
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
@@ -49,6 +51,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let path = out.join(format!("vector-{vector_pages}.pdf"));
     gen_fixtures::write_vector_fixture(&path, vector_pages)?;
+    report(&path, started)?;
+
+    let started = Instant::now();
+    let path = out.join("large.epub");
+    gen_fixtures::epub::write_large_epub(&path)?;
+    report(&path, started)?;
+
+    let started = Instant::now();
+    let path = out.join("hostile.epub");
+    gen_fixtures::epub::write_hostile_epub(&path, canary_port)?;
     report(&path, started)?;
     Ok(())
 }

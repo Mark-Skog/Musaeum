@@ -52,6 +52,8 @@ pub enum HostMessage {
     Render(RenderJob),
     /// Exits cleanly.
     Shutdown,
+    /// Nothing has been asked of the worker for a while: it should give memory back.
+    Trim,
 }
 
 /// Why a worker cannot start.
@@ -76,6 +78,9 @@ pub enum FatalCode {
     /// The first message was not `Init`.
     #[error("the worker did not receive an initialization message")]
     BadHandshake = 6,
+    /// The worker could not lock itself down, so it refuses to read the document.
+    #[error("the worker could not enter its sandbox")]
+    Sandbox = 7,
 }
 
 impl FatalCode {
@@ -87,6 +92,7 @@ impl FatalCode {
             4 => Self::LibraryLoad,
             5 => Self::DocumentOpen,
             6 => Self::BadHandshake,
+            7 => Self::Sandbox,
             _ => return None,
         })
     }
@@ -209,6 +215,7 @@ pub enum WireError {
 const TAG_INIT: u32 = 1;
 const TAG_RENDER: u32 = 2;
 const TAG_SHUTDOWN: u32 = 3;
+const TAG_TRIM: u32 = 4;
 const TAG_READY: u32 = 10;
 const TAG_GEOMETRY: u32 = 11;
 const TAG_GEOMETRY_END: u32 = 12;
@@ -317,6 +324,7 @@ impl HostMessage {
                     .frame
             }
             Self::Shutdown => Encoder::new(TAG_SHUTDOWN).frame,
+            Self::Trim => Encoder::new(TAG_TRIM).frame,
         }
     }
 
@@ -351,6 +359,7 @@ impl HostMessage {
                 }))
             }
             TAG_SHUTDOWN => Ok(Self::Shutdown),
+            TAG_TRIM => Ok(Self::Trim),
             tag => Err(WireError::Malformed { tag, value: tag }),
         }
     }
@@ -538,6 +547,7 @@ mod tests {
                 tile: tile(),
             }),
             HostMessage::Shutdown,
+            HostMessage::Trim,
         ];
         for message in messages {
             assert_eq!(HostMessage::decode(&message.encode()).unwrap(), message);

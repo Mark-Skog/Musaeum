@@ -22,9 +22,9 @@ use crate::session::app_state;
 /// The protocol's scheme name.
 pub const SCHEME: &str = "tile";
 
-/// Only the app's own pages may use this protocol. Book content will be served from
-/// other origins in Phase 3, and must never be able to reach the renderer from there.
-fn is_allowed_origin(origin: &str) -> bool {
+/// Only the app's own pages may use this protocol. Book content is served from other origins,
+/// and must never be able to reach the renderer from there.
+pub fn is_allowed_origin(origin: &str) -> bool {
     matches!(
         origin,
         "http://tauri.localhost"
@@ -137,6 +137,7 @@ mod tests {
         assert!(is_allowed_origin("http://localhost:1420"));
         assert!(!is_allowed_origin("http://evil.example"));
         assert!(!is_allowed_origin("http://book.localhost"));
+        assert!(!is_allowed_origin("http://book.0123456789abcdef.localhost"));
         assert!(!is_allowed_origin("null"));
     }
 }

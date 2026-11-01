@@ -1,8 +1,10 @@
-//! Writes reproducible PDF fixtures for the Phase 0 experiments.
+//! Writes reproducible PDF and EPUB fixtures for the Phase 0 experiments.
 //!
-//! The PDFs are generated rather than committed: they can be large, and the generator
+//! The files are generated rather than committed: they can be large, and the generator
 //! documents exactly what each one is meant to stress. Everything is deterministic, so
 //! the same arguments always produce the same bytes.
+
+pub mod epub;
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -193,10 +195,10 @@ pub fn write_pdf(
 }
 
 /// Small deterministic generator, so fixtures are reproducible byte for byte.
-struct XorShift(u64);
+pub(crate) struct XorShift(u64);
 
 impl XorShift {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
@@ -207,7 +209,7 @@ impl XorShift {
         self.0
     }
 
-    fn below(&mut self, limit: u32) -> u32 {
+    pub(crate) fn below(&mut self, limit: u32) -> u32 {
         (self.next() % u64::from(limit)) as u32
     }
 
@@ -286,6 +288,81 @@ pub fn write_mixed_fixture(path: &Path) -> io::Result<()> {
             "1 0 0 rg 0 1500 1000 1500 re f 0 0 1 rg 1000 0 1000 1500 re f".into(),
         ),
     })
+}
+
+/// One page per font that PDFium has to find on its own, because none of them is embedded:
+/// the standard 14, Windows fonts by name, and a CJK font. Returns the number of pages.
+///
+/// This is the one thing a sandboxed renderer might get wrong without crashing, since looking
+/// for a font is the only moment PDFium reaches out to the system during a render.
+pub fn write_font_fixture(path: &Path) -> io::Result<u32> {
+    const FONTS: [&str; 7] = [
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+        "<< /Type /Font /Subtype /TrueType /BaseFont /Arial /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Font /Subtype /TrueType /BaseFont /TimesNewRoman /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Font /Subtype /TrueType /BaseFont /Verdana /Encoding /WinAnsiEncoding >>",
+        "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H \
+         /DescendantFonts [ << /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light \
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> >> ] >>",
+    ];
+    const FIRST_FONT: usize = 3;
+    let first_page = FIRST_FONT + FONTS.len();
+
+    let out = BufWriter::new(File::create(path)?);
+    let mut pdf = PdfWriter {
+        out,
+        position: 0,
+        offsets: vec![0],
+    };
+    pdf.bytes(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n")?;
+    pdf.object(
+        CATALOG_ID,
+        &format!("<< /Type /Catalog /Pages {PAGES_ID} 0 R >>"),
+    )?;
+    let kids: String = (0..FONTS.len())
+        .map(|page| format!("{} 0 R ", first_page + page * 2))
+        .collect();
+    pdf.object(
+        PAGES_ID,
+        &format!("<< /Type /Pages /Count {} /Kids [ {kids}] >>", FONTS.len()),
+    )?;
+    for (index, font) in FONTS.iter().enumerate() {
+        pdf.object(FIRST_FONT + index, font)?;
+    }
+
+    for index in 0..FONTS.len() {
+        let id = first_page + index * 2;
+        let text = if index == FONTS.len() - 1 {
+            // "你好世界", in UCS-2, four times.
+            "<4F60597D4E16754C4F60597D4E16754C4F60597D4E16754C4F60597D4E16754C>".to_owned()
+        } else {
+            "(The quick brown fox jumps over the lazy dog)".to_owned()
+        };
+        let mut content = String::from("BT /F0 18 Tf 0 g 24 TL 20 480 Td\n");
+        for _ in 0..18 {
+            writeln!(content, "{text} Tj T*").expect("writing to a String cannot fail");
+        }
+        content.push_str("ET\n");
+
+        pdf.object(
+            id,
+            &format!(
+                "<< /Type /Page /Parent {PAGES_ID} 0 R /MediaBox [0 0 500 500] \
+                 /Resources << /Font << /F0 {} 0 R >> >> /Contents {} 0 R >>",
+                FIRST_FONT + index,
+                id + 1
+            ),
+        )?;
+        pdf.stream(
+            id + 1,
+            "/Filter /FlateDecode",
+            &deflate(content.as_bytes())?,
+        )?;
+    }
+    pdf.finish()?;
+    Ok(FONTS.len() as u32)
 }
 
 /// A long scanned-looking book: images shared between pages to keep the file small, a

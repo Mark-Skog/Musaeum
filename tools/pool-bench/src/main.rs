@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! pool-bench --pdf PATH [--delivery pull|ring] [--workers N] [--seconds S]
-//!            [--lod L] [--pages-per-second P] [--pages-ahead A]
+//!            [--lod L] [--pages-per-second P] [--pages-ahead A] [--no-sandbox]
 //! ```
 
 use std::error::Error;
@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use std::{env, ptr, thread};
 
 use musaeum_core::{DeliveryMode, PoolConfig, RenderPool, Summary, encode_demand};
+use musaeum_sandbox::Policy;
 use musaeum_shm::ring::ring_len;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::tile::tile_grid;
@@ -36,6 +37,7 @@ struct Options {
     lod: i8,
     pages_per_second: f32,
     pages_ahead: u32,
+    policy: Policy,
 }
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
@@ -47,6 +49,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         lod: 1,
         pages_per_second: 4.0,
         pages_ahead: 3,
+        policy: Policy::Lockdown,
     };
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -59,6 +62,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             "--lod" => options.lod = value()?.parse()?,
             "--pages-per-second" => options.pages_per_second = value()?.parse()?,
             "--pages-ahead" => options.pages_ahead = value()?.parse()?,
+            "--no-sandbox" => options.policy = Policy::Unrestricted,
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
@@ -120,6 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         document: options.pdf.clone(),
         worker_count: options.workers,
         process_memory_limit: Some(2 << 30),
+        policy: options.policy,
         startup_timeout: Duration::from_secs(30),
     };
     let slab = Arc::new(PixelSlab::init(ShmRegion::create(slab_len(SLOTS))?, SLOTS)?);

@@ -1,13 +1,14 @@
-//! Drives the real worker binary with the real PDFium over real shared memory.
+//! Drives the real worker binary with the real PDFium over real shared memory, inside the
+//! same sandbox the app runs it in.
 
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
 use std::os::windows::io::AsHandle;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::wire::{
@@ -31,20 +32,22 @@ fn mixed_pdf(test: &str) -> PathBuf {
 }
 
 struct Worker {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    child: SandboxedChild,
+    stdin: Option<File>,
+    stdout: BufReader<File>,
     slab: PixelSlab,
     _document: File,
 }
 
 impl Worker {
     fn spawn(pdf: &Path, send_geometry: bool, protocol: u32) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_musaeum-render-pdf"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = musaeum_sandbox::spawn(SpawnConfig {
+            exe: Path::new(env!("CARGO_BIN_EXE_musaeum-render-pdf")),
+            args: &[],
+            policy: Policy::Lockdown,
+            memory_limit: None,
+        })
+        .unwrap();
         let mut stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
 
@@ -122,13 +125,6 @@ impl Worker {
         unsafe { std::slice::from_raw_parts(start, TILE_BYTES) }
             .iter()
             .all(|&byte| byte == 0)
-    }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -423,6 +419,30 @@ fn page_cache_eviction_keeps_rendering_correctly() {
 }
 
 #[test]
+fn giving_memory_back_does_not_change_what_renders_or_how_it_answers() {
+    let pdf = mixed_pdf("trim");
+    let mut worker = Worker::started(&pdf);
+
+    worker.request(1, 0, tile(0, 0, 0, 0));
+    assert_eq!(worker.pixel(0, 256, 256), RED);
+
+    // Nothing is sent back for this, so the next answer has to be for the next job.
+    worker.send(HostMessage::Trim);
+    let report = worker.request(2, 1, tile(1, 0, 0, 0));
+    assert!(
+        matches!(report, WorkerMessage::TileDone { job_seq: 2, .. }),
+        "{report:?}"
+    );
+    assert_eq!(worker.pixel(1, 100, 100), GREEN);
+
+    // And again on a page it had cached before the trim.
+    worker.send(HostMessage::Trim);
+    worker.send(HostMessage::Trim);
+    worker.request(3, 2, tile(0, 0, 0, 0));
+    assert_eq!(worker.pixel(2, 256, 256), RED);
+}
+
+#[test]
 fn a_corrupt_pdf_is_a_reported_failure_not_a_crash() {
     let path = temp_dir("corrupt").join("corrupt.pdf");
     fs::write(&path, b"this is not a pdf at all").unwrap();
@@ -469,11 +489,11 @@ fn exits_cleanly_when_asked_and_when_the_host_disappears() {
 
     let mut worker = Worker::started(&pdf);
     worker.send(HostMessage::Shutdown);
-    assert!(worker.child.wait().unwrap().success());
+    assert_eq!(worker.child.wait().unwrap(), 0);
 
     let mut worker = Worker::started(&pdf);
     drop(worker.stdin.take());
-    assert!(worker.child.wait().unwrap().success());
+    assert_eq!(worker.child.wait().unwrap(), 0);
 }
 
 #[test]

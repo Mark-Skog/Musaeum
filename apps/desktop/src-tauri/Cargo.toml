@@ -12,6 +12,7 @@ tauri-build.workspace = true
 
 [dependencies]
 musaeum-core.workspace = true
+musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,6 +22,13 @@ tauri.workspace = true
 # Must stay on the versions that wry uses, or the COM types will not line up.
 webview2-com = "0.39"
 windows = { version = "0.62", features = ["Win32_Foundation"] }
+windows-sys = { workspace = true, features = [
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

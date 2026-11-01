@@ -118,7 +118,7 @@ describe('scenarios', () => {
   it('are shorter in the quick variant', () => {
     const total = (name: 'full' | 'quick'): number =>
       buildScenario(name).reduce((sum, segment) => sum + segment.durationMs, 0);
-    expect(total('quick')).toBeLessThan(total('full') * 0.6);
+    expect(total('quick')).toBeLessThan(total('full') * 0.65);
   });
 });
 

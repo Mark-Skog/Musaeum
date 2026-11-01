@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/musaeum-shm",
     "crates/musaeum-core",
+    "crates/musaeum-sandbox",
     "crates/musaeum-render-pdf",
     "apps/desktop/src-tauri",
     "tools/gen-fixtures",
@@ -18,6 +19,7 @@ publish = false
 
 [workspace.dependencies]
 musaeum-core = { path = "crates/musaeum-core" }
+musaeum-sandbox = { path = "crates/musaeum-sandbox" }
 musaeum-shm = { path = "crates/musaeum-shm" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 

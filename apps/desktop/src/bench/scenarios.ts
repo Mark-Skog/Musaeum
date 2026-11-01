@@ -130,6 +130,10 @@ export function buildScenario(name: ScenarioName): Segment[] {
     hold('settle-3', ms(1000)),
     teleports('teleports', name === 'quick' ? 8 : 20, 400, 0x5eed),
     hold('settle-4', 1000),
+    // Long enough for the workers to give their memory back, which this makes them pay for.
+    hold('stopped-to-read', 3000),
+    flicks('resume-after-idle', 2, 6),
+    hold('settle-5', 500),
   ];
 }
 

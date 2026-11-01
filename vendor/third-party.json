@@ -1,0 +1,117 @@
+{
+  "comment": "What is in the app without a package manager to report it. tools/check-licenses.mjs checks each entry against the same list of licenses as everything else. A build that ships these has to carry the notices in the files named here. `fetched` means the file comes from tools/fetch-pdfium.ps1 and is not in the repository.",
+  "components": [
+    {
+      "name": "foliate-js",
+      "license": "MIT",
+      "file": "vendor/foliate-js/LICENSE"
+    },
+    {
+      "name": "zip.js",
+      "license": "BSD-3-Clause",
+      "file": "vendor/foliate-js/vendor/zip.js.LICENSE"
+    },
+    {
+      "name": "pdfium-binaries build scripts",
+      "license": "MIT",
+      "file": "vendor/pdfium/chromium-8125/LICENSE",
+      "fetched": true
+    },
+    {
+      "name": "PDFium",
+      "license": "BSD-3-Clause AND Apache-2.0",
+      "file": "vendor/pdfium/chromium-8125/licenses/pdfium.txt",
+      "fetched": true
+    },
+    {
+      "name": "Abseil (in PDFium)",
+      "license": "Apache-2.0",
+      "file": "vendor/pdfium/chromium-8125/licenses/abseil.txt",
+      "fetched": true
+    },
+    {
+      "name": "Anti-Grain Geometry 2.3 (in PDFium)",
+      "license": "AGG-2.3",
+      "file": "vendor/pdfium/chromium-8125/licenses/agg23.txt",
+      "fetched": true
+    },
+    {
+      "name": "Dragonbox (in PDFium)",
+      "license": "Apache-2.0 WITH LLVM-exception OR BSL-1.0",
+      "file": "vendor/pdfium/chromium-8125/licenses/dragonbox-Boost.txt",
+      "fetched": true
+    },
+    {
+      "name": "fast_float (in PDFium)",
+      "license": "MIT",
+      "file": "vendor/pdfium/chromium-8125/licenses/fast_float.txt",
+      "fetched": true
+    },
+    {
+      "name": "FreeType (in PDFium)",
+      "license": "FTL",
+      "file": "vendor/pdfium/chromium-8125/licenses/freetype.txt",
+      "fetched": true
+    },
+    {
+      "name": "HarfBuzz (in PDFium)",
+      "license": "MIT",
+      "file": "vendor/pdfium/chromium-8125/licenses/harfbuzz.txt",
+      "fetched": true
+    },
+    {
+      "name": "Highway (in PDFium)",
+      "license": "Apache-2.0",
+      "file": "vendor/pdfium/chromium-8125/licenses/highway.txt",
+      "fetched": true
+    },
+    {
+      "name": "ICU (in PDFium)",
+      "license": "Unicode-3.0 AND ICU",
+      "file": "vendor/pdfium/chromium-8125/licenses/icu.txt",
+      "fetched": true
+    },
+    {
+      "name": "Little CMS (in PDFium)",
+      "license": "MIT",
+      "file": "vendor/pdfium/chromium-8125/licenses/lcms.txt",
+      "fetched": true
+    },
+    {
+      "name": "libjpeg-turbo (in PDFium)",
+      "license": "IJG AND BSD-3-Clause",
+      "file": "vendor/pdfium/chromium-8125/licenses/libjpeg_turbo.md",
+      "fetched": true
+    },
+    {
+      "name": "OpenJPEG (in PDFium)",
+      "license": "BSD-2-Clause",
+      "file": "vendor/pdfium/chromium-8125/licenses/libopenjpeg.txt",
+      "fetched": true
+    },
+    {
+      "name": "libpng (in PDFium)",
+      "license": "libpng-2.0",
+      "file": "vendor/pdfium/chromium-8125/licenses/libpng.txt",
+      "fetched": true
+    },
+    {
+      "name": "LLVM libc (in PDFium)",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "file": "vendor/pdfium/chromium-8125/licenses/llvm-libc.txt",
+      "fetched": true
+    },
+    {
+      "name": "simdutf (in PDFium)",
+      "license": "MIT",
+      "file": "vendor/pdfium/chromium-8125/licenses/simdutf.txt",
+      "fetched": true
+    },
+    {
+      "name": "zlib (in PDFium)",
+      "license": "Zlib",
+      "file": "vendor/pdfium/chromium-8125/licenses/zlib.txt",
+      "fetched": true
+    }
+  ]
+}
