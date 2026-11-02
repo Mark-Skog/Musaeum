@@ -5,8 +5,13 @@ members = [
     "crates/musaeum-core",
     "crates/musaeum-sandbox",
     "crates/musaeum-render-pdf",
+    "crates/musaeum-fs",
+    "crates/musaeum-ingest",
+    "crates/musaeum-library",
+    "apps/cli",
     "apps/desktop/src-tauri",
     "tools/gen-fixtures",
+    "tools/library-bench",
     "tools/pool-bench",
 ]
 
@@ -19,19 +24,27 @@ publish = false
 
 [workspace.dependencies]
 musaeum-core = { path = "crates/musaeum-core" }
+musaeum-fs = { path = "crates/musaeum-fs" }
+musaeum-ingest = { path = "crates/musaeum-ingest" }
+musaeum-library = { path = "crates/musaeum-library" }
 musaeum-sandbox = { path = "crates/musaeum-sandbox" }
 musaeum-shm = { path = "crates/musaeum-shm" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 
+blake3 = "1"
 flate2 = "1"
 memmap2 = "0.9"
 # Only the raw FPDF_* bindings are used, so the image and mutex features stay off.
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_7881"] }
+quick-xml = "0.42"
+# SQLite is compiled in, so the build decides its version and that FTS5 is there.
+rusqlite = { version = "0.41", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
 thiserror = "2"
+trash = "5"
 windows-sys = "0.61"
 
 [workspace.lints.rust]

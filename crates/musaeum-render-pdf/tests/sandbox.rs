@@ -34,7 +34,7 @@ const SLOTS: u32 = 4;
 const MEMORY_LIMIT: usize = 1 << 30;
 
 fn temp_dir(test: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("musaeum-sandbox-{}-{test}", std::process::id()));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("sandbox-{test}"));
     fs::create_dir_all(&dir).unwrap();
     dir
 }

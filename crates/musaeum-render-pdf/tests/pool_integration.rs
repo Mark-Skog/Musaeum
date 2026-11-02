@@ -21,7 +21,7 @@ use musaeum_shm::{
 const WAIT: Duration = Duration::from_secs(30);
 
 fn temp_dir(test: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("musaeum-pool-{}-{test}", std::process::id()));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("pool-{test}"));
     fs::create_dir_all(&dir).unwrap();
     dir
 }

@@ -13,26 +13,9 @@ use memmap2::Mmap;
 use musaeum_shm::slab::SlabError;
 use musaeum_shm::wire::{FatalCode, InitParams};
 use musaeum_shm::{PixelSlab, ShmRegion};
-use windows_sys::Win32::System::Diagnostics::Debug::{
-    SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode,
-};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 
 use crate::engine::Pdfium;
-
-/// A worker that dies must simply die: no crash dialog, no Windows Error Reporting prompt
-/// waiting on a user who cannot see this process. The host restarts it.
-pub fn die_quietly() {
-    // SAFETY: `SetErrorMode` has no preconditions.
-    unsafe {
-        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
-    };
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        default_hook(info);
-        std::process::abort();
-    }));
-}
 
 /// Hands this process's memory back to the system while it has nothing to do. Whatever is needed
 /// again comes back on demand, a page fault at a time.

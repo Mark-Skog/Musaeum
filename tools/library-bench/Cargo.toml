@@ -1,0 +1,24 @@
+[package]
+name = "library-bench"
+description = "Measures the library at scale: a whole pipeline over real files, and search keystroke by keystroke."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gen-fixtures.workspace = true
+musaeum-library.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

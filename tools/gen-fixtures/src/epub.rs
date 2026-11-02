@@ -13,7 +13,7 @@ use flate2::{Compression, Crc};
 use crate::XorShift;
 
 /// The little ZIP that an EPUB is. No extensions, and fixed timestamps.
-struct ZipWriter<W: Write> {
+pub(crate) struct ZipWriter<W: Write> {
     out: W,
     position: u32,
     central: Vec<u8>,
@@ -21,7 +21,7 @@ struct ZipWriter<W: Write> {
 }
 
 impl<W: Write> ZipWriter<W> {
-    fn new(out: W) -> Self {
+    pub(crate) fn new(out: W) -> Self {
         Self {
             out,
             position: 0,
@@ -30,7 +30,7 @@ impl<W: Write> ZipWriter<W> {
         }
     }
 
-    fn add(&mut self, name: &str, data: &[u8], compress: bool) -> io::Result<()> {
+    pub(crate) fn add(&mut self, name: &str, data: &[u8], compress: bool) -> io::Result<()> {
         const UTF8_NAMES: u16 = 1 << 11;
         const JANUARY_1980: u16 = 0x21;
 
@@ -75,7 +75,7 @@ impl<W: Write> ZipWriter<W> {
         Ok(())
     }
 
-    fn finish(mut self) -> io::Result<()> {
+    pub(crate) fn finish(&mut self) -> io::Result<()> {
         self.out.write_all(&self.central)?;
         self.out.write_all(b"PK\x05\x06")?;
         self.out.write_all(&[0; 4])?;
@@ -318,7 +318,7 @@ pub fn write_large_epub(path: &Path) -> io::Result<()> {
     )
 }
 
-fn xml_escape(text: &str) -> String {
+pub(crate) fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('"', "&quot;")

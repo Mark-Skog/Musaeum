@@ -4,6 +4,7 @@
 //! documents exactly what each one is meant to stress. Everything is deterministic, so
 //! the same arguments always produce the same bytes.
 
+pub mod books;
 pub mod epub;
 
 use std::fmt::Write as _;

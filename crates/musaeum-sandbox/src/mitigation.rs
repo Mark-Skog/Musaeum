@@ -6,16 +6,17 @@ use std::os::windows::io::{AsRawHandle, BorrowedHandle};
 use std::ptr;
 
 use windows_sys::Win32::System::SystemServices::{
-    PROCESS_MITIGATION_ASLR_POLICY, PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY,
-    PROCESS_MITIGATION_DYNAMIC_CODE_POLICY, PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY,
-    PROCESS_MITIGATION_FONT_DISABLE_POLICY, PROCESS_MITIGATION_IMAGE_LOAD_POLICY,
-    PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY, PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY,
+    PROCESS_MITIGATION_ASLR_POLICY, PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY,
+    PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY, PROCESS_MITIGATION_DYNAMIC_CODE_POLICY,
+    PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY, PROCESS_MITIGATION_FONT_DISABLE_POLICY,
+    PROCESS_MITIGATION_IMAGE_LOAD_POLICY, PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY,
+    PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY,
 };
 use windows_sys::Win32::System::Threading::{
     GetProcessMitigationPolicy, PROCESS_MITIGATION_POLICY, ProcessASLRPolicy,
     ProcessControlFlowGuardPolicy, ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy,
-    ProcessFontDisablePolicy, ProcessImageLoadPolicy, ProcessStrictHandleCheckPolicy,
-    ProcessSystemCallDisablePolicy,
+    ProcessFontDisablePolicy, ProcessImageLoadPolicy, ProcessSignaturePolicy,
+    ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy,
 };
 
 // `winbase.h` defines these as macros, which `windows-sys` does not carry. Each policy
@@ -25,9 +26,11 @@ const HEAP_TERMINATE: u64 = 1 << 12;
 const BOTTOM_UP_ASLR: u64 = 1 << 16;
 const HIGH_ENTROPY_ASLR: u64 = 1 << 20;
 const STRICT_HANDLE_CHECKS: u64 = 1 << 24;
+const WIN32K_DISABLE: u64 = 1 << 28;
 const EXTENSION_POINT_DISABLE: u64 = 1 << 32;
 const PROHIBIT_DYNAMIC_CODE: u64 = 1 << 36;
 const CONTROL_FLOW_GUARD: u64 = 1 << 40;
+const MICROSOFT_SIGNED_ONLY: u64 = 1 << 44;
 const FONT_DISABLE: u64 = 1 << 48;
 const IMAGE_LOAD_NO_REMOTE: u64 = 1 << 52;
 const IMAGE_LOAD_NO_LOW_LABEL: u64 = 1 << 56;
@@ -61,6 +64,13 @@ pub(crate) const LOCKDOWN_POLICY: [u64; 2] = [
     FSCTL_SYSTEM_CALL_DISABLE,
 ];
 
+/// The same, plus what `pdfium.dll` rules out above, for a process that only parses bytes and so
+/// has no use for windows or for a DLL Microsoft did not sign.
+pub(crate) const PARSER_POLICY: [u64; 2] = [
+    LOCKDOWN_POLICY[0] | WIN32K_DISABLE | MICROSOFT_SIGNED_ONLY,
+    LOCKDOWN_POLICY[1],
+];
+
 /// Which mitigations a running process really has, read back from the kernel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MitigationReport {
@@ -80,6 +90,8 @@ pub struct MitigationReport {
     pub control_flow_guard: bool,
     /// It cannot call into the kernel's window and graphics subsystem.
     pub win32k_disabled: bool,
+    /// It cannot load a DLL that Microsoft did not sign.
+    pub microsoft_signed_only: bool,
 }
 
 impl MitigationReport {
@@ -99,6 +111,8 @@ impl MitigationReport {
             policy(process, ProcessControlFlowGuardPolicy)?;
         let win32k: PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY =
             policy(process, ProcessSystemCallDisablePolicy)?;
+        let signature: PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY =
+            policy(process, ProcessSignaturePolicy)?;
 
         // SAFETY: each of these is a union of plain integers, and `Flags` covers all of it.
         // The bit positions are the ones `winnt.h` documents for each policy's bitfield.
@@ -112,6 +126,7 @@ impl MitigationReport {
                 images.Anonymous.Flags,
                 guard.Anonymous.Flags,
                 win32k.Anonymous.Flags,
+                signature.Anonymous.Flags,
             ]
         };
         Ok(Self {
@@ -126,6 +141,7 @@ impl MitigationReport {
             image_load_restricted: flags[5] & 0b11 == 0b11,
             control_flow_guard: flags[6] & 1 != 0,
             win32k_disabled: flags[7] & 1 != 0,
+            microsoft_signed_only: flags[8] & 1 != 0,
         })
     }
 }

@@ -23,7 +23,7 @@ use musaeum_shm::wire::{
 };
 
 fn main() -> ExitCode {
-    startup::die_quietly();
+    musaeum_sandbox::target::die_quietly();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

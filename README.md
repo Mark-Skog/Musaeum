@@ -2,13 +2,14 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 0 do Plano Diretor**: validar a stack com medições antes de
-construir o produto. O que existe hoje são os dois pipelines de leitura, o de layout fixo
-(PDF) e o fluido (EPUB), o sandbox do renderizador e os harnesses que medem tudo isso. Ainda
-não há biblioteca nem interface de produto.
+O projeto está na **Fase 1 do Plano Diretor**: o núcleo sem interface. O que existe hoje são os dois
+pipelines de leitura da Fase 0, o de layout fixo (PDF) e o fluido (EPUB), e a biblioteca: SQLite,
+identidade de arquivos, indexador, diário de operações em disco e uma CLI. Ainda não há interface de
+produto.
 
-As decisões e os números da fase estão em
-[`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md).
+As decisões e os números de cada fase estão em
+[`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md) e
+[`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -22,6 +23,11 @@ crates/
                        sem dependência de Tauri
   musaeum-sandbox/     Token restrito, mitigações, job object e estação de janelas isolada
   musaeum-render-pdf/  Processo isolado que rasteriza tiles com PDFium
+  musaeum-fs/          File IDs de 128 bits, listagem sem abrir arquivos, leitura que recusa
+                       placeholders de nuvem, watcher que avisa quando perde eventos
+  musaeum-ingest/      Processo isolado que lê identificadores e metadados dos livros
+  musaeum-library/     SQLite, reconhecimento de arquivos, indexador, diário de operações
+apps/cli/              O binário `musaeum`: a biblioteca pela linha de comando
 apps/desktop/
   src-tauri/           Ponte Tauri: protocolos tile:// e book://, buffers do WebView2, harness
   src/                 Thread principal e compositor WebGL2 em Web Worker
@@ -33,6 +39,7 @@ tools/
   fetch-pdfium.ps1     Baixa a build fixada do PDFium e confere o SHA-256
   gen-fixtures/        Gera os PDFs e os EPUBs de teste, incluindo um EPUB hostil
   pool-bench/          Mede o pool de render sem WebView
+  library-bench/       Mede a biblioteca com 100 mil arquivos reais, tecla por tecla
   run-bench.mjs        Roda a matriz dos Experimentos A e B
   run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
   measure-memory.mjs   Mede a RAM do app inteiro
@@ -74,6 +81,40 @@ node tools\run-bench.mjs --scenario quick --uncapped --stress 0
 node tools\run-epub-bench.mjs
 node tools\measure-memory.mjs
 ```
+
+## A biblioteca pela linha de comando
+
+```powershell
+cargo build --release -p musaeum-cli -p musaeum-library
+
+.\target\release\musaeum.exe root add D:\Livros
+.\target\release\musaeum.exe reconcile
+.\target\release\musaeum.exe status
+.\target\release\musaeum.exe search dostoievski
+.\target\release\musaeum.exe search "dom casmurro" --keystrokes
+.\target\release\musaeum.exe inspect D:\Livros\um-livro.pdf
+.\target\release\musaeum.exe revisions D:\Livros\um-livro.pdf
+.\target\release\musaeum.exe suggestions
+.\target\release\musaeum.exe move D:\Livros\a.pdf D:\Livros\b.pdf
+.\target\release\musaeum.exe undo
+.\target\release\musaeum.exe watch
+```
+
+`musaeum --help` lista tudo, e `--json` antes do comando dá a saída para programas. Os dados ficam em
+`%LOCALAPPDATA%\Musaeum`, ou onde `--library DIR` disser. O que só consulta funciona enquanto
+`musaeum watch` estiver rodando.
+
+Três regras valem para tudo isso:
+
+1. **O disco é a verdade.** Eventos do sistema só dizem onde olhar primeiro, e um evento perdido custa
+   atraso, não dados. A mesma reconciliação cobre a primeira varredura, o tempo real e o que mudou com
+   o programa fechado.
+2. **Nada é apagado.** Arquivo que some fica ausente, com tudo que está ligado a ele. Triggers no banco
+   recusam apagar uma revisão confirmada ou uma anotação, e o disco só muda por ação explícita, com
+   diário e desfazer.
+3. **Parser só em sandbox.** Ler `/ID[0]` ou `dc:identifier` é interpretar bytes hostis, então quem faz
+   isso é `musaeum-ingest`, sem rede e sem acesso a arquivos por caminho, recebendo cada livro como um
+   handle. O que ele responde é tratado como vindo de um atacante.
 
 ## Os caminhos de entrega de pixels
 
@@ -140,6 +181,19 @@ node tools\check-licenses.mjs
 
 Os testes de integração em `crates/musaeum-render-pdf/tests/` usam processos reais, memória
 compartilhada real e o PDFium real, então exigem o `fetch-pdfium.ps1` antes.
+
+A bateria da biblioteca em `crates/musaeum-library/tests/` trabalha com arquivos reais, File IDs reais,
+o worker real no sandbox real e eventos reais do sistema. Alguns testes tocam em coisas do sistema, e
+sempre desfazem o que fizeram: `cloud.rs` registra uma sync root de verdade com a Cloud Filter API,
+`real_volume.rs` monta uma imagem de disco sem letra de unidade, e `journal.rs` usa a Lixeira de
+verdade.
+
+O teste de carga gera 100 mil arquivos reais em `%TEMP%` (cerca de 900 MiB, removidos ao final) e escreve
+em `bench-results/`:
+
+```powershell
+.\target\release\library-bench.exe
+```
 
 Dois testes rodam só no app compilado e abrem janelas. A escolha do caminho simula falhas com
 `--delivery-fault`, e cada caso exige que os tiles cheguem à tela pelo caminho esperado. O teste

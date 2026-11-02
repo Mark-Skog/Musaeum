@@ -30,7 +30,7 @@ use crate::command_line::{command_line, minimal_environment, wide};
 use crate::desktop::sandbox_desktop_path;
 use crate::inspect::{SandboxReport, read_report, thread_is_impersonating};
 use crate::job::JobObject;
-use crate::mitigation::{CHILD_PROCESS_RESTRICTED, LOCKDOWN_POLICY};
+use crate::mitigation::{CHILD_PROCESS_RESTRICTED, LOCKDOWN_POLICY, PARSER_POLICY};
 use crate::token;
 
 /// How much a process is allowed to do.
@@ -38,6 +38,9 @@ use crate::token;
 pub enum Policy {
     /// The full sandbox. This is what anything reading untrusted bytes must run under.
     Lockdown,
+    /// The full sandbox without win32k or DLLs Microsoft did not sign, for a process that only
+    /// parses. `pdfium.dll` needs both, so a renderer cannot use this.
+    LockdownParser,
     /// An ordinary child process of the host, in a job so it cannot outlive it. Exists for
     /// comparing against the sandbox, in tests and benchmarks.
     Unrestricted,
@@ -288,7 +291,11 @@ fn system_directory() -> io::Result<Vec<u16>> {
 /// Starts `config.exe`. A locked-down process gets three inherited pipes and nothing else:
 /// any other handle it ever holds is one the host chose to duplicate into it.
 pub fn spawn(config: SpawnConfig<'_>) -> io::Result<SandboxedChild> {
-    let lock_down = config.policy == Policy::Lockdown;
+    let lock_down = config.policy != Policy::Unrestricted;
+    let mitigations = match config.policy {
+        Policy::LockdownParser => PARSER_POLICY,
+        Policy::Lockdown | Policy::Unrestricted => LOCKDOWN_POLICY,
+    };
     let mut command = command_line(config.exe, config.args)?;
     let exe = wide(config.exe.as_os_str());
     let job = JobObject::create(config.memory_limit, lock_down)?;
@@ -322,8 +329,8 @@ pub fn spawn(config: SpawnConfig<'_>) -> io::Result<SandboxedChild> {
         if lock_down {
             attributes.set(
                 PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
-                LOCKDOWN_POLICY.as_ptr(),
-                mem::size_of_val(&LOCKDOWN_POLICY),
+                mitigations.as_ptr(),
+                mem::size_of_val(&mitigations),
             )?;
             attributes.set(
                 PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY as usize,

@@ -20,7 +20,7 @@ use musaeum_shm::{PageGeometry, PixelSlab, ShmRegion, TILE_BYTES, TILE_SIZE, Til
 const SLOTS: u32 = 4;
 
 fn temp_dir(test: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("musaeum-worker-{}-{test}", std::process::id()));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("worker-{test}"));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
