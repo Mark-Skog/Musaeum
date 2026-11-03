@@ -401,7 +401,7 @@ mod tests {
     fn tile(page: u32) -> TileKey {
         TileKey {
             page,
-            lod: 0,
+            scale: musaeum_shm::tile::SCALE_ONE,
             x: 0,
             y: 0,
         }

@@ -17,13 +17,18 @@ export interface SegmentContext {
 export interface Segment {
   name: string;
   durationMs: number;
+  /**
+   * A zoom to set when the segment starts, as a factor over what fits, animated the way a notch of
+   * the wheel with Ctrl held is. The scroll position is then the zoom's to decide.
+   */
+  zoom?: number;
   /** Scroll position at `elapsedMs` into the segment, given where the segment started. */
   position(elapsedMs: number, startPt: number, context: SegmentContext): number;
   /** Whether the scroll is standing still, so the screen ought to be getting sharp. */
   isResting(elapsedMs: number): boolean;
 }
 
-export type ScenarioName = 'full' | 'quick' | 'smoke';
+export type ScenarioName = 'full' | 'quick' | 'smoke' | 'zoom';
 
 function clamp(value: number, context: SegmentContext): number {
   return Math.min(context.maxScrollPt, Math.max(context.minScrollPt, value));
@@ -86,6 +91,17 @@ function reversals(name: string, durationMs: number, peakSpeed: number, periodMs
   };
 }
 
+/** Zooming to `factor`, then reading there: how long until the new size is sharp. */
+function zoomTo(name: string, factor: number, durationMs: number): Segment {
+  return {
+    name,
+    durationMs,
+    zoom: factor,
+    position: (_elapsed, start, context) => clamp(start, context),
+    isResting: () => true,
+  };
+}
+
 /** Dragging the scrollbar: jumps to places never seen before, pausing at each one. */
 function teleports(name: string, count: number, periodMs: number, seed: number): Segment {
   const targets = new Float64Array(count);
@@ -110,6 +126,20 @@ function teleports(name: string, count: number, periodMs: number, seed: number):
 }
 
 export function buildScenario(name: ScenarioName): Segment[] {
+  if (name === 'zoom') {
+    // Factors no power of two lands on, in and out, each held long enough to come sharp.
+    return [
+      hold('open', 1500),
+      zoomTo('zoom-137', 1.37, 1500),
+      zoomTo('zoom-083', 0.83, 1500),
+      zoomTo('zoom-241', 2.41, 1500),
+      zoomTo('zoom-115', 1.15, 1500),
+      zoomTo('zoom-063', 0.63, 1500),
+      zoomTo('zoom-100', 1, 1500),
+      flicks('scroll-after-zoom', 2, 6),
+      hold('settle', 800),
+    ];
+  }
   if (name === 'smoke') {
     // Enough to show that tiles flow, for tests that check a configuration rather than speed.
     return [

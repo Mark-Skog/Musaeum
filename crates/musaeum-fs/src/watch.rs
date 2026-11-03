@@ -14,6 +14,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::slice;
+use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
 use windows_sys::Win32::Foundation::{
@@ -68,6 +69,10 @@ impl Drop for DirectoryWatch {
 /// Starts watching `path`, calling `sink` from a thread of its own for everything that happens.
 /// The buffer is how much can happen between two looks, and `sink` is what stands in between, so
 /// it should be quick.
+///
+/// It returns once the watch is armed. The system only records changes from the first look on,
+/// so returning any sooner would lose whatever changed in between, and "watch, then scan" would
+/// have a hole in it.
 pub fn watch_directory(
     path: &Path,
     buffer_bytes: usize,
@@ -78,6 +83,7 @@ pub fn watch_directory(
     let wake = new_event()?;
     let stop_for_thread = stop.try_clone()?;
     let root = path.to_owned();
+    let (armed, ready) = mpsc::channel();
     let thread = thread::Builder::new()
         .name("musaeum-watch".to_owned())
         .spawn(move || {
@@ -88,9 +94,12 @@ pub fn watch_directory(
                 root,
                 sink,
                 buffer: vec![0; buffer_bytes.div_ceil(4)],
+                armed: Some(armed),
             };
             watcher.run();
         })?;
+    // Whether the first look worked or not: if not, the sink hears why, as it always has.
+    let _ = ready.recv();
     Ok(DirectoryWatch {
         stop,
         thread: Some(thread),
@@ -138,6 +147,8 @@ struct Watcher<F> {
     sink: F,
     // Words, because the records have 4-byte alignment.
     buffer: Vec<u32>,
+    /// Told once the first look has been asked for, which is when the system starts recording.
+    armed: Option<Sender<()>>,
 }
 
 enum Waited {
@@ -188,6 +199,9 @@ impl<F: FnMut(WatchEvent)> Watcher<F> {
                 None,
             )
         };
+        if let Some(armed) = self.armed.take() {
+            let _ = armed.send(());
+        }
         if started == 0 {
             let error = io::Error::last_os_error();
             return if error.raw_os_error() == Some(ERROR_NOTIFY_ENUM_DIR as i32) {

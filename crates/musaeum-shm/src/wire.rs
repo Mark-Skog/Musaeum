@@ -10,8 +10,9 @@ use thiserror::Error;
 
 use crate::tile::{PageGeometry, TileKey};
 
-/// Bumped on any change to this file or to the shared-memory layouts.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Bumped on any change to this file or to the shared-memory layouts. Version 2 renders tiles at
+/// any scale instead of powers of two, and adds the catalog's hints.
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Length of every message.
 pub const MESSAGE_LEN: usize = 48;
 
@@ -54,6 +55,9 @@ pub enum HostMessage {
     Shutdown,
     /// Nothing has been asked of the worker for a while: it should give memory back.
     Trim,
+    /// Report the document's geometry after all, as `send_geometry` would have at startup. The
+    /// host asks when the geometry it already had turns out not to fit the document.
+    SendGeometry,
 }
 
 /// Why a worker cannot start.
@@ -151,6 +155,15 @@ pub enum WorkerMessage {
         /// The page's size.
         size: PageGeometry,
     },
+    /// What the document's catalog asks of a reader. Sent between the last `Geometry` and
+    /// `GeometryEnd`, by the worker that sends the geometry.
+    Hints {
+        /// `/PageLayout`: 0 if absent, then 1 to 6 for `SinglePage`, `OneColumn`,
+        /// `TwoColumnLeft`, `TwoColumnRight`, `TwoPageLeft` and `TwoPageRight`.
+        page_layout: u8,
+        /// `/ViewerPreferences /Direction`: 0 if absent, 1 for `L2R`, 2 for `R2L`.
+        direction: u8,
+    },
     /// All page sizes have been sent.
     GeometryEnd {
         /// Pages sent.
@@ -216,6 +229,7 @@ const TAG_INIT: u32 = 1;
 const TAG_RENDER: u32 = 2;
 const TAG_SHUTDOWN: u32 = 3;
 const TAG_TRIM: u32 = 4;
+const TAG_SEND_GEOMETRY: u32 = 5;
 const TAG_READY: u32 = 10;
 const TAG_GEOMETRY: u32 = 11;
 const TAG_GEOMETRY_END: u32 = 12;
@@ -223,6 +237,12 @@ const TAG_TILE_DONE: u32 = 13;
 const TAG_TILE_CANCELLED: u32 = 14;
 const TAG_TILE_FAILED: u32 = 15;
 const TAG_FATAL: u32 = 16;
+const TAG_HINTS: u32 = 17;
+
+/// Most `/PageLayout` code a worker may send.
+const MAX_PAGE_LAYOUT_CODE: u8 = 6;
+/// Most `/Direction` code a worker may send.
+const MAX_DIRECTION_CODE: u8 = 2;
 
 struct Encoder {
     frame: [u8; MESSAGE_LEN],
@@ -248,7 +268,7 @@ impl Encoder {
         self.put(value.to_le_bytes())
     }
 
-    fn i8(self, value: i8) -> Self {
+    fn u8(self, value: u8) -> Self {
         self.put(value.to_le_bytes())
     }
 
@@ -282,8 +302,8 @@ impl Decoder<'_> {
         u16::from_le_bytes(self.take())
     }
 
-    fn i8(&mut self) -> i8 {
-        i8::from_le_bytes(self.take())
+    fn u8(&mut self) -> u8 {
+        u8::from_le_bytes(self.take())
     }
 
     fn u32(&mut self) -> u32 {
@@ -320,11 +340,12 @@ impl HostMessage {
                     .u32(job.tile.page)
                     .u16(job.tile.x)
                     .u16(job.tile.y)
-                    .i8(job.tile.lod)
+                    .u32(job.tile.scale)
                     .frame
             }
             Self::Shutdown => Encoder::new(TAG_SHUTDOWN).frame,
             Self::Trim => Encoder::new(TAG_TRIM).frame,
+            Self::SendGeometry => Encoder::new(TAG_SEND_GEOMETRY).frame,
         }
     }
 
@@ -351,15 +372,16 @@ impl HostMessage {
                 let page = d.u32();
                 let x = d.u16();
                 let y = d.u16();
-                let lod = d.i8();
+                let scale = d.u32();
                 Ok(Self::Render(RenderJob {
                     job_seq,
                     slot,
-                    tile: TileKey { page, lod, x, y },
+                    tile: TileKey { page, scale, x, y },
                 }))
             }
             TAG_SHUTDOWN => Ok(Self::Shutdown),
             TAG_TRIM => Ok(Self::Trim),
+            TAG_SEND_GEOMETRY => Ok(Self::SendGeometry),
             tag => Err(WireError::Malformed { tag, value: tag }),
         }
     }
@@ -387,6 +409,10 @@ impl WorkerMessage {
                     .f32(size.height_pt)
                     .frame
             }
+            Self::Hints {
+                page_layout,
+                direction,
+            } => Encoder::new(TAG_HINTS).u8(page_layout).u8(direction).frame,
             Self::GeometryEnd {
                 page_count,
                 elapsed_us,
@@ -454,6 +480,26 @@ impl WorkerMessage {
                     height_pt: d.f32(),
                 },
             }),
+            TAG_HINTS => {
+                let page_layout = d.u8();
+                let direction = d.u8();
+                if page_layout > MAX_PAGE_LAYOUT_CODE {
+                    return Err(WireError::Malformed {
+                        tag,
+                        value: u32::from(page_layout),
+                    });
+                }
+                if direction > MAX_DIRECTION_CODE {
+                    return Err(WireError::Malformed {
+                        tag,
+                        value: u32::from(direction),
+                    });
+                }
+                Ok(Self::Hints {
+                    page_layout,
+                    direction,
+                })
+            }
             TAG_GEOMETRY_END => Ok(Self::GeometryEnd {
                 page_count: d.u32(),
                 elapsed_us: d.u64(),
@@ -524,7 +570,7 @@ mod tests {
     fn tile() -> TileKey {
         TileKey {
             page: 1_999,
-            lod: -3,
+            scale: 0x0001_5A3F,
             x: 7,
             y: 65_535,
         }
@@ -548,6 +594,7 @@ mod tests {
             }),
             HostMessage::Shutdown,
             HostMessage::Trim,
+            HostMessage::SendGeometry,
         ];
         for message in messages {
             assert_eq!(HostMessage::decode(&message.encode()).unwrap(), message);
@@ -568,6 +615,10 @@ mod tests {
                     width_pt: 841.89,
                     height_pt: 595.28,
                 },
+            },
+            WorkerMessage::Hints {
+                page_layout: 6,
+                direction: 2,
             },
             WorkerMessage::GeometryEnd {
                 page_count: 2_000,
@@ -621,6 +672,22 @@ mod tests {
             WorkerMessage::decode(&failed),
             Err(WireError::Malformed { value: 99, .. })
         ));
+
+        for (at, value) in [(4, 7), (5, 3)] {
+            let mut hints = WorkerMessage::Hints {
+                page_layout: 0,
+                direction: 0,
+            }
+            .encode();
+            hints[at] = value;
+            assert!(
+                matches!(
+                    WorkerMessage::decode(&hints),
+                    Err(WireError::Malformed { value: v, .. }) if v == u32::from(value)
+                ),
+                "a code with no meaning must not reach the host"
+            );
+        }
     }
 
     #[test]

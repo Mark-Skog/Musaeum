@@ -5,13 +5,14 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use musaeum_core::{
     DeliveryMode, DocumentOrientation, PoolConfig, PoolStats, RenderPool, geometry_bytes,
     summarize_orientation,
 };
+use musaeum_library::Library;
 use musaeum_sandbox::Policy;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::{PixelSlab, ShmRegion};
@@ -20,6 +21,7 @@ use tauri::{AppHandle, LogicalSize, Manager, State, WebviewWindow};
 
 use crate::memory::MemorySampler;
 use crate::options::{DeliveryFault, DeliveryPath, StartupOptions};
+use crate::reading::{self, SavedReading};
 use crate::webview2;
 
 /// Tile slots in the slab: 64 MiB.
@@ -42,6 +44,8 @@ pub struct Session {
     pub pool: RenderPool,
     /// The page-geometry table, ready to serve.
     pub geometry: Vec<u8>,
+    /// The library's document and revision, if the file is in the library.
+    pub document: Option<(i64, i64)>,
 }
 
 /// State shared by commands and the tile protocol.
@@ -53,6 +57,8 @@ pub struct AppState {
     /// 500 ms, probably from what reading another process's private working set costs it.
     memory: Option<MemorySampler>,
     started: Instant,
+    /// Opened the first time a document is, off the main thread.
+    library: OnceLock<Option<Library>>,
 }
 
 impl AppState {
@@ -68,7 +74,15 @@ impl AppState {
             options,
             current: RwLock::new(None),
             next_id: AtomicU32::new(1),
+            library: OnceLock::new(),
         }
+    }
+
+    /// The library, if there is one to remember things in.
+    fn library(&self) -> Option<&Library> {
+        self.library
+            .get_or_init(|| reading::open_library(self.options.library.as_deref()))
+            .as_ref()
     }
 
     /// The open session, if it has this id.
@@ -141,6 +155,11 @@ pub struct SessionInfo {
     sandboxed: bool,
     open_us: u64,
     geometry_us: u64,
+    page_layout: Option<&'static str>,
+    direction: Option<&'static str>,
+    geometry_cached: bool,
+    document_id: Option<i64>,
+    reading_state: Option<SavedReading>,
 }
 
 /// Returns the command-line options.
@@ -204,9 +223,14 @@ pub fn open_session(
     let worker_exe = std::env::current_exe()
         .map_err(|error| OpenSessionError::other(format!("locating the app: {error}")))?
         .with_file_name("musaeum-render-pdf.exe");
+    // A benchmark measures opening a document from scratch, so it does not use the library.
+    let known = match state.library() {
+        Some(library) if state.options.bench.is_none() => reading::look_up(library, &args.pdf),
+        _ => reading::Known::default(),
+    };
     let config = PoolConfig {
         worker_exe,
-        document: args.pdf,
+        document: args.pdf.clone(),
         worker_count: args.workers,
         process_memory_limit: Some(WORKER_MEMORY_LIMIT),
         policy: if state.options.no_sandbox {
@@ -215,6 +239,7 @@ pub fn open_session(
             Policy::Lockdown
         },
         startup_timeout: STARTUP_TIMEOUT,
+        known_geometry: known.geometry.as_ref().map(reading::known_geometry),
     };
 
     let (slab, delivery) = match args.delivery {
@@ -257,10 +282,26 @@ pub fn open_session(
         OpenSessionError::other(error.to_string())
     })?;
 
+    let hints = pool.hints();
+    let geometry_cached = !pool.measured_geometry();
+    if let (Some(library), Some(hash), false) = (
+        state.library(),
+        known.file.and_then(|file| file.blake3),
+        geometry_cached,
+    ) {
+        // Measured without drawing anything; next time this file opens with its layout known.
+        if let Err(error) =
+            library.store_page_geometry(&hash, &reading::measured(pool.pages(), hints))
+        {
+            eprintln!("could not keep the page sizes: {error}");
+        }
+    }
+
     let stats = pool.stats().unwrap_or_default();
     let session = Arc::new(Session {
         id: state.next_id.fetch_add(1, Ordering::Relaxed),
         geometry: geometry_bytes(pool.pages()),
+        document: known.file.map(|file| (file.document, file.revision)),
         pool,
     });
     let info = SessionInfo {
@@ -272,6 +313,11 @@ pub fn open_session(
         sandboxed: !state.options.no_sandbox,
         open_us: stats.open_us,
         geometry_us: stats.geometry_us,
+        page_layout: hints.page_layout.map(|layout| layout.as_str()),
+        direction: hints.direction.map(|direction| direction.as_str()),
+        geometry_cached,
+        document_id: known.file.map(|file| file.document),
+        reading_state: known.reading,
     };
     *state
         .current
@@ -283,6 +329,31 @@ pub fn open_session(
 fn stop_and_release(window: &WebviewWindow, state: &AppState) {
     state.stop_current_session();
     webview2::release_buffers(window);
+}
+
+/// Remembers where the reader is in the open document. The page can only save for the document it
+/// has open, on the revision it is reading.
+#[tauri::command(async)]
+pub fn save_reading_state(
+    state: State<'_, AppState>,
+    document: i64,
+    reading: SavedReading,
+) -> Result<(), String> {
+    let current = state
+        .current
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|session| session.document);
+    let Some((open, revision)) = current.filter(|(open, _)| *open == document) else {
+        return Err(format!("document {document} is not the one open"));
+    };
+    let library = state
+        .library()
+        .ok_or("there is no library to remember this in")?;
+    library
+        .save_reading_state(open, &reading.into_state(revision))
+        .map_err(|error| error.to_string())
 }
 
 /// Closes the current document, if any.

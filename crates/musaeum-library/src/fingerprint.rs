@@ -89,15 +89,29 @@ pub(crate) fn fast_fingerprint(
     Ok(*hasher.finalize().as_bytes())
 }
 
-/// The BLAKE3 of all of a file, or `None` if `stop` was set while this was reading. On success,
-/// also returns how many bytes that was.
+/// What reading all of a file gave.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct WholeFile {
+    /// Its BLAKE3.
+    pub hash: Hash,
+    /// How many bytes it has.
+    pub bytes: u64,
+    /// Its first bytes, up to [`HEAD_KEPT`], for whoever wants to know what kind of file it is.
+    pub head: Vec<u8>,
+}
+
+/// How much of the start of a file [`full_hash`] hands back.
+pub(crate) const HEAD_KEPT: usize = 1024;
+
+/// The BLAKE3 of all of a file, or `None` if `stop` was set while this was reading.
 pub(crate) fn full_hash(
     file: &File,
     stop: &AtomicBool,
     counters: &ReadCounters,
-) -> io::Result<Option<(Hash, u64)>> {
+) -> io::Result<Option<WholeFile>> {
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0; HASH_BUFFER];
+    let mut head = Vec::new();
     let mut offset = 0;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -105,10 +119,18 @@ pub(crate) fn full_hash(
         }
         let read = file.seek_read(&mut buffer, offset)?;
         if read == 0 {
-            return Ok(Some((*hasher.finalize().as_bytes(), offset)));
+            return Ok(Some(WholeFile {
+                hash: *hasher.finalize().as_bytes(),
+                bytes: offset,
+                head,
+            }));
         }
         counters.add_bytes(read);
         hasher.update(&buffer[..read]);
+        if head.len() < HEAD_KEPT {
+            let wanted = (HEAD_KEPT - head.len()).min(read);
+            head.extend_from_slice(&buffer[..wanted]);
+        }
         offset += read as u64;
     }
 }
@@ -198,8 +220,9 @@ mod tests {
         let counters = ReadCounters::default();
         let full_one = full_hash(&one.open(), &stop, &counters).unwrap().unwrap();
         let full_other = full_hash(&other.open(), &stop, &counters).unwrap().unwrap();
-        assert_ne!(full_one.0, full_other.0);
-        assert_eq!(full_one.1, 4_000_000);
+        assert_ne!(full_one.hash, full_other.hash);
+        assert_eq!(full_one.bytes, 4_000_000);
+        assert_eq!(full_one.head, vec![5; HEAD_KEPT]);
     }
 
     #[test]
@@ -208,9 +231,10 @@ mod tests {
         let file = TempFile::with("plain", contents);
         let stop = AtomicBool::new(false);
         let counters = ReadCounters::default();
-        let (hash, length) = full_hash(&file.open(), &stop, &counters).unwrap().unwrap();
-        assert_eq!(hash, *blake3::hash(contents).as_bytes());
-        assert_eq!(length, contents.len() as u64);
+        let whole = full_hash(&file.open(), &stop, &counters).unwrap().unwrap();
+        assert_eq!(whole.hash, *blake3::hash(contents).as_bytes());
+        assert_eq!(whole.bytes, contents.len() as u64);
+        assert_eq!(whole.head, contents, "a short file is all head");
     }
 
     #[test]

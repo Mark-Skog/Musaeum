@@ -30,10 +30,62 @@
         white-space: pre;
         pointer-events: none;
       }
+      #reading-bar {
+        position: fixed;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: rgb(0 0 0 / 70%);
+        color: #e8e8e8;
+        font: 13px/1.2 system-ui, sans-serif;
+      }
+      #reading-bar[hidden] {
+        display: none;
+      }
+      #reading-bar button,
+      #reading-bar select {
+        font: inherit;
+        color: inherit;
+        background: rgb(255 255 255 / 10%);
+        border: 1px solid rgb(255 255 255 / 25%);
+        border-radius: 4px;
+        padding: 3px 8px;
+      }
+      #reading-bar button[aria-pressed='true'] {
+        background: rgb(255 255 255 / 30%);
+      }
+      #reading-bar label:has(input:disabled) {
+        opacity: 0.45;
+      }
+      #reading-bar output {
+        min-width: 4.5em;
+        text-align: center;
+      }
     </style>
   </head>
   <body>
     <canvas id="surface"></canvas>
+    <nav id="reading-bar" aria-label="Leitura" hidden>
+      <button id="mode-paginated" type="button" aria-pressed="false">Paginado</button>
+      <button id="mode-continuous" type="button" aria-pressed="false">Contínuo</button>
+      <label title="Só existe no modo paginado"><input id="page-turn" type="checkbox" /> Animação</label>
+      <select id="spreads" aria-label="Páginas duplas">
+        <option value="auto">Duplas: como o arquivo pede</option>
+        <option value="single">Uma página</option>
+        <option value="double">Páginas duplas</option>
+      </select>
+      <button id="page-back" type="button" aria-label="Anterior">‹</button>
+      <output id="page-number"></output>
+      <button id="page-forward" type="button" aria-label="Próxima">›</button>
+      <button id="zoom-out" type="button" aria-label="Diminuir">−</button>
+      <output id="zoom-level"></output>
+      <button id="zoom-in" type="button" aria-label="Aumentar">+</button>
+    </nav>
     <pre id="hud">Musaeum</pre>
     <script type="module" src="/src/main.ts"></script>
   </body>

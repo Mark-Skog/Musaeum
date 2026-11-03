@@ -224,8 +224,8 @@ impl<'lib, 'data> Document<'lib, 'data> {
             return Err(TileFailure::OutOfBounds);
         }
         // Pages can be enormous at a fine level of detail, but PDFium takes `int` sizes.
-        let page_width = page_pixels(size.width_pt, tile.lod);
-        let page_height = page_pixels(size.height_pt, tile.lod);
+        let page_width = page_pixels(size.width_pt, tile.scale);
+        let page_height = page_pixels(size.height_pt, tile.scale);
         let (Ok(size_x), Ok(size_y)) = (c_int::try_from(page_width), c_int::try_from(page_height))
         else {
             return Err(TileFailure::OutOfBounds);

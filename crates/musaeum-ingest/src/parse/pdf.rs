@@ -3,6 +3,7 @@
 //! PDFium is what parses PDFs, in a process of its own. This only looks for one array near the
 //! ends of the file, which is where every producer writes the trailer, including the dictionary
 //! of a cross-reference stream, which is not compressed. A linearized PDF also has one at the start.
+//! What the catalog asks of a reader takes following the file's structure, in [`super::pdf_catalog`].
 
 use super::{Extracted, ParseError, ReadAt, read_up_to};
 
@@ -21,8 +22,11 @@ pub(super) fn extract(source: &(impl ReadAt + ?Sized)) -> Result<Extracted, Pars
     }
     let tail = read_up_to(source, size.saturating_sub(WINDOW as u64), WINDOW)?;
     let id = last_id(&tail).or_else(|| last_id(&head));
+    let hints = super::pdf_catalog::catalog_hints(source);
     Ok(Extracted {
         pdf_id0: id.map(|bytes| hex(&bytes)),
+        page_layout: hints.page_layout,
+        direction: hints.direction,
         ..Extracted::default()
     })
 }

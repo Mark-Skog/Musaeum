@@ -1,5 +1,6 @@
 //! Page orientation and the binary geometry table sent to the compositor.
 
+pub use musaeum_ingest::parse::pdf_catalog::{Direction, PageLayout};
 use musaeum_shm::PageGeometry;
 use serde::Serialize;
 
@@ -33,6 +34,15 @@ impl Orientation {
             Self::Portrait
         }
     }
+}
+
+/// What a document's catalog asks of a reader: whether to show facing pages, and on which side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DocumentHints {
+    /// `/PageLayout`.
+    pub page_layout: Option<PageLayout>,
+    /// `/ViewerPreferences /Direction`.
+    pub direction: Option<Direction>,
 }
 
 /// Orientation of a whole document.

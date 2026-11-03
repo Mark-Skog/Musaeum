@@ -2,8 +2,9 @@
 //!
 //! ```text
 //! musaeum-desktop [--pdf PATH | --epub PATH] [--delivery auto|a|b|c] [--workers N]
-//!                 [--pull-batch N] [--gpu-layers N] [--bench OUT.json] [--main-stress-ms N]
-//!                 [--scenario full|quick|smoke|memory|layout|security]
+//!                 [--pull-batch N] [--gpu-layers N] [--tile-budget-mb N] [--library DIR]
+//!                 [--bench OUT.json] [--main-stress-ms N]
+//!                 [--scenario full|quick|smoke|zoom|memory|layout|security]
 //!                 [--uncapped] [--zoom Z] [--width W] [--height H]
 //!                 [--delivery-fault FAULT[,FAULT...]] [--no-sandbox]
 //!                 [--epub-protection full|csp-only|sandbox-only|none]
@@ -125,6 +126,11 @@ pub struct StartupOptions {
     pub pull_batch: usize,
     /// Size of the compositor's tile cache, instead of what suits the screen.
     pub gpu_layers: Option<u32>,
+    /// The GPU tile cache's budget in mebibytes, instead of what suits the screen.
+    pub tile_budget_mb: Option<u32>,
+    /// The library to remember reading positions in. Without it, the usual one is used if it
+    /// exists, and nothing is remembered if it does not: opening a file never creates a library.
+    pub library: Option<PathBuf>,
     /// Runs the render workers outside the sandbox, to measure what the sandbox costs.
     pub no_sandbox: bool,
     /// Window width in logical pixels.
@@ -155,6 +161,8 @@ impl StartupOptions {
             workers: default_workers(),
             pull_batch: 4,
             gpu_layers: None,
+            tile_budget_mb: None,
+            library: None,
             no_sandbox: false,
             width: 1600,
             height: 900,
@@ -201,6 +209,10 @@ impl StartupOptions {
                 "--workers" => options.workers = parse_number(&flag, &value()?)?,
                 "--pull-batch" => options.pull_batch = parse_number(&flag, &value()?)?,
                 "--gpu-layers" => options.gpu_layers = Some(parse_number(&flag, &value()?)?),
+                "--tile-budget-mb" => {
+                    options.tile_budget_mb = Some(parse_number(&flag, &value()?)?);
+                }
+                "--library" => options.library = Some(PathBuf::from(value()?)),
                 "--no-sandbox" => options.no_sandbox = true,
                 "--width" => options.width = parse_number(&flag, &value()?)?,
                 "--height" => options.height = parse_number(&flag, &value()?)?,
@@ -218,7 +230,7 @@ impl StartupOptions {
         }
         if !matches!(
             scenario.as_str(),
-            "full" | "quick" | "smoke" | "memory" | "layout" | "security"
+            "full" | "quick" | "smoke" | "zoom" | "memory" | "layout" | "security"
         ) {
             return Err(format!("unknown scenario: {scenario}"));
         }

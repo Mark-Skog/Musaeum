@@ -6,6 +6,7 @@
 
 import { TILE_SIZE } from '../protocol';
 import type { QuadSink } from './frame-planner';
+import { layersForBudget } from './tile-cache';
 
 const VERTEX_SHADER = `#version 300 es
 layout(location = 0) in vec4 a_destination;
@@ -53,10 +54,12 @@ export class TileRenderer implements QuadSink {
   /** Quads dropped because the frame exceeded `MAX_QUADS`. Should stay at zero. */
   droppedQuads = 0;
   readonly gpuName: string;
+  /** Layers in the texture array: as many as the budget pays for and the GPU allows. */
+  readonly layers: number;
 
   constructor(
     private readonly canvas: OffscreenCanvas,
-    readonly layers: number,
+    budgetBytes: number,
     onContextLost: () => void,
     onContextRestored: () => void,
   ) {
@@ -74,9 +77,7 @@ export class TileRenderer implements QuadSink {
     this.gl = gl;
 
     const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
-    if (layers > maxLayers) {
-      throw new Error(`the GPU allows ${maxLayers} texture layers, ${layers} were requested`);
-    }
+    this.layers = layersForBudget(budgetBytes, maxLayers);
     const debug = gl.getExtension('WEBGL_debug_renderer_info');
     this.gpuName = debug
       ? (gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) as string)

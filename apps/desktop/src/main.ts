@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { Samples } from './bench/metrics';
 import { runBook } from './book-host';
-import type { FromWorker, ToWorker } from './compositor/messages';
+import type { FromWorker, ReaderStatus, ToWorker } from './compositor/messages';
 import { type DeliveryEvidence, type DeliveryPlan, planDelivery } from './delivery-select';
 import { mainThreadSeesHostWrites, probeSharedBuffer } from './probe';
 import {
@@ -19,6 +19,7 @@ import {
   type SessionInfo,
   SLAB_MAGIC,
   type StartupOptions,
+  TILE_BYTES,
 } from './protocol';
 import { RingPump } from './ring-pump';
 import { createSabRing, SabRingProducer } from './sab-ring';
@@ -59,6 +60,118 @@ interface OpenSessionError {
 
 /** A delivery path failed to open, and the next one may still work. */
 class DeliveryPathFailure extends Error {}
+
+/** Keys the reader uses, which the page must not also act on. */
+const READER_KEYS = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'PageUp',
+  'PageDown',
+  'Home',
+  'End',
+  ' ',
+]);
+
+/**
+ * The reading bar: the mode, the page turn, facing pages and the zoom. It only sends what was
+ * clicked and shows what the compositor reports, so it can never disagree with the reader.
+ */
+function connectReadingBar(send: (message: ToWorker) => void): (status: ReaderStatus) => void {
+  const bar = document.getElementById('reading-bar') as HTMLElement;
+  const paginated = document.getElementById('mode-paginated') as HTMLButtonElement;
+  const continuous = document.getElementById('mode-continuous') as HTMLButtonElement;
+  const animation = document.getElementById('page-turn') as HTMLInputElement;
+  const spreads = document.getElementById('spreads') as HTMLSelectElement;
+  const zoom = document.getElementById('zoom-level') as HTMLOutputElement;
+  const page = document.getElementById('page-number') as HTMLOutputElement;
+  bar.hidden = false;
+
+  paginated.addEventListener('click', () => send({ type: 'set-mode', mode: 'paginated' }));
+  continuous.addEventListener('click', () => send({ type: 'set-mode', mode: 'continuous' }));
+  animation.addEventListener('change', () =>
+    send({ type: 'set-animation', on: animation.checked }),
+  );
+  spreads.addEventListener('change', () =>
+    send({ type: 'set-spreads', spreads: spreads.value as 'auto' | 'single' | 'double' }),
+  );
+  const click = (id: string, message: ToWorker): void =>
+    document.getElementById(id)?.addEventListener('click', () => send(message));
+  click('zoom-out', { type: 'zoom', factor: 1 / 1.25 });
+  click('zoom-in', { type: 'zoom', factor: 1.25 });
+  click('page-back', { type: 'turn', step: -1 });
+  click('page-forward', { type: 'turn', step: 1 });
+
+  return (status) => {
+    paginated.setAttribute('aria-pressed', String(status.mode === 'paginated'));
+    continuous.setAttribute('aria-pressed', String(status.mode === 'continuous'));
+    // Continuous reading has no page turn to animate, so the switch is off and out of reach there.
+    animation.checked = status.animating;
+    animation.disabled = status.mode === 'continuous';
+    spreads.value = status.spreads;
+    zoom.value = `${Math.round(status.zoom * 100)}%`;
+    page.value = `${status.page + 1} / ${status.pageCount}`;
+  };
+}
+
+/** Sends what the pointer and the keyboard do to the compositor, in device pixels. */
+function forwardInput(canvas: HTMLCanvasElement, send: (message: ToWorker) => void): void {
+  const at = (event: MouseEvent): { x: number; y: number } => {
+    const box = canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - box.left) * devicePixelRatio,
+      y: (event.clientY - box.top) * devicePixelRatio,
+    };
+  };
+  canvas.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault();
+      const legacy = (event as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
+      send({
+        type: 'wheel',
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        wheelDeltaY: legacy,
+        ctrlKey: event.ctrlKey,
+        ...at(event),
+        timeMs: event.timeStamp,
+      });
+    },
+    { passive: false },
+  );
+  canvas.addEventListener('pointerdown', (event) => {
+    canvas.setPointerCapture(event.pointerId);
+    send({ type: 'pointer', phase: 'down', ...at(event) });
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (canvas.hasPointerCapture(event.pointerId)) {
+      send({ type: 'pointer', phase: 'move', ...at(event) });
+    }
+  });
+  const end = (event: PointerEvent): void => {
+    if (canvas.hasPointerCapture(event.pointerId)) {
+      canvas.releasePointerCapture(event.pointerId);
+    }
+    send({ type: 'pointer', phase: 'up', ...at(event) });
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  window.addEventListener('keydown', (event) => {
+    const target = event.target as HTMLElement | null;
+    const typing = target !== null && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName);
+    if (typing && target.id !== 'page-turn') {
+      return;
+    }
+    const zoomKey = event.ctrlKey && ['=', '+', '-', '0'].includes(event.key);
+    if (zoomKey || (!event.ctrlKey && !event.altKey && READER_KEYS.has(event.key))) {
+      event.preventDefault();
+      send({ type: 'key', key: event.key, ctrl: event.ctrlKey, shift: event.shiftKey });
+    }
+  });
+}
 
 /** Tries everything the choice of path depends on, on this runtime, right now. */
 async function gatherDeliveryEvidence(
@@ -231,12 +344,25 @@ async function run(options: StartupOptions): Promise<void> {
   const openRequestedAt = nowEpochMs();
   const uptimeWhenOpening = await invoke<number>('uptime_ms');
   let opening: Record<string, number> = {};
+  let documentId: number | null = null;
+  let showStatus: ((status: ReaderStatus) => void) | null = null;
 
   worker.addEventListener('message', (event: MessageEvent<FromWorker>) => {
     const message = event.data;
     switch (message.type) {
       case 'hud':
         hud.textContent = message.text;
+        break;
+      case 'status':
+        showStatus?.(message);
+        break;
+      case 'reading-state':
+        if (documentId !== null) {
+          const reading = { document: documentId, reading: message.state };
+          invoke('save_reading_state', reading).catch((error) =>
+            console.warn('saving the reading position failed', error),
+          );
+        }
         break;
       case 'ready':
         console.info(`GPU: ${message.gpu}; clock round trip ${message.clockRttMs.toFixed(2)} ms`);
@@ -295,6 +421,7 @@ async function run(options: StartupOptions): Promise<void> {
   for (const { path, reason } of plan.rejected) {
     console.warn(`delivery path ${path} is not available: ${reason}`);
   }
+  documentId = session.documentId;
   report = {
     session,
     sharedBufferProbes: evidence.workerProbes,
@@ -322,6 +449,12 @@ async function run(options: StartupOptions): Promise<void> {
   const size = devicePixels(canvas);
   const offscreen = canvas.transferControlToOffscreen();
   const direct = session.delivery === 'c' ? buffers : null;
+  const tileBudgetBytes =
+    options.tileBudgetMb !== null
+      ? options.tileBudgetMb * 1024 * 1024
+      : options.gpuLayers !== null
+        ? options.gpuLayers * TILE_BYTES
+        : null;
   send(
     {
       type: 'init',
@@ -333,40 +466,42 @@ async function run(options: StartupOptions): Promise<void> {
       direct: direct !== null ? { slab: direct.slab, ring: direct.ring } : null,
       // The compositor plays scripted scenarios, and the memory scenario is not one of those.
       bench: measuringMemory ? null : bench,
-      zoom: bench?.zoom ?? 1.5 * devicePixelRatio,
+      devicePixelRatio,
+      comfortableScale: bench?.zoom ?? 1.5 * devicePixelRatio,
+      prefersReducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
       screenWidth: Math.round(screen.width * devicePixelRatio),
       screenHeight: Math.round(screen.height * devicePixelRatio),
-      gpuLayers: options.gpuLayers,
+      tileBudgetBytes,
     },
     direct !== null ? [offscreen, direct.slab, direct.ring] : [offscreen],
   );
+  if (bench === null) {
+    showStatus = connectReadingBar(send);
+  }
 
   new ResizeObserver(() => {
     const { width, height } = devicePixels(canvas);
     send({ type: 'resize', width, height });
   }).observe(canvas);
 
-  canvas.addEventListener(
-    'wheel',
-    (event) => {
-      event.preventDefault();
-      // Line and page modes come from some mice and from accessibility settings.
-      const unit =
-        event.deltaMode === WheelEvent.DOM_DELTA_LINE
-          ? 40
-          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? canvas.clientHeight
-            : 1;
-      send({ type: 'wheel', deltaPx: event.deltaY * unit * devicePixelRatio });
-    },
-    { passive: false },
-  );
+  forwardInput(canvas, send);
 
   if (bench !== null) {
     startMainThreadStress(bench.mainStressMs);
   }
   if (measuringMemory) {
-    const scroll = (deltaPx: number): void => send({ type: 'wheel', deltaPx });
+    // A notch of a wheel, as the reader's own input would arrive.
+    const scroll = (deltaPx: number): void =>
+      send({
+        type: 'wheel',
+        deltaX: 0,
+        deltaY: deltaPx / devicePixelRatio,
+        deltaMode: 0,
+        ctrlKey: false,
+        x: 0,
+        y: 0,
+        timeMs: performance.now(),
+      });
     void runMemoryScenario(scroll, () => report).catch((error) =>
       failBench(bench, String(error)),
     );

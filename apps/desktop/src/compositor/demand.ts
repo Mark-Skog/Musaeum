@@ -1,7 +1,7 @@
 /**
- * Builds the wish list for the host, in priority order, and sends it without ever making
- * a frame wait. At most one request is in flight; if the list changes meanwhile, only the
- * newest version gets sent, since the host would discard the ones in between anyway.
+ * Builds the wish list for the host, in priority order, and sends it without ever making a frame
+ * wait. At most one request is in flight; if the list changes meanwhile, only the newest version
+ * gets sent, since the host would discard the ones in between anyway.
  */
 
 import {
@@ -11,45 +11,51 @@ import {
   MAX_DEMAND_TILES,
 } from '../protocol';
 import type { TileList } from './frame-planner';
-import { type DocumentLayout, tileCount, tileKey, wholePageLod } from './layout';
 import type { TileCache } from './tile-cache';
+import { pageScaleKey, placeholderScale, tileIndex } from './tiles';
 
 /**
- * Above this speed, in viewports per second, sharp tiles would be stale before they
- * arrived. Only whole-page placeholders are requested until the scroll slows down.
+ * Above this speed, in pages per second, sharp tiles would be stale before they arrived. Only
+ * whole-page placeholders are requested until the reader slows down.
  */
-export const FAST_SCROLL_VIEWPORTS_PER_SECOND = 2.5;
+export const FAST_PAGES_PER_SECOND = 3;
 /** Seconds of travel to prepare placeholders for. */
 const LOOKAHEAD_SECONDS = 0.5;
 const MIN_LOOKAHEAD_PAGES = 2;
 const MAX_LOOKAHEAD_PAGES = 48;
-/** Pages next to the screen prepared in full while the reader is not moving fast. */
-const NEARBY_SHARP_PAGES = 1;
 
 /** Encodes a demand list directly into `words`, returning the number of tiles written. */
 export class DemandEncoder {
   readonly words = new Uint32Array(DEMAND_HEADER_WORDS + MAX_DEMAND_TILES * DEMAND_ENTRY_WORDS);
   private tiles = 0;
+  /** Each page and scale on the list gets a small number, so a tile's key stays an exact number. */
+  private readonly groups = new Map<number, number>();
   private readonly seen = new Set<number>();
 
   reset(): void {
     this.tiles = 0;
+    this.groups.clear();
     this.seen.clear();
   }
 
-  add(page: number, lod: number, x: number, y: number): void {
+  add(page: number, scale: number, x: number, y: number): void {
     if (this.tiles >= MAX_DEMAND_TILES) {
       return;
     }
-    const key = tileKey(page, lod, x, y);
+    const group = pageScaleKey(page, scale);
+    let number = this.groups.get(group);
+    if (number === undefined) {
+      number = this.groups.size;
+      this.groups.set(group, number);
+    }
+    const key = number * 1_048_576 + tileIndex(x, y);
     if (this.seen.has(key)) {
       return;
     }
     this.seen.add(key);
     const at = DEMAND_HEADER_WORDS + this.tiles * DEMAND_ENTRY_WORDS;
     this.words[at] = page;
-    // Stored as the two's complement word that Rust reads back as an i32.
-    this.words[at + 1] = lod >>> 0;
+    this.words[at + 1] = scale;
     this.words[at + 2] = x;
     this.words[at + 3] = y;
     this.tiles++;
@@ -81,17 +87,22 @@ export class DemandEncoder {
 }
 
 export interface DemandInputs {
-  layout: DocumentLayout;
+  widths: Float32Array;
+  heights: Float32Array;
   cache: TileCache;
+  /** Placeholders the current frame lacks. */
   missingPlaceholders: TileList;
-  missingSharp: TileList;
+  /**
+   * Tiles at the scale where the reader is heading, nearest the centre first; empty while that is
+   * not known yet, as in the middle of a zoom.
+   */
+  wanted: TileList;
+  /** Whole screens on either side, at the scale they will be shown at. */
+  neighbours: TileList;
   firstVisiblePage: number;
   lastVisiblePage: number;
-  targetLod: number;
-  /** Signed scroll speed in points per second; positive is down the document. */
-  velocityPt: number;
-  /** Viewport height in points. */
-  viewHeightPt: number;
+  /** Signed speed through the document; positive is forward. */
+  pagesPerSecond: number;
 }
 
 /** Sorts a tile list's indices by priority, smallest first. */
@@ -106,102 +117,59 @@ function sortedIndices(list: TileList, scratch: number[]): number[] {
 
 const indexScratch: number[] = [];
 
+function addAll(encoder: DemandEncoder, list: TileList, sorted: boolean): void {
+  const order = sorted ? sortedIndices(list, indexScratch) : null;
+  for (let n = 0; n < list.length; n++) {
+    const at = order === null ? n : order[n];
+    encoder.add(list.pages[at], list.scales[at], list.columns[at], list.rows[at]);
+  }
+}
+
 /**
  * Fills `encoder` with the wish list, most important first:
  *
  *   1. placeholders for pages on screen: quick to render, and they cover the most area;
- *   2. sharp tiles for the screen, centre outwards, unless scrolling too fast to matter;
- *   3. placeholders along the direction of travel;
- *   4. sharp tiles for the neighbouring pages, when not moving fast.
+ *   2. sharp tiles for where the reader is heading, centre outwards, unless moving too fast;
+ *   3. placeholders along the direction of travel, and a couple behind;
+ *   4. the screens on either side in full, when not moving fast.
  */
 export function buildDemand(encoder: DemandEncoder, inputs: DemandInputs): void {
-  const { layout, cache, velocityPt, viewHeightPt, targetLod } = inputs;
+  const { widths, heights, cache, pagesPerSecond } = inputs;
   encoder.reset();
+  addAll(encoder, inputs.missingPlaceholders, false);
 
-  const { missingPlaceholders } = inputs;
-  for (let at = 0; at < missingPlaceholders.length; at++) {
-    encoder.add(
-      missingPlaceholders.pages[at],
-      missingPlaceholders.lods[at],
-      missingPlaceholders.columns[at],
-      missingPlaceholders.rows[at],
-    );
-  }
-
-  const speedViewports = Math.abs(velocityPt) / Math.max(viewHeightPt, 1);
-  const fast = speedViewports > FAST_SCROLL_VIEWPORTS_PER_SECOND;
+  const fast = Math.abs(pagesPerSecond) > FAST_PAGES_PER_SECOND;
   if (!fast) {
-    const { missingSharp } = inputs;
-    for (const at of sortedIndices(missingSharp, indexScratch)) {
-      encoder.add(
-        missingSharp.pages[at],
-        missingSharp.lods[at],
-        missingSharp.columns[at],
-        missingSharp.rows[at],
-      );
-    }
+    addAll(encoder, inputs.wanted, true);
   }
 
-  if (layout.pageCount === 0 || inputs.lastVisiblePage < 0) {
+  const pageCount = widths.length;
+  if (pageCount === 0 || inputs.lastVisiblePage < 0) {
     return;
   }
-
-  const direction = velocityPt >= 0 ? 1 : -1;
-  const averageHeight = layout.totalHeight / layout.pageCount;
-  const travelPages = Math.ceil((Math.abs(velocityPt) * LOOKAHEAD_SECONDS) / averageHeight);
+  const direction = pagesPerSecond >= 0 ? 1 : -1;
+  const travelPages = Math.ceil(Math.abs(pagesPerSecond) * LOOKAHEAD_SECONDS);
   const ahead = Math.min(MAX_LOOKAHEAD_PAGES, MIN_LOOKAHEAD_PAGES + travelPages);
   const edge = direction > 0 ? inputs.lastVisiblePage : inputs.firstVisiblePage;
+  const addPlaceholder = (page: number): void => {
+    if (page >= 0 && page < pageCount) {
+      const scale = placeholderScale(widths[page], heights[page]);
+      if (cache.find(page, scale, 0, 0) < 0) {
+        encoder.add(page, scale, 0, 0);
+      }
+    }
+  };
   for (let step = 1; step <= ahead; step++) {
-    addPlaceholder(encoder, layout, cache, edge + direction * step, targetLod);
+    addPlaceholder(edge + direction * step);
   }
   // A couple behind as well, because readers often turn back.
   const behind = direction > 0 ? inputs.firstVisiblePage : inputs.lastVisiblePage;
   for (let step = 1; step <= MIN_LOOKAHEAD_PAGES; step++) {
-    addPlaceholder(encoder, layout, cache, behind - direction * step, targetLod);
+    addPlaceholder(behind - direction * step);
   }
 
   if (!fast) {
-    for (let step = 1; step <= NEARBY_SHARP_PAGES; step++) {
-      addSharpPage(encoder, layout, cache, inputs.lastVisiblePage + step, targetLod);
-      addSharpPage(encoder, layout, cache, inputs.firstVisiblePage - step, targetLod);
-    }
-  }
-}
-
-function addPlaceholder(
-  encoder: DemandEncoder,
-  layout: DocumentLayout,
-  cache: TileCache,
-  page: number,
-  targetLod: number,
-): void {
-  if (page < 0 || page >= layout.pageCount) {
-    return;
-  }
-  const lod = Math.min(wholePageLod(layout.widths[page], layout.heights[page]), targetLod);
-  if (cache.find(tileKey(page, lod, 0, 0)) < 0) {
-    encoder.add(page, lod, 0, 0);
-  }
-}
-
-function addSharpPage(
-  encoder: DemandEncoder,
-  layout: DocumentLayout,
-  cache: TileCache,
-  page: number,
-  lod: number,
-): void {
-  if (page < 0 || page >= layout.pageCount) {
-    return;
-  }
-  const columns = tileCount(layout.widths[page], lod);
-  const rows = tileCount(layout.heights[page], lod);
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < columns; x++) {
-      if (cache.find(tileKey(page, lod, x, y)) < 0) {
-        encoder.add(page, lod, x, y);
-      }
-    }
+    addAll(encoder, inputs.neighbours, true);
   }
 }
 

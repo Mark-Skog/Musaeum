@@ -2,14 +2,16 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 1 do Plano Diretor**: o núcleo sem interface. O que existe hoje são os dois
-pipelines de leitura da Fase 0, o de layout fixo (PDF) e o fluido (EPUB), e a biblioteca: SQLite,
-identidade de arquivos, indexador, diário de operações em disco e uma CLI. Ainda não há interface de
-produto.
+O projeto está na **Fase 2 do Plano Diretor**, o layout fixo. O que existe hoje: o leitor de PDF, com
+tiles na escala exata da tela, páginas duplas, modo paginado e contínuo e a posição guardada na
+biblioteca; o leitor fluido (EPUB) da Fase 0; e a biblioteca da Fase 1, com SQLite, identidade de
+arquivos, indexador, diário de operações em disco e uma CLI. Ainda não há interface de produto além da
+barra de leitura.
 
 As decisões e os números de cada fase estão em
-[`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md) e
-[`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md).
+[`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md),
+[`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md) e
+[`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -25,12 +27,15 @@ crates/
   musaeum-render-pdf/  Processo isolado que rasteriza tiles com PDFium
   musaeum-fs/          File IDs de 128 bits, listagem sem abrir arquivos, leitura que recusa
                        placeholders de nuvem, watcher que avisa quando perde eventos
-  musaeum-ingest/      Processo isolado que lê identificadores e metadados dos livros
-  musaeum-library/     SQLite, reconhecimento de arquivos, indexador, diário de operações
+  musaeum-ingest/      Processo isolado que lê identificadores e metadados dos livros, e o que
+                       o catálogo de um PDF pede (`/PageLayout`, `/Direction`)
+  musaeum-library/     SQLite, reconhecimento de arquivos, indexador, diário de operações,
+                       posição de leitura e geometria das páginas
 apps/cli/              O binário `musaeum`: a biblioteca pela linha de comando
 apps/desktop/
   src-tauri/           Ponte Tauri: protocolos tile:// e book://, buffers do WebView2, harness
-  src/                 Thread principal e compositor WebGL2 em Web Worker
+  src/                 Thread principal e compositor WebGL2 em Web Worker: modos de leitura,
+                       páginas duplas, física da passagem de página e cache de tiles
   src/reader/          Leitor fluido, numa origem própria, com o foliate-js atrás de um adaptador
 vendor/
   foliate-js/          Parte do foliate-js, fixada em um commit, com uma alteração documentada
@@ -40,6 +45,7 @@ tools/
   gen-fixtures/        Gera os PDFs e os EPUBs de teste, incluindo um EPUB hostil
   pool-bench/          Mede o pool de render sem WebView
   library-bench/       Mede a biblioteca com 100 mil arquivos reais, tecla por tecla
+  corpus-check/        Valida a biblioteca e o pipeline num acervo real, só lendo
   run-bench.mjs        Roda a matriz dos Experimentos A e B
   run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
   measure-memory.mjs   Mede a RAM do app inteiro
@@ -64,13 +70,21 @@ cd ..\..
 .\target\release\gen-fixtures.exe --out fixtures
 ```
 
-Abrir um documento de forma interativa. No PDF, a roda do mouse faz a rolagem. No EPUB, as
-setas passam as páginas:
+Abrir um documento de forma interativa:
 
 ```powershell
-.\target\release\musaeum-desktop.exe --pdf fixtures\scan-2000.pdf
+.\target\release\musaeum-desktop.exe --pdf fixtures\spreads.pdf
+.\target\release\musaeum-desktop.exe --pdf D:\Livros\um-livro.pdf --library D:\MinhaBiblioteca
 .\target\release\musaeum-desktop.exe --epub fixtures\large.epub
 ```
+
+No PDF, a barra de leitura no alto troca entre paginado e contínuo, liga e desliga a animação da
+passagem de página (que não existe no contínuo), escolhe páginas duplas e muda o zoom. As setas,
+Page Up/Down, Espaço, Home e End navegam; Ctrl com +, - e 0 mudam o zoom, e Ctrl com a roda ou o gesto
+de pinça amplia em torno do ponteiro. Com `--library`, ou com a biblioteca padrão se ela já existir, a
+posição, o modo, o zoom e as páginas duplas de um livro da biblioteca são guardados e voltam na próxima
+abertura. Abrir um arquivo nunca cria uma biblioteca. `--tile-budget-mb N` limita a memória de GPU dos
+tiles. No EPUB, as setas passam as páginas.
 
 Rodar as medições. Elas abrem janelas em primeiro plano, uma por vez, e escrevem os relatórios
 em `bench-results/`. Rode com a máquina livre: outro programa usando a GPU muda os resultados.
@@ -78,6 +92,7 @@ em `bench-results/`. Rode com a máquina livre: outro programa usando a GPU muda
 ```powershell
 node tools\run-bench.mjs
 node tools\run-bench.mjs --scenario quick --uncapped --stress 0
+.\target\release\musaeum-desktop.exe --pdf UM.pdf --bench zoom.json --scenario zoom
 node tools\run-epub-bench.mjs
 node tools\measure-memory.mjs
 ```
@@ -115,6 +130,30 @@ Três regras valem para tudo isso:
 3. **Parser só em sandbox.** Ler `/ID[0]` ou `dc:identifier` é interpretar bytes hostis, então quem faz
    isso é `musaeum-ingest`, sem rede e sem acesso a arquivos por caminho, recebendo cada livro como um
    handle. O que ele responde é tratado como vindo de um atacante.
+
+## O leitor de layout fixo
+
+- **Escala exata.** Os tiles são rasterizados na escala da tela, em passos de 1/4096 pixel por ponto,
+  e não em potências de 2. Durante um zoom, o compositor mostra o que já tem, reamostrado; os tiles da
+  escala final são pedidos durante a animação e chegam antes de ela acabar.
+- **Geometria sem rasterizar.** O tamanho de cada página e o `/PageLayout` vêm de um worker, sem desenhar
+  nada, e ficam no `cache.db` pelos bytes do arquivo. Na próxima abertura, ninguém mede de novo.
+- **Páginas duplas.** Mantêm a paridade impressa com espaços vazios, deixam a paisagem sozinha e
+  respeitam `/PageLayout` e a leitura da direita para a esquerda.
+- **Workers.** Um worker que cai ou é encerrado é substituído em dezenas de milissegundos, e a leitura
+  segue. Um tile que derruba workers duas vezes deixa de ser pedido.
+
+## Validar num acervo real
+
+```powershell
+cargo build --release -p corpus-check -p musaeum-render-pdf -p musaeum-library --bins
+.\target\release\corpus-check.exe --corpus D:\Livros --work D:\Temp\verificacao --sample 12
+```
+
+Indexa a árvore inteira, mede todas as páginas de todos os PDFs, renderiza uma amostra difícil,
+cancela renders pesados no meio e mata workers durante a leitura. O acervo só é lido: a ferramenta lista
+tamanho, datas e atributos de tudo antes e depois e falha se algo mudar. Banco, cache e relatório ficam
+em `--work`, que precisa estar fora do acervo. Tudo roda abaixo da prioridade normal.
 
 ## Os caminhos de entrega de pixels
 

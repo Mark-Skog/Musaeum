@@ -220,6 +220,14 @@ impl Library {
         &self.options.probe
     }
 
+    pub(crate) fn database(&self) -> &Database {
+        &self.database
+    }
+
+    pub(crate) fn cache(&self) -> Option<&Database> {
+        self.cache.as_ref()
+    }
+
     fn context(&self) -> Context<'_> {
         Context {
             database: &self.database,

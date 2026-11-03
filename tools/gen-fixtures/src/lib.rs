@@ -117,6 +117,18 @@ pub fn write_pdf(
     path: &Path,
     images: &[GrayImage],
     page_count: usize,
+    page: impl FnMut(usize) -> PageSpec,
+) -> io::Result<()> {
+    write_pdf_with_catalog(path, images, "", page_count, page)
+}
+
+/// Like [`write_pdf`], with `catalog` added to the catalog's dictionary, such as a
+/// `/PageLayout`.
+pub fn write_pdf_with_catalog(
+    path: &Path,
+    images: &[GrayImage],
+    catalog: &str,
+    page_count: usize,
     mut page: impl FnMut(usize) -> PageSpec,
 ) -> io::Result<()> {
     let out = BufWriter::with_capacity(1 << 20, File::create(path)?);
@@ -133,7 +145,7 @@ pub fn write_pdf(
 
     pdf.object(
         CATALOG_ID,
-        &format!("<< /Type /Catalog /Pages {PAGES_ID} 0 R >>"),
+        &format!("<< /Type /Catalog /Pages {PAGES_ID} 0 R {catalog}>>"),
     )?;
     let mut kids = String::with_capacity(page_count * 10);
     for index in 0..page_count {
@@ -289,6 +301,42 @@ pub fn write_mixed_fixture(path: &Path) -> io::Result<()> {
             "1 0 0 rg 0 1500 1000 1500 re f 0 0 1 rg 1000 0 1000 1500 re f".into(),
         ),
     })
+}
+
+/// A book read right to left, laid out as facing pages with the first page alone, with pages of
+/// every shape: what spreads have to get right.
+///
+/// | Page | Size | |
+/// |------|------|-|
+/// | 0 | 595 × 842 | Portrait: the cover, alone |
+/// | 1, 2 | 595 × 842 | Portrait: a pair |
+/// | 3 | 1190 × 842 | Landscape: a plate printed across two pages, alone |
+/// | 4 | 595 × 842 | Portrait: alone, with a blank beside it, so that 5 and 6 still face each other |
+/// | 5, 6 | 595 × 842 | Portrait: a pair |
+/// | 7 | 600 × 600 | Square |
+pub fn write_spread_fixture(path: &Path) -> io::Result<()> {
+    write_pdf_with_catalog(
+        path,
+        &[],
+        "/PageLayout /TwoPageRight /ViewerPreferences << /Direction /R2L >> ",
+        8,
+        |index| {
+            let (width, height) = match index {
+                3 => (1190.0, 842.0),
+                7 => (600.0, 600.0),
+                _ => (595.0, 842.0),
+            };
+            let gray = 0.3 + index as f32 * 0.08;
+            PageSpec::new(
+                width,
+                height,
+                format!(
+                    "{gray:.2} g 0 0 {width} {height} re f BT /F1 48 Tf 1 g 40 40 Td ({}) Tj ET",
+                    index + 1
+                ),
+            )
+        },
+    )
 }
 
 /// One page per font that PDFium has to find on its own, because none of them is embedded:

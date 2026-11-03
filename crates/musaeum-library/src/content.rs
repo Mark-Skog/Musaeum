@@ -8,6 +8,10 @@
 //! - new bytes with a known internal ID become a suggestion;
 //! - anything else stays what it has been all along, a new document.
 //!
+//! It is also where a file that took another's place at its path stops being provisional: it stays a
+//! new revision of the same document only if it is the same kind of file and names no other internal
+//! ID, as the [`crate::identity`] module explains.
+//!
 //! Each piece of work is on a low-priority thread, and works out what to write before asking for the
 //! write lock, so hashing a large file does not hold anything up.
 
@@ -20,13 +24,15 @@ use std::thread;
 use musaeum_fs::{FileId, OpenError, ReadPattern, enter_background};
 use musaeum_ingest::EXTRACTOR_VERSION;
 use musaeum_ingest::parse::Extracted;
+use musaeum_ingest::parse::pdf_catalog::Direction;
 use musaeum_ingest::protocol::Format;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 
+use crate::content_kind::ContentKind;
 use crate::error::Result;
-use crate::fingerprint::{Hash, ReadCounters, fast_fingerprint, full_hash};
-use crate::identity::{folder_path, suggest};
+use crate::fingerprint::{Hash, ReadCounters, WholeFile, fast_fingerprint, full_hash};
+use crate::identity::{folder_path, insert_work_and_document, suggest};
 use crate::ingest::{IngestClient, IngestConfig, IngestOutcome};
 use crate::model::{
     DocumentId, FolderId, InstanceId, InstanceState, RevisionId, RevisionOrigin, SuggestionKind,
@@ -54,6 +60,9 @@ pub struct ContentReport {
     pub same_as_previous: u64,
     /// Files that turned out to be new bytes.
     pub new_revisions: u64,
+    /// Files that took another's place at its path and turned out to be something else: another kind
+    /// of file, or one with a different internal ID. Each is a document of its own, with a suggestion.
+    pub replacements_separated: u64,
     /// Things noticed and left for the user to decide.
     pub suggestions: u64,
     /// Files whose metadata was read by the isolated worker.
@@ -94,6 +103,8 @@ enum Finding {
     /// The bytes were read.
     Read {
         hash: Option<Hash>,
+        /// What kind of file the bytes are, known whenever the hash is.
+        kind: Option<ContentKind>,
         fingerprint: Option<Hash>,
         bytes: u64,
         extraction: Extraction,
@@ -169,6 +180,7 @@ fn add_up(total: &mut ContentReport, more: &ContentReport) {
     total.duplicates += more.duplicates;
     total.same_as_previous += more.same_as_previous;
     total.new_revisions += more.new_revisions;
+    total.replacements_separated += more.replacements_separated;
     total.suggestions += more.suggestions;
     total.extracted += more.extracted;
     total.extraction_failed += more.extraction_failed;
@@ -333,14 +345,16 @@ fn examine(
         return Finding::ChangedMeanwhile;
     }
 
-    let (hash, bytes) = if job.needs_hash {
+    let (hash, kind, bytes) = if job.needs_hash {
         match full_hash(&content.file, stop, counters) {
-            Ok(Some((hash, bytes))) => (Some(hash), bytes),
+            Ok(Some(WholeFile { hash, bytes, head })) => {
+                (Some(hash), Some(ContentKind::of(&head)), bytes)
+            }
             Ok(None) => return Finding::ChangedMeanwhile,
             Err(_) => return Finding::Unreadable,
         }
     } else {
-        (None, 0)
+        (None, None, 0)
     };
     let fingerprint = if job.needs_fingerprint {
         match fast_fingerprint(&content.file, stat.size, counters) {
@@ -372,6 +386,7 @@ fn examine(
     };
     Finding::Read {
         hash,
+        kind,
         fingerprint,
         bytes,
         extraction,
@@ -426,13 +441,14 @@ fn apply_finding(
     now: i64,
     report: &mut ContentReport,
 ) -> Result<()> {
-    let (hash, fingerprint, bytes, extraction) = match finding {
+    let (hash, kind, fingerprint, bytes, extraction) = match finding {
         Finding::Read {
             hash,
+            kind,
             fingerprint,
             bytes,
             extraction,
-        } => (hash, fingerprint, bytes, extraction),
+        } => (hash, kind, fingerprint, bytes, extraction),
         Finding::CloudOnly => {
             set_instance_state(transaction, job.instance, InstanceState::CloudOnly, now)?;
             report.cloud_only += 1;
@@ -474,7 +490,7 @@ fn apply_finding(
             merge_into_existing(transaction, job.revision, existing, now, report)?;
             return Ok(());
         }
-        confirm(transaction, job.revision, &hash, now, report)?;
+        confirm(transaction, job.revision, &hash, kind, now, report)?;
     }
 
     match extraction {
@@ -490,7 +506,191 @@ fn apply_finding(
         Extraction::NotAsked => mark_ingested(transaction, job.revision)?,
         Extraction::Unavailable => {}
     }
+    settle_replacement(transaction, job.revision)
+}
+
+/// A replacement whose bytes and identifiers have both been read and found consistent is no longer
+/// provisional, and there is nothing left to take back.
+fn settle_replacement(transaction: &Transaction<'_>, revision: RevisionId) -> Result<()> {
+    transaction
+        .prepare_cached(
+            "DELETE FROM replaced_file WHERE revision_id = ?1
+               AND EXISTS (SELECT 1 FROM revision WHERE id = ?1
+                           AND blake3 IS NOT NULL AND ingested_version IS NOT NULL)",
+        )?
+        .execute([revision])?;
     Ok(())
+}
+
+/// What a provisional replacement took the place of.
+struct Replaced {
+    instance: InstanceId,
+    folder: FolderId,
+    name: rusqlite::types::Value,
+    volume: Option<i64>,
+    file_id: Option<Vec<u8>>,
+    mtime_ns: i64,
+}
+
+fn replaced_by(connection: &Connection, revision: RevisionId) -> Result<Option<Replaced>> {
+    Ok(connection
+        .prepare_cached(
+            "SELECT instance_id, folder_id, name, volume_serial, file_id, mtime_ns
+             FROM replaced_file WHERE revision_id = ?1",
+        )?
+        .query_row([revision], |row| {
+            Ok(Replaced {
+                instance: row.get(0)?,
+                folder: row.get(1)?,
+                name: row.get(2)?,
+                volume: row.get(3)?,
+                file_id: row.get(4)?,
+                mtime_ns: row.get(5)?,
+            })
+        })
+        .optional()?)
+}
+
+/// Takes back a provisional replacement: the instance becomes again the file it was before, which
+/// is gone from its path, and the file that is there now gets an instance of its own on `revision`,
+/// which is returned. `None` if there is nothing to take back, or the instance has moved on since.
+fn restore_replaced(
+    transaction: &Transaction<'_>,
+    revision: RevisionId,
+    now: i64,
+) -> Result<Option<InstanceId>> {
+    let Some(replaced) = replaced_by(transaction, revision)? else {
+        return Ok(None);
+    };
+    transaction
+        .prepare_cached("DELETE FROM replaced_file WHERE revision_id = ?1")?
+        .execute([revision])?;
+    let previous: Option<RevisionId> = transaction
+        .prepare_cached("SELECT previous_revision_id FROM revision WHERE id = ?1")?
+        .query_row([revision], |row| row.get(0))?;
+    type Now = (
+        RevisionId,
+        FolderId,
+        rusqlite::types::Value,
+        Option<i64>,
+        Option<Vec<u8>>,
+        i64,
+        InstanceState,
+    );
+    let current: Option<Now> = transaction
+        .prepare_cached(
+            "SELECT revision_id, folder_id, name, volume_serial, file_id, mtime_ns, state
+             FROM file_instance WHERE id = ?1",
+        )?
+        .query_row([replaced.instance], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
+        .optional()?;
+    let (Some(previous), Some((on, folder, name, volume, file_id, mtime_ns, state))) =
+        (previous, current)
+    else {
+        return Ok(None);
+    };
+    if on != revision {
+        // The file changed again in place, and the newer revision has its own story.
+        return Ok(None);
+    }
+
+    // First out of the way, since only one instance can be at a path without being missing.
+    transaction
+        .prepare_cached(
+            "UPDATE file_instance
+             SET revision_id = ?2, folder_id = ?3, name = ?4, volume_serial = ?5, file_id = ?6,
+                 mtime_ns = ?7, state = 'absent', state_since = ?8
+             WHERE id = ?1",
+        )?
+        .execute(params![
+            replaced.instance,
+            previous,
+            replaced.folder,
+            replaced.name,
+            replaced.volume,
+            replaced.file_id,
+            replaced.mtime_ns,
+            now,
+        ])?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO file_instance (revision_id, folder_id, name, volume_serial, file_id, mtime_ns,
+                                        state, state_since)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?
+        .execute(params![
+            revision, folder, name, volume, file_id, mtime_ns, state, now
+        ])?;
+    let arrived = transaction.last_insert_rowid();
+    // What the library did to the file since it arrived was done to this one.
+    transaction
+        .prepare_cached(
+            "UPDATE fs_operation SET instance_id = ?2
+             WHERE instance_id = ?1
+               AND created_at >= (SELECT created_at FROM revision WHERE id = ?3)",
+        )?
+        .execute(params![replaced.instance, arrived, revision])?;
+    Ok(Some(arrived))
+}
+
+/// A provisional replacement turned out to be something else. It becomes what it would have been
+/// without the shortcut: a document of its own, beside the one whose file it replaced, which is now
+/// missing, and a suggestion between the two with the reason. Returns whether that happened.
+fn separate_replacement(
+    transaction: &Transaction<'_>,
+    revision: RevisionId,
+    evidence: &str,
+    now: i64,
+    report: &mut ContentReport,
+) -> Result<bool> {
+    let Some(arrived) = restore_replaced(transaction, revision, now)? else {
+        return Ok(false);
+    };
+    let (old_document, name): (DocumentId, std::ffi::OsString) = transaction
+        .prepare_cached(
+            "SELECT r.document_id, i.name FROM file_instance i
+             JOIN revision r ON r.id = ?2 WHERE i.id = ?1",
+        )?
+        .query_row(params![arrived, revision], |row| {
+            Ok((row.get(0)?, row.get::<_, StoredName>(1)?.0))
+        })?;
+    let document = insert_work_and_document(transaction, &name, now)?;
+    transaction
+        .prepare_cached(
+            "UPDATE revision SET document_id = ?2, previous_revision_id = NULL, origin = 'import'
+             WHERE id = ?1",
+        )?
+        .execute(params![revision, document])?;
+    // Notes made on these bytes while they passed for the old document's are about these bytes, and
+    // so is a position taken on them.
+    transaction
+        .prepare_cached("UPDATE annotation SET document_id = ?2 WHERE revision_id = ?1")?
+        .execute(params![revision, document])?;
+    transaction
+        .prepare_cached("UPDATE reading_state SET document_id = ?2 WHERE revision_id = ?1")?
+        .execute(params![revision, document])?;
+    if suggest(
+        transaction,
+        SuggestionKind::SamePath,
+        document,
+        old_document,
+        evidence,
+        now,
+    )? {
+        report.suggestions += 1;
+    }
+    report.replacements_separated += 1;
+    Ok(true)
 }
 
 fn set_instance_state(
@@ -554,10 +754,11 @@ fn confirm(
     transaction: &Transaction<'_>,
     revision: RevisionId,
     hash: &Hash,
+    kind: Option<ContentKind>,
     now: i64,
     report: &mut ContentReport,
 ) -> Result<()> {
-    let (document, origin, candidate, candidate_hash): (
+    let (mut document, mut origin, candidate, candidate_hash): (
         DocumentId,
         RevisionOrigin,
         Option<RevisionId>,
@@ -574,11 +775,28 @@ fn confirm(
 
     transaction
         .prepare_cached(
-            "UPDATE revision SET blake3 = ?2, candidate_revision_id = NULL WHERE id = ?1",
+            "UPDATE revision SET blake3 = ?2, content_kind = ?3, candidate_revision_id = NULL
+             WHERE id = ?1",
         )?
-        .execute(params![revision, hash.as_slice()])?;
+        .execute(params![revision, hash.as_slice(), kind])?;
     report.new_revisions += 1;
 
+    if origin == RevisionOrigin::ReplacedAtPath
+        && let Some(kind) = kind
+        && let Some(was) = kind_replaced_by(transaction, revision)?
+        && was != kind
+    {
+        let evidence = format!(
+            "took the path of a file of another kind: {} before, {} now",
+            was.as_str(),
+            kind.as_str()
+        );
+        if separate_replacement(transaction, revision, &evidence, now, report)? {
+            (document, origin) = transaction
+                .prepare_cached("SELECT document_id, origin FROM revision WHERE id = ?1")?
+                .query_row([revision], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        }
+    }
     if origin != RevisionOrigin::Import {
         return Ok(());
     }
@@ -589,15 +807,16 @@ fn confirm(
         let other: DocumentId = transaction
             .prepare_cached("SELECT document_id FROM revision WHERE id = ?1")?
             .query_row([candidate], |row| row.get(0))?;
-        if other != document {
-            suggest(
+        if other != document
+            && suggest(
                 transaction,
                 SuggestionKind::SameFingerprint,
                 document,
                 other,
                 "the same fast fingerprint as a missing file that was never fully hashed",
                 now,
-            )?;
+            )?
+        {
             report.suggestions += 1;
         }
     }
@@ -618,17 +837,70 @@ fn confirm(
             .collect::<rusqlite::Result<_>>()?
     };
     for other in others {
-        suggest(
+        if suggest(
             transaction,
             SuggestionKind::SamePath,
             document,
             other,
             "found at the path of a file that had gone missing, with different contents",
             now,
-        )?;
-        report.suggestions += 1;
+        )? {
+            report.suggestions += 1;
+        }
     }
     Ok(())
+}
+
+/// The kind of file a provisional replacement took the place of, if it is still provisional. A
+/// revision hashed before kinds were recorded is taken to be what its document's format says.
+fn kind_replaced_by(connection: &Connection, revision: RevisionId) -> Result<Option<ContentKind>> {
+    let row: Option<(Option<ContentKind>, String)> = connection
+        .prepare_cached(
+            "SELECT previous.content_kind, d.format
+             FROM replaced_file x
+             JOIN revision r ON r.id = x.revision_id
+             JOIN revision previous ON previous.id = r.previous_revision_id
+             JOIN document d ON d.id = r.document_id
+             WHERE x.revision_id = ?1",
+        )?
+        .query_row([revision], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    Ok(row.map(|(kind, format)| kind.unwrap_or_else(|| ContentKind::expected_for(&format))))
+}
+
+/// Why a provisional replacement cannot be a revision of its document, by what it says about itself:
+/// an internal ID that both have and that differs.
+fn identifier_conflict(
+    connection: &Connection,
+    revision: RevisionId,
+    extracted: &Extracted,
+) -> Result<Option<String>> {
+    let row: Option<(Option<String>, Option<String>)> = connection
+        .prepare_cached(
+            "SELECT d.pdf_id0, d.dc_identifier
+             FROM replaced_file x
+             JOIN revision r ON r.id = x.revision_id
+             JOIN document d ON d.id = r.document_id
+             WHERE x.revision_id = ?1",
+        )?
+        .query_row([revision], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    let Some((pdf_id0, dc_identifier)) = row else {
+        return Ok(None);
+    };
+    for (label, known, found) in [
+        ("PDF /ID[0]", pdf_id0, &extracted.pdf_id0),
+        ("dc:identifier", dc_identifier, &extracted.dc_identifier),
+    ] {
+        if let (Some(known), Some(found)) = (known, found)
+            && known != *found
+        {
+            return Ok(Some(format!(
+                "took the path of a file with another {label}: {known} before, {found} now"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// The file is a revision the library already has. The unconfirmed one was only ever a guess, and
@@ -646,6 +918,15 @@ fn merge_into_existing(
     let into_document: DocumentId = transaction
         .prepare_cached("SELECT document_id FROM revision WHERE id = ?1")?
         .query_row([into], |row| row.get(0))?;
+
+    // A provisional replacement whose bytes are another document's: the file it took the place of did
+    // not become that document, it went missing, and the instance goes back to being it.
+    if into_document != from_document && restore_replaced(transaction, from, now)?.is_some() {
+        report.replacements_separated += 1;
+    }
+    transaction
+        .prepare_cached("DELETE FROM replaced_file WHERE revision_id = ?1")?
+        .execute([from])?;
 
     let instances: Vec<InstanceId> = {
         let mut statement =
@@ -673,6 +954,10 @@ fn merge_into_existing(
             "UPDATE annotation SET revision_id = ?2, document_id = ?3 WHERE revision_id = ?1",
         )?
         .execute(params![from, into, into_document])?;
+    // The same bytes, so a position taken on one is right on the other.
+    transaction
+        .prepare_cached("UPDATE reading_state SET revision_id = ?2 WHERE revision_id = ?1")?
+        .execute(params![from, into])?;
     transaction
         .prepare_cached(
             "UPDATE revision SET previous_revision_id = ?2 WHERE previous_revision_id = ?1",
@@ -788,6 +1073,22 @@ pub(crate) fn merge_empty_document(
 
     transaction
         .prepare_cached("UPDATE annotation SET document_id = ?2 WHERE document_id = ?1")?
+        .execute(params![from, into])?;
+    // Where the reader was goes along, unless the other one has a more recent position of its own.
+    transaction
+        .prepare_cached(
+            "DELETE FROM reading_state WHERE document_id = ?2
+               AND updated_at < (SELECT updated_at FROM reading_state WHERE document_id = ?1)",
+        )?
+        .execute(params![from, into])?;
+    transaction
+        .prepare_cached(
+            "DELETE FROM reading_state WHERE document_id = ?1
+               AND EXISTS (SELECT 1 FROM reading_state WHERE document_id = ?2)",
+        )?
+        .execute(params![from, into])?;
+    transaction
+        .prepare_cached("UPDATE reading_state SET document_id = ?2 WHERE document_id = ?1")?
         .execute(params![from, into])?;
     transaction
         .prepare_cached(
@@ -920,19 +1221,35 @@ pub(crate) fn apply_extraction(
     now: i64,
     report: &mut ContentReport,
 ) -> Result<()> {
-    let (document, work, origin): (DocumentId, WorkId, RevisionOrigin) = transaction
-        .prepare_cached(
-            "SELECT r.document_id, d.work_id, r.origin
-             FROM revision r JOIN document d ON d.id = r.document_id WHERE r.id = ?1",
-        )?
-        .query_row([revision], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
+    let identity = |transaction: &Transaction<'_>| -> Result<(DocumentId, WorkId, RevisionOrigin)> {
+        Ok(transaction
+            .prepare_cached(
+                "SELECT r.document_id, d.work_id, r.origin
+                 FROM revision r JOIN document d ON d.id = r.document_id WHERE r.id = ?1",
+            )?
+            .query_row([revision], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?)
+    };
+    let (mut document, mut work, mut origin) = identity(transaction)?;
+    // Before anything is written to the document: these may not be its bytes at all.
+    if origin == RevisionOrigin::ReplacedAtPath
+        && let Some(evidence) = identifier_conflict(transaction, revision, extracted)?
+        && separate_replacement(transaction, revision, &evidence, now, report)?
+    {
+        (document, work, origin) = identity(transaction)?;
+    }
 
+    // The direction is the newest file's word, unlike identifiers, which are the first one's.
+    let orientation = extracted.direction.map(|direction| match direction {
+        Direction::L2R => "ltr",
+        Direction::R2L => "rtl",
+    });
     transaction
         .prepare_cached(
             "UPDATE document SET pdf_id0 = coalesce(pdf_id0, ?2),
-                 dc_identifier = coalesce(dc_identifier, ?3), isbn = coalesce(isbn, ?4)
+                 dc_identifier = coalesce(dc_identifier, ?3), isbn = coalesce(isbn, ?4),
+                 orientation = coalesce(?5, orientation)
              WHERE id = ?1",
         )?
         .execute(params![
@@ -940,6 +1257,7 @@ pub(crate) fn apply_extraction(
             extracted.pdf_id0,
             extracted.dc_identifier,
             extracted.isbn,
+            orientation,
         ])?;
 
     if origin == RevisionOrigin::Import {
@@ -1044,15 +1362,16 @@ fn suggest_same_identifier(
             .collect::<rusqlite::Result<_>>()?
     };
     for other in others {
-        suggest(
+        if suggest(
             transaction,
             SuggestionKind::SameInternalId,
             document,
             other,
             &format!("{evidence}: {value}"),
             now,
-        )?;
-        report.suggestions += 1;
+        )? {
+            report.suggestions += 1;
+        }
     }
     Ok(())
 }

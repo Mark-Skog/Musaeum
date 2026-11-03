@@ -13,6 +13,7 @@ use musaeum_core::{
 use musaeum_sandbox::Policy;
 use musaeum_shm::ring::ring_len;
 use musaeum_shm::slab::slab_len;
+use musaeum_shm::tile::scale_of_lod;
 use musaeum_shm::{
     DeliveryRing, PageGeometry, PixelSlab, RingConsumer, ShmRegion, TILE_BYTES, TileAnnouncement,
     TileKey,
@@ -34,6 +35,7 @@ fn config(document: PathBuf, worker_count: usize) -> PoolConfig {
         process_memory_limit: Some(2 << 30),
         policy: Policy::Lockdown,
         startup_timeout: WAIT,
+        known_geometry: None,
     }
 }
 
@@ -42,7 +44,12 @@ fn slab(slots: u32) -> Arc<PixelSlab> {
 }
 
 fn tile(page: u32, lod: i8, x: u16, y: u16) -> TileKey {
-    TileKey { page, lod, x, y }
+    TileKey {
+        page,
+        scale: scale_of_lod(lod),
+        x,
+        y,
+    }
 }
 
 fn solid_pages(test: &str, count: usize) -> PathBuf {
@@ -269,7 +276,7 @@ fn a_new_demand_cancels_work_that_is_no_longer_wanted() {
         let received = tiles
             .recv_timeout(WAIT)
             .expect("the wanted tile should arrive");
-        if received.words.page == 0 && received.words.lod == -2 {
+        if received.words.page == 0 && received.words.scale == scale_of_lod(-2) {
             break;
         }
         assert!(Instant::now() < deadline);
@@ -308,6 +315,123 @@ fn a_worker_crash_is_invisible_apart_from_the_restart_counter() {
         .recv_timeout(WAIT)
         .expect("the replacement should work");
     assert_eq!(received.words.page, 0);
+}
+
+/// Ends a process the way the task manager does, with no chance to clean up.
+fn terminate(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    // SAFETY: plain calls with no pointers; the handle is checked and closed.
+    unsafe {
+        let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        assert!(!process.is_null(), "could not open worker {pid}");
+        assert_ne!(TerminateProcess(process, 0xDEAD), 0);
+        CloseHandle(process);
+    }
+}
+
+#[test]
+fn a_worker_killed_from_outside_is_replaced_in_under_a_second_and_reading_goes_on() {
+    const KILLS: usize = 8;
+    let path = temp_dir("kill").join("vector.pdf");
+    gen_fixtures::write_vector_fixture(&path, 60).unwrap();
+    // One worker, so nothing can hide the gap: every tile after a kill needs the replacement.
+    let (pool, tiles) = start_pull(path, 1, 8);
+    pool.submit_demand(encode_demand(1, &[tile(0, 0, 0, 0)]));
+    assert_eq!(tiles.recv_timeout(WAIT).unwrap().words.page, 0);
+
+    let mut until_next_tile = Vec::new();
+    for round in 0..KILLS {
+        let pid = pool.worker_pids()[0].expect("the worker is running");
+        // A heavy page in progress at the moment of the kill, as when a page crashes PDFium.
+        let page = 49 + round as u32;
+        let heavy = tile(page, 3, 0, 0);
+        pool.submit_demand(encode_demand(2 + 2 * round as u32, &[heavy]));
+        std::thread::sleep(Duration::from_millis(3));
+        let killed_at = Instant::now();
+        terminate(pid);
+
+        // What a reader does next: ask for another page.
+        let next = tile(round as u32 + 1, 0, 0, 0);
+        pool.submit_demand(encode_demand(3 + 2 * round as u32, &[next]));
+        let arrived = loop {
+            let received = tiles
+                .recv_timeout(WAIT)
+                .expect("reading goes on after a kill");
+            if received.words.page == next.page {
+                break killed_at.elapsed();
+            }
+        };
+        until_next_tile.push(arrived);
+        let replacement = pool.worker_pids()[0];
+        assert!(replacement.is_some_and(|new| new != pid), "a new process");
+    }
+
+    let stats = pool.stats().unwrap();
+    assert_eq!(stats.worker_restarts as usize, KILLS);
+    assert_eq!(stats.recovery_us.count as usize, KILLS);
+    assert_eq!(stats.protocol_violations, 0);
+    until_next_tile.sort();
+    println!(
+        "worker recovery: p50 {} µs, max {} µs; kill to next tile: p50 {:?}, max {:?}",
+        stats.recovery_us.p50,
+        stats.recovery_us.max,
+        until_next_tile[KILLS / 2],
+        until_next_tile[KILLS - 1],
+    );
+    assert!(
+        stats.recovery_us.max < 1_000_000,
+        "a replacement took {} µs",
+        stats.recovery_us.max
+    );
+    assert!(until_next_tile[KILLS - 1] < Duration::from_secs(1));
+}
+
+#[test]
+fn known_geometry_skips_measuring_and_a_wrong_one_is_measured_again() {
+    let path = temp_dir("known").join("mixed.pdf");
+    gen_fixtures::write_mixed_fixture(&path).unwrap();
+    let measured = RenderPool::start(
+        config(path.clone(), 1),
+        slab(2),
+        DeliveryMode::Pull { max_batch: 1 },
+    )
+    .unwrap();
+    let pages = measured.pages().to_vec();
+    let hints = measured.hints();
+    drop(measured);
+
+    let known = RenderPool::start(
+        PoolConfig {
+            known_geometry: Some((pages.clone(), hints)),
+            ..config(path.clone(), 2)
+        },
+        slab(2),
+        DeliveryMode::Pull { max_batch: 1 },
+    )
+    .unwrap();
+    assert_eq!(known.pages(), pages.as_slice());
+    assert!(!known.measured_geometry());
+    assert_eq!(
+        known.stats().unwrap().geometry_us,
+        0,
+        "nothing was measured"
+    );
+    drop(known);
+
+    // A cache that is wrong about this document costs a measurement, and nothing else.
+    let wrong = RenderPool::start(
+        PoolConfig {
+            known_geometry: Some((pages[..5].to_vec(), hints)),
+            ..config(path, 2)
+        },
+        slab(2),
+        DeliveryMode::Pull { max_batch: 1 },
+    )
+    .unwrap();
+    assert!(wrong.measured_geometry());
+    assert_eq!(wrong.pages(), pages.as_slice());
 }
 
 #[test]

@@ -71,6 +71,21 @@ fn changes_anywhere_below_are_reported_with_their_path() {
 }
 
 #[test]
+fn a_change_made_the_moment_the_watch_returns_is_seen() {
+    // The system records changes only from the first look on. A watch that returned before that
+    // look would miss this, now and then, whenever its thread was slow to start.
+    for _ in 0..30 {
+        let dir = TempDir::new();
+        let (_watch, events) = watch(&dir.0, DEFAULT_WATCH_BUFFER);
+        let file = dir.0.join("at-once.pdf");
+        fs::write(&file, b"x").unwrap();
+        assert!(saw(&events, |event| {
+            matches!(event, WatchEvent::Changed(path) if *path == file)
+        }));
+    }
+}
+
+#[test]
 fn a_real_overflow_is_reported_and_the_watch_goes_on() {
     let dir = TempDir::new();
     // Too small for even one record, so every change overflows it, and no timing is involved.

@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use musaeum_core::{Direction, PageLayout};
 use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::slab_len;
+use musaeum_shm::tile::{SCALE_ONE, scale_of_lod};
 use musaeum_shm::wire::{
     FatalCode, HostMessage, InitParams, PROTOCOL_VERSION, RenderJob, TileFailure, WorkerMessage,
     read_frame, write_frame,
@@ -129,7 +131,12 @@ impl Worker {
 }
 
 fn tile(page: u32, lod: i8, x: u16, y: u16) -> TileKey {
-    TileKey { page, lod, x, y }
+    TileKey {
+        page,
+        scale: scale_of_lod(lod),
+        x,
+        y,
+    }
 }
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -173,6 +180,14 @@ fn reports_real_geometry_for_every_page_without_rendering() {
             })
         );
     }
+    assert_eq!(
+        worker.receive(),
+        Some(WorkerMessage::Hints {
+            page_layout: 0,
+            direction: 0
+        }),
+        "the catalog asks for nothing"
+    );
     assert!(matches!(
         worker.receive(),
         Some(WorkerMessage::GeometryEnd { page_count: 6, .. })
@@ -269,6 +284,62 @@ fn levels_of_detail_scale_the_page() {
         worker.pixel(0, 505, 100),
         WHITE,
         "past the page's right edge"
+    );
+}
+
+#[test]
+fn any_scale_renders_exactly_that_size() {
+    let pdf = mixed_pdf("exact-scale");
+    let mut worker = Worker::started(&pdf);
+
+    // 1.37 px/pt, which no power of two is: the 2000 × 3000 page is 2740 × 4110 pixels, and the
+    // red quadrant ends at x = 1000 pt, which is pixel 1370, inside the third tile (1024–1536).
+    let scale = (1.37 * f64::from(SCALE_ONE)).round() as u32;
+    let exact = |x, y| TileKey {
+        page: 5,
+        scale,
+        x,
+        y,
+    };
+    worker.request(1, 0, exact(2, 0));
+    let boundary = (1000.0 * f64::from(scale) / f64::from(SCALE_ONE)).round() as u32 - 1024;
+    assert_eq!(worker.pixel(0, boundary - 2, 100), RED);
+    assert_eq!(worker.pixel(0, boundary + 2, 100), WHITE);
+
+    // The last column: 2740 px is five full tiles and 180 pixels of a sixth.
+    worker.request(2, 0, exact(5, 8));
+    let right_edge = 2740 - 5 * 512;
+    assert_eq!(worker.pixel(0, right_edge - 2, 10), BLUE);
+    assert_eq!(
+        worker.pixel(0, right_edge + 2, 10),
+        WHITE,
+        "paper past the edge"
+    );
+}
+
+#[test]
+fn the_catalogs_hints_arrive_with_the_geometry() {
+    let pdf = temp_dir("hints").join("spreads.pdf");
+    gen_fixtures::write_spread_fixture(&pdf).unwrap();
+    let mut worker = Worker::spawn(&pdf, true, PROTOCOL_VERSION);
+    let mut hints = None;
+    loop {
+        match worker.receive() {
+            Some(WorkerMessage::Hints {
+                page_layout,
+                direction,
+            }) => hints = Some((page_layout, direction)),
+            Some(WorkerMessage::GeometryEnd { page_count, .. }) => {
+                assert_eq!(page_count, 8);
+                break;
+            }
+            Some(_) => {}
+            None => panic!("the worker stopped"),
+        }
+    }
+    assert_eq!(
+        hints,
+        Some((PageLayout::TwoPageRight.code(), Direction::R2L.code()))
     );
 }
 
@@ -515,7 +586,7 @@ fn large_page_counts_open_quickly_because_nothing_is_rasterized() {
     let elapsed_us = loop {
         match worker.receive() {
             Some(WorkerMessage::GeometryEnd { elapsed_us, .. }) => break elapsed_us,
-            Some(WorkerMessage::Geometry { .. }) => {}
+            Some(WorkerMessage::Geometry { .. } | WorkerMessage::Hints { .. }) => {}
             other => panic!("unexpected message: {other:?}"),
         }
     };

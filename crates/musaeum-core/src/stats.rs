@@ -76,6 +76,8 @@ pub struct PoolStats {
     pub cancel_latency_us: Summary,
     /// Microseconds to copy a batch out of the slab (Path A only).
     pub batch_copy_us: Summary,
+    /// Microseconds from finding a worker dead to its replacement being ready for jobs.
+    pub recovery_us: Summary,
 }
 
 /// Collects raw samples on the pool's thread.
@@ -86,6 +88,7 @@ pub(crate) struct StatsCollector {
     load_us: Vec<u32>,
     cancel_latency_us: Vec<u32>,
     batch_copy_us: Vec<u32>,
+    recovery_us: Vec<u32>,
 }
 
 fn record(samples: &mut Vec<u32>, value: u32) {
@@ -109,12 +112,17 @@ impl StatsCollector {
         record(&mut self.batch_copy_us, micros);
     }
 
+    pub(crate) fn recovered(&mut self, micros: u32) {
+        record(&mut self.recovery_us, micros);
+    }
+
     pub(crate) fn snapshot(&self) -> PoolStats {
         PoolStats {
             render_us: Summary::of(&self.render_us),
             load_us: Summary::of(&self.load_us),
             cancel_latency_us: Summary::of(&self.cancel_latency_us),
             batch_copy_us: Summary::of(&self.batch_copy_us),
+            recovery_us: Summary::of(&self.recovery_us),
             ..self.totals.clone()
         }
     }

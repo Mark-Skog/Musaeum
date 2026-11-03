@@ -5,7 +5,7 @@
 
 import {
   A_DONE_US,
-  A_LOD,
+  A_SCALE,
   A_PAGE,
   A_RENDER_US,
   A_SLOT,
@@ -26,7 +26,7 @@ import type { SabRingConsumer } from '../sab-ring';
 
 export type TileConsumer = (
   page: number,
-  lod: number,
+  scale: number,
   x: number,
   y: number,
   pixels: Uint8Array,
@@ -49,7 +49,7 @@ const DIRECT_IDLE_POLL_MS = 16;
 
 interface ReceivedTile {
   page: number;
-  lod: number;
+  scale: number;
   x: number;
   y: number;
   pixels: Uint8Array;
@@ -74,7 +74,7 @@ export function parseBatch(bytes: ArrayBuffer): ReceivedTile[] {
     const words = new Uint32Array(bytes, at, ANNOUNCEMENT_WORDS);
     tiles.push({
       page: words[A_PAGE],
-      lod: words[A_LOD] | 0,
+      scale: words[A_SCALE],
       x: words[A_X],
       y: words[A_Y],
       pixels: new Uint8Array(bytes, at + ANNOUNCEMENT_WORDS * 4, TILE_BYTES),
@@ -138,7 +138,7 @@ export class PullDelivery implements Delivery {
     let drained = 0;
     while (this.queue.length > 0) {
       const tile = this.queue.shift()!;
-      consumer(tile.page, tile.lod, tile.x, tile.y, tile.pixels, tile.doneUs, tile.renderUs);
+      consumer(tile.page, tile.scale, tile.x, tile.y, tile.pixels, tile.doneUs, tile.renderUs);
       drained++;
       if (performance.now() - started >= budgetMs) {
         break;
@@ -192,7 +192,7 @@ export class DirectDelivery implements Delivery {
       if (pixels !== undefined) {
         consumer(
           this.ring[entry + A_PAGE],
-          this.ring[entry + A_LOD] | 0,
+          this.ring[entry + A_SCALE],
           this.ring[entry + A_X],
           this.ring[entry + A_Y],
           pixels,
@@ -257,7 +257,7 @@ export class RingDelivery implements Delivery {
       }
       consumer(
         this.ring.word(index, A_PAGE),
-        this.ring.word(index, A_LOD) | 0,
+        this.ring.word(index, A_SCALE),
         this.ring.word(index, A_X),
         this.ring.word(index, A_Y),
         this.ring.pixels(index),

@@ -34,6 +34,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::demand::parse_demand;
+use crate::geometry::{Direction, DocumentHints, PageLayout};
 use crate::scheduler::{CancelOrder, ReadyTile, Scheduler, TileOutcome};
 use crate::stats::{PoolStats, StatsCollector};
 
@@ -69,6 +70,10 @@ pub struct PoolConfig {
     pub policy: Policy,
     /// How long to wait for the workers to report in.
     pub startup_timeout: Duration,
+    /// The document's pages and hints, if they were measured before, so that no worker reads them
+    /// again. If the document turns out to have another number of pages, they are measured after
+    /// all: a damaged cache costs time, never a document.
+    pub known_geometry: Option<(Vec<PageGeometry>, DocumentHints)>,
 }
 
 /// How finished tiles leave the pool.
@@ -142,6 +147,7 @@ enum Event {
     },
     Geometry {
         pages: Vec<PageGeometry>,
+        hints: DocumentHints,
         elapsed_us: u64,
     },
     Exited {
@@ -149,6 +155,7 @@ enum Event {
         instance: u64,
     },
     Stats(Sender<PoolStats>),
+    Pids(Sender<Vec<Option<u32>>>),
     KillWorker(usize),
     Shutdown,
 }
@@ -158,6 +165,8 @@ pub struct RenderPool {
     events: Sender<Event>,
     thread: Mutex<Option<JoinHandle<()>>>,
     pages: Arc<[PageGeometry]>,
+    hints: DocumentHints,
+    measured_geometry: bool,
     slab: Arc<PixelSlab>,
     started: Instant,
 }
@@ -187,15 +196,17 @@ impl RenderPool {
         let (events, receiver) = mpsc::channel();
         let startup_timeout = config.startup_timeout;
         let worker_count = config.worker_count;
+        let known_geometry = config.known_geometry.clone();
         let mut spawner = Spawner::new(config, Arc::clone(&slab), events.clone())?;
 
         let mut workers = Vec::with_capacity(worker_count);
         for worker in 0..worker_count {
-            workers.push(Some(spawner.spawn(worker, worker == 0)?));
+            let measures = worker == 0 && known_geometry.is_none();
+            workers.push(Some(spawner.spawn(worker, measures)?));
         }
 
         let started = Instant::now();
-        let handshake = wait_until_ready(&receiver, &workers, startup_timeout)?;
+        let handshake = wait_until_ready(&receiver, &mut workers, startup_timeout, known_geometry)?;
         let pages: Arc<[PageGeometry]> = handshake.pages.into();
 
         let mut scheduler = Scheduler::new(worker_count, slab.slot_count());
@@ -211,6 +222,7 @@ impl RenderPool {
             spawner,
             workers,
             restarts: vec![0; worker_count],
+            lost_at: vec![None; worker_count],
             scheduler,
             delivery: Delivery::new(delivery),
             slab: Arc::clone(&slab),
@@ -231,14 +243,26 @@ impl RenderPool {
             events,
             thread: Mutex::new(Some(thread)),
             pages,
+            hints: handshake.hints,
+            measured_geometry: handshake.measured,
             slab,
             started,
         })
     }
 
+    /// Whether a worker measured the pages, rather than them being known beforehand.
+    pub fn measured_geometry(&self) -> bool {
+        self.measured_geometry
+    }
+
     /// Page sizes, in page order.
     pub fn pages(&self) -> &[PageGeometry] {
         &self.pages
+    }
+
+    /// What the document's catalog asks of a reader.
+    pub fn hints(&self) -> DocumentHints {
+        self.hints
     }
 
     /// The pixel slab.
@@ -277,6 +301,16 @@ impl RenderPool {
         let _ = self.events.send(Event::KillWorker(worker));
     }
 
+    /// The process ID of each worker, or `None` while one is being replaced. For killing one from
+    /// outside, the way a crash or the task manager would.
+    pub fn worker_pids(&self) -> Vec<Option<u32>> {
+        let (sender, receiver) = mpsc::channel();
+        if self.events.send(Event::Pids(sender)).is_err() {
+            return Vec::new();
+        }
+        receiver.recv().unwrap_or_default()
+    }
+
     /// Stops the workers and waits for the pool's thread to finish, after which nothing in
     /// this process touches the slab through the pool. Safe to call more than once.
     pub fn shutdown(&self) {
@@ -300,20 +334,24 @@ impl Drop for RenderPool {
 
 struct Handshake {
     pages: Vec<PageGeometry>,
+    hints: DocumentHints,
     open_us: u64,
     geometry_us: u64,
+    measured: bool,
 }
 
 fn wait_until_ready(
     receiver: &Receiver<Event>,
-    workers: &[Option<WorkerProcess>],
+    workers: &mut [Option<WorkerProcess>],
     timeout: Duration,
+    known_geometry: Option<(Vec<PageGeometry>, DocumentHints)>,
 ) -> Result<Handshake, PoolError> {
     let deadline = Instant::now() + timeout;
     let mut ready = vec![false; workers.len()];
     let mut page_count = None;
     let mut open_us = 0;
-    let mut geometry = None;
+    let mut measured = known_geometry.is_none();
+    let mut geometry = known_geometry.map(|(pages, hints)| (pages, hints, 0));
 
     while !(ready.iter().all(|&is_ready| is_ready) && geometry.is_some()) {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -343,6 +381,21 @@ fn wait_until_ready(
                         reason: "workers disagree about the page count".into(),
                     });
                 }
+                if !measured
+                    && geometry
+                        .as_ref()
+                        .is_some_and(|known| known.0.len() != pages as usize)
+                {
+                    // Not the document that was measured: this worker measures it after all.
+                    eprintln!("the known geometry does not fit this document; measuring it");
+                    measured = true;
+                    geometry = None;
+                    if let Some(Some(process)) = workers.get_mut(worker) {
+                        write_frame(&mut process.stdin, &HostMessage::SendGeometry.encode())
+                            .and_then(|()| process.stdin.flush())
+                            .map_err(os_error("asking a worker for the geometry"))?;
+                    }
+                }
                 if let Some(Some(process)) = workers.get(worker) {
                     process
                         .check_locked_down()
@@ -355,8 +408,10 @@ fn wait_until_ready(
                 ..
             }) => return Err(PoolError::WorkerFatal { code, detail }),
             Ok(Event::Geometry {
-                pages, elapsed_us, ..
-            }) => geometry = Some((pages, elapsed_us)),
+                pages,
+                hints,
+                elapsed_us,
+            }) => geometry = Some((pages, hints, elapsed_us)),
             Ok(Event::Exited { worker, .. }) => return Err(PoolError::WorkerDied(worker)),
             Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => return Err(PoolError::StartupTimeout(timeout)),
@@ -364,7 +419,7 @@ fn wait_until_ready(
         }
     }
 
-    let (pages, geometry_us) = geometry.expect("checked by the loop condition");
+    let (pages, hints, geometry_us) = geometry.expect("checked by the loop condition");
     if page_count.is_some_and(|count| count as usize != pages.len()) {
         return Err(PoolError::BadHandshake {
             worker: 0,
@@ -373,8 +428,10 @@ fn wait_until_ready(
     }
     Ok(Handshake {
         pages,
+        hints,
         open_us,
         geometry_us,
+        measured,
     })
 }
 
@@ -522,6 +579,7 @@ fn forward_worker_log(worker: usize, mut stderr: File) {
 fn read_worker_events(worker: usize, instance: u64, stdout: File, events: Sender<Event>) {
     let mut reader = BufReader::with_capacity(64 * 1024, stdout);
     let mut pages = Vec::new();
+    let mut hints = DocumentHints::default();
     while let Ok(Some(frame)) = read_frame(&mut reader) {
         let event = match WorkerMessage::decode(&frame) {
             Ok(WorkerMessage::Geometry { page, size }) => {
@@ -531,8 +589,19 @@ fn read_worker_events(worker: usize, instance: u64, stdout: File, events: Sender
                 pages.push(size);
                 continue;
             }
+            Ok(WorkerMessage::Hints {
+                page_layout,
+                direction,
+            }) => {
+                hints = DocumentHints {
+                    page_layout: PageLayout::from_code(page_layout),
+                    direction: Direction::from_code(direction),
+                };
+                continue;
+            }
             Ok(WorkerMessage::GeometryEnd { elapsed_us, .. }) => Event::Geometry {
                 pages: take(&mut pages),
+                hints: take(&mut hints),
                 elapsed_us,
             },
             Ok(message) => Event::Worker {
@@ -577,7 +646,7 @@ fn announcement(tile: &ReadyTile) -> TileAnnouncement {
     TileAnnouncement {
         slot: tile.slot,
         page: tile.tile.page,
-        lod: i32::from(tile.tile.lod),
+        scale: tile.tile.scale,
         x: u32::from(tile.tile.x),
         y: u32::from(tile.tile.y),
         epoch: tile.epoch,
@@ -655,6 +724,8 @@ struct EventLoop {
     spawner: Spawner,
     workers: Vec<Option<WorkerProcess>>,
     restarts: Vec<u32>,
+    /// When each worker being replaced was found dead, for measuring how long recovery takes.
+    lost_at: Vec<Option<Instant>>,
     scheduler: Scheduler,
     delivery: Delivery,
     slab: Arc<PixelSlab>,
@@ -760,6 +831,14 @@ impl EventLoop {
                 self.stats.totals.results_discarded = self.scheduler.discarded_results();
                 let _ = reply.send(self.stats.snapshot());
             }
+            Event::Pids(reply) => {
+                let pids = self
+                    .workers
+                    .iter()
+                    .map(|process| process.as_ref().map(|process| process.child.id()))
+                    .collect();
+                let _ = reply.send(pids);
+            }
             Event::KillWorker(worker) => {
                 if let Some(Some(process)) = self.workers.get(worker) {
                     process.kill();
@@ -848,7 +927,12 @@ impl EventLoop {
                     .as_ref()
                     .map_or(Ok(()), WorkerProcess::check_locked_down);
                 match check {
-                    Ok(()) => self.scheduler.on_worker_ready(worker),
+                    Ok(()) => {
+                        self.scheduler.on_worker_ready(worker);
+                        if let Some(lost) = self.lost_at[worker].take() {
+                            self.stats.recovered(lost.elapsed().as_micros() as u32);
+                        }
+                    }
                     Err(reason) => self.kill_for_violation(worker, &reason),
                 }
                 Ok(())
@@ -861,6 +945,7 @@ impl EventLoop {
             // is a worker saying something it should not.
             WorkerMessage::Ready { .. }
             | WorkerMessage::Geometry { .. }
+            | WorkerMessage::Hints { .. }
             | WorkerMessage::GeometryEnd { .. } => {
                 self.kill_for_violation(worker, "sent an unexpected message");
                 Ok(())
@@ -882,6 +967,7 @@ impl EventLoop {
     }
 
     fn on_worker_exit(&mut self, worker: usize) {
+        self.lost_at[worker] = Some(Instant::now());
         // Dropping it reaps the process.
         self.workers[worker] = None;
         // The process is gone, so nothing can write to its slot any more.

@@ -282,6 +282,9 @@ fn sanitized(extracted: Extracted) -> Extracted {
             .language
             .and_then(|text| clean(&text, MAX_LANGUAGE_CHARS)),
         year: extracted.year.filter(|year| (1000..=2999).contains(year)),
+        // Enumerations, so deserializing them already refused anything else.
+        page_layout: extracted.page_layout,
+        direction: extracted.direction,
     }
 }
 
@@ -302,6 +305,8 @@ mod tests {
                 .collect(),
             language: Some("x".repeat(1000)),
             year: Some(-5),
+            page_layout: None,
+            direction: None,
         };
         let cleaned = sanitized(lying);
         assert_eq!(cleaned.pdf_id0, None);
@@ -329,6 +334,8 @@ mod tests {
             creators: vec!["Machado de Assis".to_owned()],
             language: Some("pt-BR".to_owned()),
             year: Some(1899),
+            page_layout: Some(musaeum_ingest::parse::pdf_catalog::PageLayout::TwoPageRight),
+            direction: Some(musaeum_ingest::parse::pdf_catalog::Direction::R2L),
         };
         assert_eq!(sanitized(honest.clone()), honest);
     }

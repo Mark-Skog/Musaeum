@@ -32,16 +32,28 @@ pub(crate) const LIBRARY_APPLICATION_ID: i32 = 0x4D55_534C;
 pub(crate) const CACHE_APPLICATION_ID: i32 = 0x4D55_5343;
 
 /// The migrations of `library.db`, in order.
-pub(crate) const LIBRARY_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("../../migrations/library/0001_initial.sql"),
-}];
+pub(crate) const LIBRARY_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("../../migrations/library/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("../../migrations/library/0002_reading.sql"),
+    },
+];
 
 /// The migrations of `cache.db`, in order.
-pub(crate) const CACHE_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("../../migrations/cache/0001_initial.sql"),
-}];
+pub(crate) const CACHE_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("../../migrations/cache/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("../../migrations/cache/0002_page_geometry.sql"),
+    },
+];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 

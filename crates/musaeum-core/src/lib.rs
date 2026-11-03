@@ -11,7 +11,10 @@ pub mod scheduler;
 pub mod stats;
 
 pub use demand::{Demand, DemandError, encode_demand, parse_demand};
-pub use geometry::{DocumentOrientation, Orientation, geometry_bytes, summarize_orientation};
+pub use geometry::{
+    Direction, DocumentHints, DocumentOrientation, Orientation, PageLayout, geometry_bytes,
+    summarize_orientation,
+};
 pub use pool::{DeliveryMode, Poller, PoolConfig, PoolError, RenderPool, encode_tile_batch};
 pub use scheduler::{
     CancelOrder, DispatchOrder, ReadyTile, Scheduler, SchedulerError, TileOutcome,

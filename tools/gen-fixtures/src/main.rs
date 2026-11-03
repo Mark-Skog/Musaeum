@@ -44,6 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     report(&path, started)?;
 
     let started = Instant::now();
+    let path = out.join("spreads.pdf");
+    gen_fixtures::write_spread_fixture(&path)?;
+    report(&path, started)?;
+
+    let started = Instant::now();
     let path = out.join(format!("scan-{scan_pages}.pdf"));
     gen_fixtures::write_scan_fixture(&path, scan_pages)?;
     report(&path, started)?;

@@ -642,7 +642,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let target = slab.slot_ptr(0)?;
     let tile = TileKey {
         page: 0,
-        lod: 0,
+        scale: musaeum_shm::tile::SCALE_ONE,
         x: 0,
         y: 0,
     };

@@ -1,0 +1,25 @@
+[package]
+name = "corpus-check"
+description = "Checks the library and the fixed-layout pipeline on a real collection of books, which it only ever reads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+musaeum-core.workspace = true
+musaeum-library.workspace = true
+musaeum-sandbox.workspace = true
+musaeum-shm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

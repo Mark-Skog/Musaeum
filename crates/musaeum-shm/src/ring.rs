@@ -42,8 +42,8 @@ pub struct TileAnnouncement {
     pub slot: u32,
     /// Page index.
     pub page: u32,
-    /// Level of detail.
-    pub lod: i32,
+    /// Device pixels per point, in units of 1/[`crate::tile::SCALE_ONE`].
+    pub scale: u32,
     /// Tile column.
     pub x: u32,
     /// Tile row.
@@ -62,7 +62,7 @@ impl TileAnnouncement {
         [
             self.slot,
             self.page,
-            self.lod as u32,
+            self.scale,
             self.x,
             self.y,
             self.epoch,
@@ -76,7 +76,7 @@ impl TileAnnouncement {
         Self {
             slot: words[0],
             page: words[1],
-            lod: words[2] as i32,
+            scale: words[2],
             x: words[3],
             y: words[4],
             epoch: words[5],
@@ -250,7 +250,7 @@ mod tests {
         TileAnnouncement {
             slot: n,
             page: n.wrapping_mul(3),
-            lod: -2,
+            scale: 0x8000_1234,
             x: n ^ 5,
             y: n ^ 9,
             epoch: n / 2,
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_lods_survive_the_word_encoding() {
+    fn every_field_survives_the_word_encoding() {
         let original = tile(7);
         assert_eq!(TileAnnouncement::from_words(original.to_words()), original);
     }

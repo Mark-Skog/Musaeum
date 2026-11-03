@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
 use std::time::Instant;
 
+use musaeum_ingest::parse::pdf_catalog::{Direction, PageLayout, catalog_hints};
 use musaeum_render_pdf::engine::{CancelProbe, Document, OpenError, RenderOutcome};
 use musaeum_render_pdf::startup::{self, Attached};
 use musaeum_shm::PixelSlab;
@@ -82,14 +83,17 @@ fn run() -> io::Result<()> {
         return outbox.fatal(FatalCode::ProtocolMismatch, init.protocol);
     }
 
-    let Attached { slab, document } = match startup::attach(&init) {
+    let Attached {
+        slab,
+        document: bytes,
+    } = match startup::attach(&init) {
         Ok(attached) => attached,
         Err(error) => {
             eprintln!("render worker: {error}");
             return outbox.fatal(error.code, error.detail);
         }
     };
-    let mut document = match Document::open(&pdfium, &document) {
+    let mut document = match Document::open(&pdfium, &bytes) {
         Ok(document) => document,
         Err(OpenError { pdfium_error }) => {
             return outbox.fatal(FatalCode::DocumentOpen, pdfium_error);
@@ -104,14 +108,7 @@ fn run() -> io::Result<()> {
     })?;
 
     if init.send_geometry {
-        let started = Instant::now();
-        for (page, &size) in (0u32..).zip(document.page_sizes()) {
-            outbox.queue(WorkerMessage::Geometry { page, size })?;
-        }
-        outbox.send(WorkerMessage::GeometryEnd {
-            page_count: document.page_count(),
-            elapsed_us: u64::from(micros_since(started)) + u64::from(document.geometry_us()),
-        })?;
+        send_geometry(&mut outbox, &document, &bytes)?;
     }
 
     let cancel = slab
@@ -132,10 +129,34 @@ fn run() -> io::Result<()> {
                 document.release_pages();
                 startup::release_memory();
             }
+            HostMessage::SendGeometry => send_geometry(&mut outbox, &document, &bytes)?,
             HostMessage::Init(_) => return outbox.fatal(FatalCode::BadHandshake, 1),
         }
     }
     Ok(())
+}
+
+/// Reports every page's size and what the catalog asks of a reader, without drawing anything.
+fn send_geometry<W: Write>(
+    outbox: &mut Outbox<W>,
+    document: &Document<'_, '_>,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let started = Instant::now();
+    for (page, &size) in (0u32..).zip(document.page_sizes()) {
+        outbox.queue(WorkerMessage::Geometry { page, size })?;
+    }
+    // PDFium cannot say what the catalog asks for, so the bytes are read for it here, by safe code
+    // with limits, inside the same sandbox.
+    let hints = catalog_hints(bytes);
+    outbox.queue(WorkerMessage::Hints {
+        page_layout: hints.page_layout.map_or(0, PageLayout::code),
+        direction: hints.direction.map_or(0, Direction::code),
+    })?;
+    outbox.send(WorkerMessage::GeometryEnd {
+        page_count: document.page_count(),
+        elapsed_us: u64::from(micros_since(started)) + u64::from(document.geometry_us()),
+    })
 }
 
 fn render(

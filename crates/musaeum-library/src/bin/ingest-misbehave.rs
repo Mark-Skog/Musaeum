@@ -83,6 +83,8 @@ fn main() -> ExitCode {
                 creators: vec!["Someone".to_owned(); 100],
                 language: Some("z".repeat(100_000)),
                 year: Some(99_999),
+                page_layout: None,
+                direction: None,
             };
             let _ = write_frame(&mut output, &Reply::Extracted(lie));
         }

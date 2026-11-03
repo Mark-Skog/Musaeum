@@ -11,6 +11,7 @@ mod book;
 mod memory;
 mod options;
 mod protocol;
+mod reading;
 mod session;
 mod webview2;
 
@@ -75,6 +76,7 @@ fn main() {
             session::open_delivery_probe,
             session::open_session,
             session::close_session,
+            session::save_reading_state,
             session::pool_stats,
             session::probe_exchange,
             session::bench_mark_phase,

@@ -1,7 +1,7 @@
 /**
- * The compositor worker. It owns the canvas and runs the frame loop on its own thread:
- * upload arriving tiles, move the camera, plan the frame, ask for what is missing, draw.
- * Nothing in the loop waits for anything, and the main thread is not involved.
+ * The compositor worker. It owns the canvas and runs the frame loop on its own thread: upload
+ * arriving tiles, move the reader, plan the frame, ask for what is missing, draw. Nothing in the
+ * loop waits for anything, and the main thread is not involved.
  */
 
 import { SegmentRecorder } from '../bench/metrics';
@@ -19,7 +19,6 @@ import {
   tileBaseUrl,
 } from '../protocol';
 import { SabRingConsumer } from '../sab-ring';
-import { nextVelocity } from './camera';
 import { buildDemand, DemandEncoder, DemandSender } from './demand';
 import {
   type Delivery,
@@ -28,17 +27,19 @@ import {
   RingDelivery,
   type TileConsumer,
 } from './delivery';
-import { FramePlanner } from './frame-planner';
-import { buildLayout, type DocumentLayout, lodForScale, parseGeometry, tileKey } from './layout';
+import { FramePlanner, TileList } from './frame-planner';
+import { parseGeometry } from './layout';
 import type { FromWorker, InitMessage, ProbeRequest, ToWorker } from './messages';
+import { Reader, type ReadingSnapshot } from './reader';
 import { TileRenderer } from './renderer';
-import { layersForScreen, TileCache } from './tile-cache';
+import type { PageLayoutHint } from './spreads';
+import { defaultBudgetBytes, TileCache } from './tile-cache';
+import { PlacedPages } from './view';
 
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 
 /** Time allowed per frame for tile uploads, out of 8.3 ms at 120 Hz. */
 const UPLOAD_BUDGET_MS = 2;
-const PAGE_GAP_PT = 12;
 /** Most often the wish list is rebuilt. */
 const DEMAND_INTERVAL_MS = 16;
 /**
@@ -48,8 +49,8 @@ const DEMAND_INTERVAL_MS = 16;
 const DEMAND_REFRESH_MS = 250;
 /** How long the loop keeps running after the last sign of activity, in interactive use. */
 const IDLE_AFTER_MS = 400;
-/** Time constant of the wheel's smoothing. */
-const WHEEL_SMOOTHING_MS = 70;
+/** How long the position has to stay put before it is saved. */
+const SAVE_AFTER_MS = 400;
 const HUD_INTERVAL_MS = 500;
 const CLOCK_SAMPLES = 16;
 
@@ -81,6 +82,19 @@ async function calibrateClock(baseUrl: string): Promise<HostClock> {
   return best;
 }
 
+function snapshotsDiffer(a: ReadingSnapshot | null, b: ReadingSnapshot): boolean {
+  return (
+    a === null ||
+    a.page !== b.page ||
+    a.u !== b.u ||
+    a.v !== b.v ||
+    a.mode !== b.mode ||
+    a.pageTurnAnimation !== b.pageTurnAnimation ||
+    a.zoom !== b.zoom ||
+    a.spreads !== b.spreads
+  );
+}
+
 class Compositor {
   private readonly cache: TileCache;
   private readonly encoder = new DemandEncoder();
@@ -88,13 +102,14 @@ class Compositor {
   private readonly sender: DemandSender;
   private readonly renderer: TileRenderer;
   private readonly delivery: Delivery;
+  private readonly current = new PlacedPages(64);
+  private readonly target = new PlacedPages(64);
+  private readonly around = new PlacedPages(64);
+  private readonly wanted = new TileList(2048);
+  private readonly neighbours = new TileList(2048);
 
   private viewWidth: number;
   private viewHeight: number;
-  private scale = 1;
-  private scrollPt = 0;
-  private targetScrollPt = 0;
-  private velocityPt = 0;
 
   private frameNumber = 0;
   private frameScheduled = false;
@@ -107,6 +122,11 @@ class Compositor {
   private lastDemandSentTime = 0;
   private lastFingerprint = -1;
 
+  private saved: ReadingSnapshot | null;
+  private pendingSnapshot: ReadingSnapshot | null = null;
+  private snapshotChangedAt = 0;
+  private lastStatus = '';
+
   private lastHudTime = 0;
   private hudFrames = 0;
   private hudTiles = 0;
@@ -115,13 +135,16 @@ class Compositor {
   private recorders: SegmentRecorder[] = [];
   private overall: SegmentRecorder | null = null;
   private segmentNames: string[] = [];
+  private segmentIndex = -1;
   private lastMoveTime = 0;
   private awaitingSharp = false;
   private wasResting = true;
   private reportedFirstSharp = false;
 
   constructor(
-    private readonly layout: DocumentLayout,
+    private readonly reader: Reader,
+    private readonly widths: Float32Array,
+    private readonly heights: Float32Array,
     canvas: OffscreenCanvas,
     width: number,
     height: number,
@@ -129,16 +152,14 @@ class Compositor {
     private readonly clock: HostClock,
     delivery: Delivery | null,
     bench: BenchOptions | null,
-    private readonly zoom: number,
-    private readonly gpuLayers: number,
+    budgetBytes: number,
   ) {
     const base = tileBaseUrl(session.id);
-    this.cache = new TileCache(gpuLayers);
     this.viewWidth = width;
     this.viewHeight = height;
     this.renderer = new TileRenderer(
       canvas,
-      gpuLayers,
+      budgetBytes,
       () => {
         this.contextLost = true;
       },
@@ -150,9 +171,11 @@ class Compositor {
         this.wake();
       },
     );
-    this.planner = new FramePlanner(layout, this.cache);
+    this.cache = new TileCache(this.renderer.layers);
+    this.planner = new FramePlanner(widths, heights, this.cache);
     this.sender = new DemandSender(`${base}/demand`);
     this.delivery = delivery ?? new PullDelivery(`${base}/next`);
+    this.saved = session.readingState;
     this.applySize(width, height);
 
     if (bench !== null) {
@@ -161,6 +184,8 @@ class Compositor {
       this.segmentNames = segments.map((segment) => segment.name);
       this.recorders = segments.map((segment) => new SegmentRecorder(segment.name));
       this.overall = new SegmentRecorder('overall');
+      // The scenarios script a scroll, which only continuous reading has.
+      this.reader.setMode('continuous');
     }
   }
 
@@ -168,11 +193,10 @@ class Compositor {
     return this.renderer.gpuName;
   }
 
-  /** Uniform physical scale, limited so that the widest page is never cut off. */
   private applySize(width: number, height: number): void {
     this.viewWidth = width;
     this.viewHeight = height;
-    this.scale = Math.min(this.zoom, width / Math.max(this.layout.maxWidth, 1));
+    this.reader.resize(width, height);
     this.renderer.resize(width, height);
   }
 
@@ -181,14 +205,45 @@ class Compositor {
     this.wake();
   }
 
-  wheel(deltaPx: number): void {
-    this.targetScrollPt = this.clampScroll(this.targetScrollPt + deltaPx / this.scale);
+  /** Applies something the reader did, then makes sure a frame follows. */
+  input(message: ToWorker): void {
+    const now = performance.now();
+    const { reader } = this;
+    switch (message.type) {
+      case 'wheel':
+        reader.wheel({ ...message, timeMs: now });
+        break;
+      case 'key':
+        reader.key(message.key, message.ctrl, message.shift, now);
+        break;
+      case 'pointer':
+        if (message.phase === 'down') {
+          reader.pointerDown(message.x, message.y, now);
+        } else if (message.phase === 'move') {
+          reader.pointerMove(message.x, message.y, now);
+        } else {
+          reader.pointerUp(now);
+        }
+        break;
+      case 'set-mode':
+        reader.setMode(message.mode);
+        break;
+      case 'set-animation':
+        reader.setAnimation(message.on);
+        break;
+      case 'set-spreads':
+        reader.setSpreads(message.spreads);
+        break;
+      case 'turn':
+        reader.turn(message.step);
+        break;
+      case 'zoom':
+        reader.setZoom(reader.zoomFactor * message.factor, now);
+        break;
+      default:
+        return;
+    }
     this.wake();
-  }
-
-  private clampScroll(scrollPt: number): number {
-    const max = Math.max(0, this.layout.totalHeight - this.viewHeight / this.scale);
-    return Math.min(max, Math.max(0, scrollPt));
   }
 
   wake(): void {
@@ -199,13 +254,12 @@ class Compositor {
     }
   }
 
-  private readonly acceptTile: TileConsumer = (page, lod, x, y, pixels, doneUs) => {
-    const key = tileKey(page, lod, x, y);
-    if (this.cache.find(key) >= 0) {
+  private readonly acceptTile: TileConsumer = (page, scale, x, y, pixels, doneUs) => {
+    if (this.cache.find(page, scale, x, y) >= 0) {
       this.record((recorder) => recorder.duplicateTiles++);
       return;
     }
-    const layer = this.cache.allocate(key, this.frameNumber);
+    const layer = this.cache.allocate(page, scale, x, y, this.frameNumber);
     if (layer < 0) {
       this.record((recorder) => recorder.droppedTiles++);
       return;
@@ -254,32 +308,38 @@ class Compositor {
     this.delivery.drain(this.acceptTile, UPLOAD_BUDGET_MS);
     const uploadMs = performance.now() - uploadStarted;
 
-    const previousScroll = this.scrollPt;
-    if (!this.advanceCamera(now, frameInterval)) {
+    const before = this.reader.snapshot();
+    const scaleBefore = this.reader.currentScale;
+    if (!this.playScenario(now)) {
       this.finishBench();
       return;
     }
+    const moving = this.reader.advance(now);
+    const after = this.reader.snapshot();
+    const moved =
+      moving ||
+      this.reader.currentScale !== scaleBefore ||
+      after.page !== before.page ||
+      after.v !== before.v ||
+      after.u !== before.u;
 
-    this.planner.plan(
-      this.frameNumber,
-      this.scrollPt,
-      this.scale,
-      this.viewWidth,
-      this.viewHeight,
-      this.renderer,
-    );
+    this.current.clear();
+    this.reader.placeCurrent(this.current);
+    const { viewWidth, viewHeight } = this;
+    this.planner.plan(this.frameNumber, this.current, viewWidth, viewHeight, this.renderer);
     this.updateDemand(now);
     this.renderer.flush();
 
     const workMs = performance.now() - workStarted;
-    this.measureFrame(now, frameInterval, workMs, uploadMs, this.scrollPt !== previousScroll);
+    this.measureFrame(now, frameInterval, workMs, uploadMs, moved);
     this.updateHud(now);
+    this.reportState(now, after);
 
-    const moving = Math.abs(this.targetScrollPt - this.scrollPt) > 0.01;
-    if (moving || uploadMs > 0.05) {
+    if (moved || uploadMs > 0.05) {
       this.lastActivityTime = now;
     }
-    if (this.player !== null || now - this.lastActivityTime < IDLE_AFTER_MS) {
+    const savePending = this.pendingSnapshot !== null;
+    if (this.player !== null || savePending || now - this.lastActivityTime < IDLE_AFTER_MS) {
       this.frameScheduled = true;
       scope.requestAnimationFrame(this.onFrame);
     } else {
@@ -287,35 +347,32 @@ class Compositor {
     }
   };
 
-  /** Moves the camera. Returns false when a benchmark scenario has finished. */
-  private advanceCamera(now: number, frameInterval: number): boolean {
-    const previous = this.scrollPt;
-    const viewHeightPt = this.viewHeight / this.scale;
-
-    if (this.player !== null) {
-      const context: SegmentContext = {
-        minScrollPt: 0,
-        maxScrollPt: this.clampScroll(Number.POSITIVE_INFINITY),
-        viewHeightPt,
-      };
-      const position = this.player.sample(now, this.scrollPt, context);
-      if (position === null) {
-        return false;
-      }
-      this.scrollPt = position;
-      this.targetScrollPt = position;
-    } else {
-      const blend = 1 - Math.exp(-frameInterval / WHEEL_SMOOTHING_MS);
-      const remaining = this.targetScrollPt - this.scrollPt;
-      this.scrollPt = Math.abs(remaining) < 0.01 ? this.targetScrollPt : this.scrollPt + remaining * blend;
+  /** Drives the reader from a benchmark scenario. Returns false when the scenario has finished. */
+  private playScenario(now: number): boolean {
+    if (this.player === null) {
+      return true;
     }
-
-    this.velocityPt = nextVelocity(
-      this.velocityPt,
-      this.scrollPt - previous,
-      frameInterval,
-      viewHeightPt,
-    );
+    const range = this.reader.scrollRange();
+    const context: SegmentContext = {
+      minScrollPt: range.min,
+      maxScrollPt: range.max,
+      viewHeightPt: range.viewHeightPt,
+    };
+    const position = this.player.sample(now, this.reader.scrollPt, context);
+    if (position === null) {
+      return false;
+    }
+    const segment = this.player.current;
+    if (this.player.currentIndex !== this.segmentIndex) {
+      this.segmentIndex = this.player.currentIndex;
+      if (segment?.zoom !== undefined) {
+        this.reader.setZoom(segment.zoom, now);
+      }
+    }
+    // A zoom keeps the point under it in place, which the scenario must not undo.
+    if (segment?.zoom === undefined) {
+      this.reader.scrollTo(position);
+    }
     return true;
   }
 
@@ -324,16 +381,27 @@ class Compositor {
       return;
     }
     this.lastDemandTime = now;
+    // Sharp tiles for where the reader is heading, as soon as that is known.
+    this.wanted.clear();
+    this.neighbours.clear();
+    if (this.reader.zoomSettled(now)) {
+      this.target.clear();
+      this.reader.placeTarget(this.target);
+      this.planner.collectWanted(this.target, this.viewWidth, this.viewHeight, this.wanted);
+      this.around.clear();
+      this.reader.neighbours(this.around);
+      this.planner.collectWanted(this.around, this.viewWidth, this.viewHeight, this.neighbours);
+    }
     buildDemand(this.encoder, {
-      layout: this.layout,
+      widths: this.widths,
+      heights: this.heights,
       cache: this.cache,
       missingPlaceholders: this.planner.missingPlaceholders,
-      missingSharp: this.planner.missingSharp,
+      wanted: this.wanted,
+      neighbours: this.neighbours,
       firstVisiblePage: this.planner.firstVisiblePage,
       lastVisiblePage: this.planner.lastVisiblePage,
-      targetLod: lodForScale(this.scale),
-      velocityPt: this.velocityPt,
-      viewHeightPt: this.viewHeight / this.scale,
+      pagesPerSecond: this.reader.pagesPerSecond,
     });
     const fingerprint = this.encoder.fingerprint();
     const refreshDue =
@@ -343,6 +411,37 @@ class Compositor {
       this.lastDemandSentTime = now;
       this.epoch = (this.epoch + 1) >>> 0;
       this.sender.submit(this.encoder.finish(this.epoch));
+    }
+  }
+
+  /** Tells the main thread where the reader is, once it has stopped there for a moment. */
+  private reportState(now: number, snapshot: ReadingSnapshot): void {
+    const { reader } = this;
+    const status = {
+      type: 'status' as const,
+      mode: reader.mode.kind,
+      animating: reader.mode.kind === 'paginated' && reader.mode.animate,
+      animationPreference: reader.animationPreference,
+      spreads: reader.spreads,
+      zoom: reader.zoomFactor,
+      page: snapshot.page,
+      pageCount: reader.pageCount,
+    };
+    const statusText = JSON.stringify(status);
+    if (statusText !== this.lastStatus) {
+      this.lastStatus = statusText;
+      post(status);
+    }
+    if (this.player !== null) {
+      return; // A benchmark's position is not the reader's.
+    }
+    if (snapshotsDiffer(this.pendingSnapshot ?? this.saved, snapshot)) {
+      this.pendingSnapshot = snapshot;
+      this.snapshotChangedAt = now;
+    } else if (this.pendingSnapshot !== null && now - this.snapshotChangedAt >= SAVE_AFTER_MS) {
+      this.saved = this.pendingSnapshot;
+      this.pendingSnapshot = null;
+      post({ type: 'reading-state', state: this.saved });
     }
   }
 
@@ -415,15 +514,22 @@ class Compositor {
     const seconds = (now - this.lastHudTime) / 1000;
     const { counters } = this.planner;
     const segment = this.player?.current?.name;
+    const mode = this.reader.mode;
+    const modeText =
+      mode.kind === 'continuous'
+        ? 'contínuo'
+        : `paginado (${mode.animate ? 'animação' : 'sem animação'})`;
     post({
       type: 'hud',
       text:
         `caminho ${this.session.delivery.toUpperCase()}  ` +
         `${(this.hudFrames / seconds).toFixed(0)} fps  ` +
         `${(this.hudTiles / seconds).toFixed(0)} tiles/s  ` +
-        `página ${this.planner.firstVisiblePage + 1}/${this.layout.pageCount}\n` +
+        `página ${this.reader.locator.page + 1}/${this.reader.pageCount}  ${modeText}  ` +
+        `zoom ${(this.reader.zoomFactor * 100).toFixed(0)}%\n` +
         `nítidos ${counters.exact}/${counters.tilesVisible}  ` +
-        `suaves ${counters.fallback}  placa ${counters.uncovered}` +
+        `suaves ${counters.fallback}  placa ${counters.uncovered}  ` +
+        `cache ${this.cache.resident}/${this.cache.capacity} MiB` +
         (segment === undefined ? '' : `  [${segment}]`),
     });
     this.lastHudTime = now;
@@ -441,10 +547,10 @@ class Compositor {
       report: {
         gpu: this.renderer.gpuName,
         viewport: { width: this.viewWidth, height: this.viewHeight },
-        scale: this.scale,
-        lod: lodForScale(this.scale),
-        pageCount: this.layout.pageCount,
-        gpuLayers: this.gpuLayers,
+        scale: this.reader.currentScale,
+        pageCount: this.reader.pageCount,
+        gpuLayers: this.cache.capacity,
+        tileBudgetBytes: this.cache.budgetBytes,
         refreshIntervalMs,
         clockRttMs: this.clock.rttMs,
         demandsSent: this.sender.sent,
@@ -467,7 +573,30 @@ async function start(message: InitMessage): Promise<void> {
   if (!response.ok) {
     throw new Error(`the host answered ${response.status} for the page geometry`);
   }
-  const layout = buildLayout(parseGeometry(await response.arrayBuffer()), PAGE_GAP_PT);
+  const sizes = parseGeometry(await response.arrayBuffer());
+  const pageCount = sizes.length / 2;
+  const widths = new Float32Array(pageCount);
+  const heights = new Float32Array(pageCount);
+  for (let page = 0; page < pageCount; page++) {
+    widths[page] = sizes[page * 2];
+    heights[page] = sizes[page * 2 + 1];
+  }
+  const { session } = message;
+  const reader = new Reader(
+    {
+      widths,
+      heights,
+      pageLayout: session.pageLayout as PageLayoutHint,
+      direction:
+        session.direction === 'R2L' || session.direction === 'L2R' ? session.direction : null,
+    },
+    {
+      devicePixelRatio: message.devicePixelRatio,
+      comfortableScale: message.comfortableScale,
+      prefersReducedMotion: message.prefersReducedMotion,
+    },
+    session.readingState,
+  );
   const clock = await calibrateClock(base);
   let delivery: Delivery | null = null;
   if (message.ring !== null) {
@@ -476,21 +605,22 @@ async function start(message: InitMessage): Promise<void> {
     delivery = new DirectDelivery(message.direct.slab, message.direct.ring);
   }
   compositor = new Compositor(
-    layout,
+    reader,
+    widths,
+    heights,
     message.canvas,
     message.width,
     message.height,
-    message.session,
+    session,
     clock,
     delivery,
     message.bench,
-    message.zoom,
-    message.gpuLayers ?? layersForScreen(message.screenWidth, message.screenHeight),
+    message.tileBudgetBytes ?? defaultBudgetBytes(message.screenWidth, message.screenHeight),
   );
   post({
     type: 'ready',
     gpu: compositor.gpuName,
-    pageCount: layout.pageCount,
+    pageCount,
     clockRttMs: clock.rttMs,
   });
   compositor.wake();
@@ -512,12 +642,11 @@ scope.addEventListener('message', (event: MessageEvent<ToWorker>) => {
     case 'resize':
       compositor?.resize(message.width, message.height);
       break;
-    case 'wheel':
-      compositor?.wheel(message.deltaPx);
-      break;
     case 'probe':
       answerProbe(message);
       break;
+    default:
+      compositor?.input(message);
   }
 });
 

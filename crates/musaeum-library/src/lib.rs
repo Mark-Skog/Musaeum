@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 mod content;
+mod content_kind;
 mod db;
 mod error;
 mod fingerprint;
@@ -20,6 +21,7 @@ mod journal;
 mod library;
 mod model;
 mod probe;
+mod reading;
 mod reconcile;
 mod scan;
 mod search;
@@ -41,5 +43,8 @@ pub use model::{
     WorkId, WorkInfo,
 };
 pub use probe::{FsProbe, RealFileSystem};
+pub use reading::{
+    DocumentGeometry, OpenedFile, PageOrientation, PageRecord, ReadingMode, ReadingState, Spreads,
+};
 pub use reconcile::ReconcileScope;
 pub use search::{DEFAULT_SEARCH_LIMIT, MatchKind, SearchHit};

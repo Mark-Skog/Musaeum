@@ -555,7 +555,7 @@ fn render_all(document: &Path, pages: u32, policy: Policy) -> Vec<Vec<u8>> {
             slot: 0,
             tile: TileKey {
                 page,
-                lod: 0,
+                scale: musaeum_shm::tile::SCALE_ONE,
                 x: 0,
                 y: 0,
             },

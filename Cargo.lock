@@ -430,6 +430,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "corpus-check"
+version = "0.0.1"
+dependencies = [
+ "musaeum-core",
+ "musaeum-library",
+ "musaeum-sandbox",
+ "musaeum-shm",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1967,6 +1980,7 @@ dependencies = [
 name = "musaeum-core"
 version = "0.0.1"
 dependencies = [
+ "musaeum-ingest",
  "musaeum-sandbox",
  "musaeum-shm",
  "serde",
@@ -1979,6 +1993,7 @@ name = "musaeum-desktop"
 version = "0.0.1"
 dependencies = [
  "musaeum-core",
+ "musaeum-library",
  "musaeum-sandbox",
  "musaeum-shm",
  "serde",
@@ -2036,6 +2051,7 @@ dependencies = [
  "gen-fixtures",
  "memmap2",
  "musaeum-core",
+ "musaeum-ingest",
  "musaeum-sandbox",
  "musaeum-shm",
  "pdfium-render",

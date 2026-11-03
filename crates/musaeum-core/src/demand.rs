@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! u32 magic "MDMD"   u32 epoch   u32 count   u32 reserved
-//! count × { u32 page, i32 lod, u32 x, u32 y }
+//! count × { u32 page, u32 scale, u32 x, u32 y }
 //! ```
 //!
 //! The list comes from a WebView, which later phases will share with untrusted book
@@ -78,7 +78,7 @@ pub fn parse_demand(bytes: &[u8], pages: &[PageGeometry]) -> Result<Demand, Dema
         let at = HEADER_LEN + index * ENTRY_LEN;
         let tile = decode_tile(
             word(bytes, at),
-            word(bytes, at + 4) as i32,
+            word(bytes, at + 4),
             word(bytes, at + 8),
             word(bytes, at + 12),
         )
@@ -101,12 +101,7 @@ pub fn encode_demand(epoch: u32, tiles: &[TileKey]) -> Vec<u8> {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
     for tile in tiles {
-        let words = [
-            tile.page,
-            i32::from(tile.lod) as u32,
-            u32::from(tile.x),
-            u32::from(tile.y),
-        ];
+        let words = [tile.page, tile.scale, u32::from(tile.x), u32::from(tile.y)];
         for word in words {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
@@ -114,10 +109,10 @@ pub fn encode_demand(epoch: u32, tiles: &[TileKey]) -> Vec<u8> {
     bytes
 }
 
-fn decode_tile(page: u32, lod: i32, x: u32, y: u32) -> Option<TileKey> {
+fn decode_tile(page: u32, scale: u32, x: u32, y: u32) -> Option<TileKey> {
     Some(TileKey {
         page,
-        lod: i8::try_from(lod).ok()?,
+        scale,
         x: u16::try_from(x).ok()?,
         y: u16::try_from(y).ok()?,
     })
@@ -125,6 +120,8 @@ fn decode_tile(page: u32, lod: i32, x: u32, y: u32) -> Option<TileKey> {
 
 #[cfg(test)]
 mod tests {
+    use musaeum_shm::tile::{MAX_SCALE, SCALE_ONE, scale_of_lod};
+
     use super::*;
 
     const PAGES: &[PageGeometry] = &[PageGeometry {
@@ -132,13 +129,13 @@ mod tests {
         height_pt: 792.0,
     }];
 
-    fn encode(epoch: u32, tiles: &[(u32, i32, u32, u32)]) -> Vec<u8> {
+    fn encode(epoch: u32, tiles: &[(u32, u32, u32, u32)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for value in [DEMAND_MAGIC, epoch, tiles.len() as u32, 0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        for &(page, lod, x, y) in tiles {
-            for value in [page, lod as u32, x, y] {
+        for &(page, scale, x, y) in tiles {
+            for value in [page, scale, x, y] {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
@@ -147,25 +144,30 @@ mod tests {
 
     #[test]
     fn parses_a_valid_list_in_order() {
-        let demand = parse_demand(&encode(9, &[(0, 1, 2, 3), (0, -1, 0, 0)]), PAGES).unwrap();
+        let two = scale_of_lod(1);
+        let tiles = [(0, two, 2, 3), (0, SCALE_ONE * 3 / 2, 0, 0)];
+        let demand = parse_demand(&encode(9, &tiles), PAGES).unwrap();
         assert_eq!(demand.epoch, 9);
         assert_eq!(demand.tiles.len(), 2);
         assert_eq!(
             demand.tiles[0],
             TileKey {
                 page: 0,
-                lod: 1,
+                scale: two,
                 x: 2,
                 y: 3
             }
         );
-        assert_eq!(demand.tiles[1].lod, -1);
+        assert_eq!(
+            demand.tiles[1].scale, 6144,
+            "any scale, not just powers of two"
+        );
     }
 
     /// The same words are asserted by `apps/desktop/src/compositor/demand.test.ts`.
     #[test]
     fn parses_the_exact_bytes_the_typescript_encoder_produces() {
-        let words: [u32; 12] = [0x444D_444D, 7, 2, 0, 0, 0xFFFF_FFFE, 0, 0, 0, 1, 2, 3];
+        let words: [u32; 12] = [0x444D_444D, 7, 2, 0, 0, 5611, 1, 0, 0, 8192, 2, 3];
         let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
 
         let demand = parse_demand(&bytes, PAGES).unwrap();
@@ -175,13 +177,13 @@ mod tests {
             [
                 TileKey {
                     page: 0,
-                    lod: -2,
-                    x: 0,
+                    scale: 5611,
+                    x: 1,
                     y: 0
                 },
                 TileKey {
                     page: 0,
-                    lod: 1,
+                    scale: 8192,
                     x: 2,
                     y: 3
                 },
@@ -211,7 +213,7 @@ mod tests {
             Err(DemandError::BadMagic)
         );
 
-        let mut truncated = encode(1, &[(0, 0, 0, 0)]);
+        let mut truncated = encode(1, &[(0, SCALE_ONE, 0, 0)]);
         truncated.pop();
         assert_eq!(
             parse_demand(&truncated, PAGES),
@@ -228,14 +230,16 @@ mod tests {
 
     #[test]
     fn rejects_tiles_outside_the_document() {
+        let two = scale_of_lod(1);
         for bad in [
-            (1, 0, 0, 0),        // no such page
-            (0, 1, 3, 0),        // past the last column
-            (0, 1, 0, 4),        // past the last row
-            (0, 99, 0, 0),       // level of detail out of range
-            (0, 1, 70_000, 0),   // does not fit the wire format
-            (0, 1000, 0, 0),     // does not fit an i8
-            (u32::MAX, 0, 0, 0), // absurd page
+            (1, SCALE_ONE, 0, 0),        // no such page
+            (0, two, 3, 0),              // past the last column
+            (0, two, 0, 4),              // past the last row
+            (0, 0, 0, 0),                // no scale at all
+            (0, MAX_SCALE + 1, 0, 0),    // finer than any scale allowed
+            (0, two, 70_000, 0),         // does not fit the wire format
+            (0, u32::MAX, 0, 0),         // absurd scale
+            (u32::MAX, SCALE_ONE, 0, 0), // absurd page
         ] {
             assert_eq!(
                 parse_demand(&encode(1, &[bad]), PAGES),

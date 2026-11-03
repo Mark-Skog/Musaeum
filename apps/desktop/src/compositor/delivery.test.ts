@@ -18,12 +18,12 @@ function batch(tiles: Array<[number, number, number, number, number]>): ArrayBuf
   const stride = ANNOUNCEMENT_WORDS * 4 + TILE_BYTES;
   const bytes = new ArrayBuffer(8 + tiles.length * stride);
   new Uint32Array(bytes, 0, 2).set([BATCH_MAGIC, tiles.length]);
-  tiles.forEach(([page, lod, x, y, fill], index) => {
+  tiles.forEach(([page, scale, x, y, fill], index) => {
     const at = 8 + index * stride;
     new Uint32Array(bytes, at, ANNOUNCEMENT_WORDS).set([
       index,
       page,
-      lod >>> 0,
+      scale,
       x,
       y,
       1,
@@ -38,13 +38,20 @@ function batch(tiles: Array<[number, number, number, number, number]>): ArrayBuf
 describe('parseBatch', () => {
   it('decodes tiles and exposes pixels without copying them', () => {
     const bytes = batch([
-      [3, -1, 0, 0, 0xaa],
-      [4, 2, 5, 6, 0xbb],
+      [3, 2048, 0, 0, 0xaa],
+      [4, 0x8000_1234, 5, 6, 0xbb],
     ]);
     const tiles = parseBatch(bytes);
     expect(tiles).toHaveLength(2);
-    expect(tiles[0]).toMatchObject({ page: 3, lod: -1, x: 0, y: 0, renderUs: 111, doneUs: 222 });
-    expect(tiles[1]).toMatchObject({ page: 4, lod: 2, x: 5, y: 6 });
+    expect(tiles[0]).toMatchObject({
+      page: 3,
+      scale: 2048,
+      x: 0,
+      y: 0,
+      renderUs: 111,
+      doneUs: 222,
+    });
+    expect(tiles[1]).toMatchObject({ page: 4, scale: 0x8000_1234, x: 5, y: 6 });
     expect(tiles[0].pixels.length).toBe(TILE_BYTES);
     expect(tiles[0].pixels[0]).toBe(0xaa);
     expect(tiles[1].pixels[TILE_BYTES - 1]).toBe(0xbb);
@@ -71,9 +78,9 @@ describe('DirectDelivery', () => {
     const words = new Uint32Array(ring);
     words[RING_CAPACITY_WORD] = CAPACITY;
     let head = 0;
-    const announce = (slot: number, page: number, lod: number): void => {
+    const announce = (slot: number, page: number, scale: number): void => {
       const entry = RING_ENTRIES_WORD + (head & (CAPACITY - 1)) * ANNOUNCEMENT_WORDS;
-      words.set([slot, page, lod >>> 0, 5, 6, 1, 111, 222], entry);
+      words.set([slot, page, scale, 5, 6, 1, 111, 222], entry);
       head++;
       Atomics.store(words, RING_HEAD_WORD, head);
     };
@@ -82,14 +89,14 @@ describe('DirectDelivery', () => {
 
   it('reads tiles in place and acknowledges each only after its upload', () => {
     const { delivery, words, announce } = setup();
-    announce(1, 40, -1);
+    announce(1, 40, 5611);
 
     let consumedDuringUpload = -1;
     let firstByte = 0;
-    const consumer: TileConsumer = (page, lod, x, y, pixels) => {
+    const consumer: TileConsumer = (page, scale, x, y, pixels) => {
       consumedDuringUpload = Atomics.load(words, RING_CONSUMED_WORD);
       firstByte = pixels[0];
-      expect([page, lod, x, y]).toEqual([40, -1, 5, 6]);
+      expect([page, scale, x, y]).toEqual([40, 5611, 5, 6]);
     };
     expect(delivery.drain(consumer, 1000)).toBe(1);
     expect(firstByte).toBe(0x77);
@@ -138,23 +145,23 @@ describe('RingDelivery', () => {
   }
 
   const pixels = new Uint8Array(TILE_BYTES);
-  function words(page: number, lod: number): Uint32Array {
-    return new Uint32Array([0, page, lod >>> 0, 7, 8, 1, 111, 222]);
+  function words(page: number, scale: number): Uint32Array {
+    return new Uint32Array([0, page, scale, 7, 8, 1, 111, 222]);
   }
 
-  it('hands tiles over in order and decodes negative levels', () => {
+  it('hands tiles over in order, with scales above 2^31 intact', () => {
     const { producer, delivery } = setup();
-    producer.push(pixels, words(1, -2), 0);
-    producer.push(pixels, words(2, 3), 0);
+    producer.push(pixels, words(1, 1024), 0);
+    producer.push(pixels, words(2, 0x8000_0001), 0);
 
     const received: number[][] = [];
-    const consumer: TileConsumer = (page, lod, x, y, _pixels, doneUs, renderUs) => {
-      received.push([page, lod, x, y, doneUs, renderUs]);
+    const consumer: TileConsumer = (page, scale, x, y, _pixels, doneUs, renderUs) => {
+      received.push([page, scale, x, y, doneUs, renderUs]);
     };
     expect(delivery.drain(consumer, 1000)).toBe(2);
     expect(received).toEqual([
-      [1, -2, 7, 8, 222, 111],
-      [2, 3, 7, 8, 222, 111],
+      [1, 1024, 7, 8, 222, 111],
+      [2, 0x8000_0001, 7, 8, 222, 111],
     ]);
     expect(delivery.drain(consumer, 1000)).toBe(0);
   });

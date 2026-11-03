@@ -20,7 +20,7 @@ use musaeum_core::{DeliveryMode, PoolConfig, RenderPool, Summary, encode_demand}
 use musaeum_sandbox::Policy;
 use musaeum_shm::ring::ring_len;
 use musaeum_shm::slab::slab_len;
-use musaeum_shm::tile::tile_grid;
+use musaeum_shm::tile::{scale_of_lod, tile_grid};
 use musaeum_shm::{
     DeliveryRing, PixelSlab, RingConsumer, ShmRegion, TILE_BYTES, TILE_SIZE, TileKey,
 };
@@ -126,6 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         process_memory_limit: Some(2 << 30),
         policy: options.policy,
         startup_timeout: Duration::from_secs(30),
+        known_geometry: None,
     };
     let slab = Arc::new(PixelSlab::init(ShmRegion::create(slab_len(SLOTS))?, SLOTS)?);
 
@@ -177,12 +178,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut wanted = Vec::new();
         for ahead in 0..options.pages_ahead as usize {
             let page = (position + ahead) % pages.len();
-            let (columns, rows) = tile_grid(pages[page], options.lod);
+            let (columns, rows) = tile_grid(pages[page], scale_of_lod(options.lod));
             for y in 0..rows {
                 for x in 0..columns {
                     wanted.push(TileKey {
                         page: page as u32,
-                        lod: options.lod,
+                        scale: scale_of_lod(options.lod),
                         x: x as u16,
                         y: y as u16,
                     });

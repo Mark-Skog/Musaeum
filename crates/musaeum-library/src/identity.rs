@@ -15,6 +15,13 @@
 //! until now, and is not anywhere else** becomes a new revision of the same document. A file that had
 //! already gone missing does not get this: something at its old path later on is only a suggestion.
 //!
+//! That link is provisional, because nothing about the bytes is known yet, and `replaced_file` keeps
+//! what undoing it needs. It stands only if the new bytes are the same kind of file as the old ones and
+//! do not name a different `/ID[0]` or `dc:identifier` than the document has. Otherwise the instance
+//! goes back to being the old file, now missing, and the new one becomes a document of its own with a
+//! suggestion, which is what it would have been without the shortcut. [`crate::content`] decides,
+//! when the hash and what the file says about itself arrive.
+//!
 //! Steps 1 and 2 are decided here from what the directories say. Steps 3 to 5 need the file's bytes,
 //! and finish in [`crate::content`], when the full hash arrives.
 
@@ -1044,7 +1051,7 @@ fn apply_change(
             ])?;
         revision
     } else {
-        insert_revision(
+        let new = insert_revision(
             transaction,
             document,
             facts.fingerprint.as_ref(),
@@ -1052,7 +1059,19 @@ fn apply_change(
             Some(revision),
             origin,
             now,
-        )?
+        )?;
+        if origin == RevisionOrigin::ReplacedAtPath {
+            // Provisional until the bytes are read, so what the instance was goes aside first.
+            transaction
+                .prepare_cached(
+                    "INSERT INTO replaced_file
+                         (revision_id, instance_id, folder_id, name, volume_serial, file_id, mtime_ns)
+                     SELECT ?1, id, folder_id, name, volume_serial, file_id, mtime_ns
+                     FROM file_instance WHERE id = ?2",
+                )?
+                .execute(params![new, instance])?;
+        }
+        new
     };
     transaction
         .prepare_cached(
@@ -1169,6 +1188,25 @@ pub(crate) fn insert_document(
     size: u64,
     now: i64,
 ) -> Result<(DocumentId, RevisionId)> {
+    let document = insert_work_and_document(transaction, name, now)?;
+    let revision = insert_revision(
+        transaction,
+        document,
+        fingerprint,
+        size,
+        None,
+        RevisionOrigin::Import,
+        now,
+    )?;
+    Ok((document, revision))
+}
+
+/// A work and a document for a file called `name`, with nothing in them yet but what the name says.
+pub(crate) fn insert_work_and_document(
+    transaction: &Transaction<'_>,
+    name: &OsString,
+    now: i64,
+) -> Result<DocumentId> {
     let title = Path::new(name)
         .file_stem()
         .unwrap_or(name.as_os_str())
@@ -1192,17 +1230,7 @@ pub(crate) fn insert_document(
             "INSERT INTO document (work_id, layout, format, created_at) VALUES (?1, ?2, ?3, ?4)",
         )?
         .execute(params![work, layout, format, now])?;
-    let document = transaction.last_insert_rowid();
-    let revision = insert_revision(
-        transaction,
-        document,
-        fingerprint,
-        size,
-        None,
-        RevisionOrigin::Import,
-        now,
-    )?;
-    Ok((document, revision))
+    Ok(transaction.last_insert_rowid())
 }
 
 fn insert_revision(
@@ -1270,15 +1298,15 @@ pub(crate) fn suggest(
     candidate: DocumentId,
     evidence: &str,
     now: i64,
-) -> Result<()> {
-    transaction
+) -> Result<bool> {
+    let inserted = transaction
         .prepare_cached(
             "INSERT OR IGNORE INTO reconcile_suggestion
                  (kind, document_id, candidate_document_id, evidence, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?
         .execute(params![kind.as_str(), document, candidate, evidence, now])?;
-    Ok(())
+    Ok(inserted > 0)
 }
 
 /// Where a folder is on disk, by walking up to its root.

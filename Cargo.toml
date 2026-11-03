@@ -10,6 +10,7 @@ members = [
     "crates/musaeum-library",
     "apps/cli",
     "apps/desktop/src-tauri",
+    "tools/corpus-check",
     "tools/gen-fixtures",
     "tools/library-bench",
     "tools/pool-bench",

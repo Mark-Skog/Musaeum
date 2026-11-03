@@ -7,6 +7,7 @@
 
 mod epub;
 mod pdf;
+pub mod pdf_catalog;
 mod zip;
 
 use std::fs::File;
@@ -16,6 +17,7 @@ use std::os::windows::fs::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::Format;
+use pdf_catalog::{Direction, PageLayout};
 
 /// What a book says about itself. Every field may be missing.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -34,6 +36,10 @@ pub struct Extracted {
     pub language: Option<String>,
     /// The year in its date.
     pub year: Option<i32>,
+    /// How a PDF asks for its pages to be shown, from its catalog's `/PageLayout`.
+    pub page_layout: Option<PageLayout>,
+    /// A PDF's reading direction, from `/ViewerPreferences /Direction`.
+    pub direction: Option<Direction>,
 }
 
 /// Why a file could not be read as what it was supposed to be.

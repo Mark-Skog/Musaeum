@@ -11,5 +11,5 @@ pub mod protocol;
 pub mod worker;
 
 /// Bumped when extraction starts finding things it did not before, so that what was read by an
-/// older version can be read again.
-pub const EXTRACTOR_VERSION: i64 = 1;
+/// older version can be read again. Version 2 reads a PDF's `/PageLayout` and `/Direction`.
+pub const EXTRACTOR_VERSION: i64 = 2;

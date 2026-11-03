@@ -5,8 +5,14 @@
 
 export const TILE_SIZE = 512;
 export const TILE_BYTES = TILE_SIZE * TILE_SIZE * 4;
-export const MIN_LOD = -6;
-export const MAX_LOD = 5;
+/** One device pixel per point, in the units of a tile's scale. */
+export const SCALE_ONE = 4096;
+/** Coarsest scale: 1/64 pixel per point. */
+export const MIN_SCALE = SCALE_ONE / 64;
+/** Finest scale: 32 pixels per point. */
+export const MAX_SCALE = SCALE_ONE * 32;
+/** Longest page edge a tile grid may have, in pixels: 1024 tiles. */
+export const MAX_PAGE_PIXELS = 1 << 19;
 
 /** Reads a four-character tag as the little-endian word Rust stores. */
 export function fourCc(tag: string): number {
@@ -43,7 +49,7 @@ export const MAX_DEMAND_TILES = 4096;
 export const ANNOUNCEMENT_WORDS = 8;
 export const A_SLOT = 0;
 export const A_PAGE = 1;
-export const A_LOD = 2;
+export const A_SCALE = 2;
 export const A_X = 3;
 export const A_Y = 4;
 export const A_EPOCH = 5;
@@ -80,6 +86,18 @@ export function tileBaseUrl(sessionId: number): string {
   return `http://tile.localhost/${sessionId}`;
 }
 
+/** Where the reader was, as `reading_state` keeps it. */
+export interface SavedReadingState {
+  page: number;
+  u: number;
+  v: number;
+  progress: number;
+  mode: 'paginated' | 'continuous';
+  pageTurnAnimation: boolean;
+  zoom: number;
+  spreads: 'auto' | 'single' | 'double';
+}
+
 export interface SessionInfo {
   id: number;
   delivery: DeliveryPath;
@@ -89,11 +107,20 @@ export interface SessionInfo {
   sandboxed: boolean;
   openUs: number;
   geometryUs: number;
+  /** The catalog's `/PageLayout`, if it has one. */
+  pageLayout: string | null;
+  /** `L2R` or `R2L`, if the file says. */
+  direction: string | null;
+  /** Whether the page sizes came from the cache instead of a worker. */
+  geometryCached: boolean;
+  /** The library's document, if the file is in the library. */
+  documentId: number | null;
+  readingState: SavedReadingState | null;
 }
 
 export interface BenchOptions {
   out: string;
-  scenario: 'full' | 'quick' | 'smoke' | 'memory' | 'layout' | 'security';
+  scenario: 'full' | 'quick' | 'smoke' | 'zoom' | 'memory' | 'layout' | 'security';
   mainStressMs: number;
   uncapped: boolean;
   zoom: number;
@@ -108,6 +135,8 @@ export interface StartupOptions {
   workers: number;
   pullBatch: number;
   gpuLayers: number | null;
+  /** The GPU tile cache's budget, in mebibytes. */
+  tileBudgetMb: number | null;
   noSandbox: boolean;
   width: number;
   height: number;
