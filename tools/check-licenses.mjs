@@ -28,8 +28,18 @@ function allowedByDeny() {
 
 const allowed = new Set(allowedByDeny());
 // Only in what is vendored, and no crate or package has them. All are permissive and compatible
-// with GPL-3.0, though FreeType's is not compatible with GPL-2.0-only, and asks for a credit.
-const allowedForVendored = new Set([...allowed, 'AGG-2.3', 'FTL', 'ICU', 'IJG', 'libpng-2.0']);
+// with GPL-3.0, though FreeType's is not compatible with GPL-2.0-only, and asks for a credit. The
+// one copyleft license is DjVuLibre's, which the plan approved: its 'or later' lets the app use it
+// under GPL-3.0, the app's own license.
+const allowedForVendored = new Set([
+  ...allowed,
+  'AGG-2.3',
+  'FTL',
+  'GPL-2.0-or-later',
+  'ICU',
+  'IJG',
+  'libpng-2.0',
+]);
 
 const failures = [];
 

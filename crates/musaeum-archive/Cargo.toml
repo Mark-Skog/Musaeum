@@ -1,0 +1,24 @@
+[package]
+name = "musaeum-archive"
+description = "Reads ZIP and RAR archives from memory with a vendored, read-only build of libarchive."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "musaeum_libarchive"
+
+[dependencies]
+# Deflate inside ZIP files. Built from source and linked statically, so the sandboxed worker loads
+# no DLL of its own.
+libz-sys = { version = "1", default-features = false, features = ["static"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+gen-fixtures.workspace = true
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

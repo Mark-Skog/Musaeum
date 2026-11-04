@@ -1,0 +1,28 @@
+[package]
+name = "musaeum-worker"
+description = "What every isolated render worker shares: handshake, handles, control loop and cancellation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# A host for driving a worker binary from tests, over the real protocol and shared memory.
+harness = ["dep:musaeum-core", "dep:musaeum-sandbox"]
+
+[dependencies]
+memmap2.workspace = true
+musaeum-core = { workspace = true, optional = true }
+musaeum-sandbox = { workspace = true, optional = true }
+musaeum-shm.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

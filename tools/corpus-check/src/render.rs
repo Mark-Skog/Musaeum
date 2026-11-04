@@ -20,7 +20,7 @@ use serde::Serialize;
 const STARTUP: Duration = Duration::from_secs(120);
 const TILE_WAIT: Duration = Duration::from_secs(60);
 
-fn config(worker_exe: &Path, pdf: &Path, workers: usize) -> PoolConfig {
+pub(crate) fn config(worker_exe: &Path, pdf: &Path, workers: usize) -> PoolConfig {
     PoolConfig {
         worker_exe: worker_exe.to_owned(),
         document: pdf.to_owned(),
@@ -32,7 +32,7 @@ fn config(worker_exe: &Path, pdf: &Path, workers: usize) -> PoolConfig {
     }
 }
 
-fn slab(slots: u32) -> Result<Arc<PixelSlab>, String> {
+pub(crate) fn slab(slots: u32) -> Result<Arc<PixelSlab>, String> {
     let region = ShmRegion::create(slab_len(slots)).map_err(|error| error.to_string())?;
     Ok(Arc::new(
         PixelSlab::init(region, slots).map_err(|error| error.to_string())?,
@@ -48,7 +48,7 @@ pub enum OpenFailure {
     Core(String),
 }
 
-fn classify(error: PoolError) -> OpenFailure {
+pub(crate) fn pool_error(error: PoolError) -> OpenFailure {
     match error {
         PoolError::WorkerFatal {
             code: musaeum_shm::wire::FatalCode::DocumentOpen,
@@ -77,7 +77,7 @@ pub fn measure(worker_exe: &Path, pdf: &Path) -> Result<Measured, OpenFailure> {
         slab,
         DeliveryMode::Pull { max_batch: 1 },
     )
-    .map_err(classify)?;
+    .map_err(pool_error)?;
     let stats = pool
         .stats()
         .ok_or_else(|| OpenFailure::Core("the pool stopped answering".into()))?;
@@ -210,7 +210,7 @@ pub fn render_sample(
             slab(16).map_err(OpenFailure::Core)?,
             DeliveryMode::Pull { max_batch: 4 },
         )
-        .map_err(classify)?,
+        .map_err(pool_error)?,
     );
     let arrivals = Puller::start(Arc::clone(&pool));
     let mut report = SampleRender::default();
@@ -308,7 +308,7 @@ pub fn cancel_mid_render(
             slab(8).map_err(OpenFailure::Core)?,
             DeliveryMode::Pull { max_batch: 1 },
         )
-        .map_err(classify)?,
+        .map_err(pool_error)?,
     );
     let arrivals = Puller::start(Arc::clone(&pool));
     let tile = |page: usize| TileKey {
@@ -414,7 +414,7 @@ pub fn kill_while_reading(
             slab(8).map_err(OpenFailure::Core)?,
             DeliveryMode::Pull { max_batch: 1 },
         )
-        .map_err(classify)?,
+        .map_err(pool_error)?,
     );
     let arrivals = Puller::start(Arc::clone(&pool));
     let mut report = KillReport {

@@ -57,7 +57,9 @@ export type ToWorker =
   | { type: 'set-animation'; on: boolean }
   | { type: 'set-spreads'; spreads: SpreadsSetting }
   | { type: 'turn'; step: 1 | -1 }
-  | { type: 'zoom'; factor: number };
+  | { type: 'zoom'; factor: number }
+  /** Asks for an `Inspection`, for a test driving the real window. */
+  | { type: 'inspect' };
 
 export interface ProbeReply {
   type: 'probe-reply';
@@ -81,8 +83,40 @@ export interface ReaderStatus {
   pageCount: number;
 }
 
+/** A page as it is on the screen this frame. */
+export interface ShownPage {
+  page: number;
+  /** Its top-left corner, in whole device pixels of the canvas. */
+  x: number;
+  y: number;
+  /** The scale its tiles are drawn at, in units of 1/SCALE_ONE pixel per point. */
+  scale: number;
+  widthPt: number;
+  heightPt: number;
+}
+
+/** Everything a test of the real window checks, exactly as the reader has it. */
+export interface Inspection {
+  type: 'inspection';
+  snapshot: ReadingSnapshot;
+  animating: boolean;
+  /** Whether a spring, a zoom or a scroll is still under way. */
+  moving: boolean;
+  /** Whether every visible page is drawn from tiles at the scale it is shown at. */
+  sharp: boolean;
+  /**
+   * Whether the compositor still has a frame to draw. Until it has drawn it, `pages` and `sharp`
+   * describe the frame before: a page turned without animation is not on the screen yet.
+   */
+  framePending: boolean;
+  viewWidth: number;
+  viewHeight: number;
+  pages: ShownPage[];
+}
+
 export type FromWorker =
   | ProbeReply
+  | Inspection
   | { type: 'ready'; gpu: string; pageCount: number; clockRttMs: number }
   | { type: 'hud'; text: string }
   /** The first frame with nothing soft or missing, as wall-clock time in milliseconds. */

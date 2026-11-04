@@ -12,6 +12,7 @@ memmap2.workspace = true
 musaeum-ingest.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true
+musaeum-worker.workspace = true
 pdfium-render.workspace = true
 thiserror.workspace = true
 
@@ -44,6 +45,7 @@ windows-sys = { workspace = true, features = [
 gen-fixtures.workspace = true
 musaeum-core.workspace = true
 musaeum-sandbox.workspace = true
+musaeum-worker = { workspace = true, features = ["harness"] }
 
 [lints]
 workspace = true

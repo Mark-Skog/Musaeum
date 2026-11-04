@@ -8,11 +8,13 @@ use std::io::{self, Read, Write};
 
 use thiserror::Error;
 
+use crate::content::PageContent;
 use crate::tile::{PageGeometry, TileKey};
 
 /// Bumped on any change to this file or to the shared-memory layouts. Version 2 renders tiles at
-/// any scale instead of powers of two, and adds the catalog's hints.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// any scale instead of powers of two, and adds the catalog's hints. Version 3 adds the jobs that
+/// classify a page and read its text layer.
+pub const PROTOCOL_VERSION: u32 = 3;
 /// Length of every message.
 pub const MESSAGE_LEN: usize = 48;
 
@@ -42,6 +44,29 @@ pub struct RenderJob {
     pub slot: u32,
     /// The tile.
     pub tile: TileKey,
+    /// Nobody is waiting for it, as for a thumbnail: the worker should not keep what it loads for
+    /// it at the expense of what is being read.
+    pub background: bool,
+}
+
+/// One page to classify.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnalyzeJob {
+    /// Unique, increasing job number.
+    pub job_seq: u64,
+    /// Zero-based page index.
+    pub page: u32,
+}
+
+/// One page whose text layer goes into a slot, in the layout of [`crate::text`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextJob {
+    /// Unique, increasing job number.
+    pub job_seq: u64,
+    /// Slab slot to write into.
+    pub slot: u32,
+    /// Zero-based page index.
+    pub page: u32,
 }
 
 /// Messages from the host to a worker.
@@ -49,8 +74,12 @@ pub struct RenderJob {
 pub enum HostMessage {
     /// Sets up the worker. Always the first message.
     Init(InitParams),
-    /// Renders one tile. A worker has at most one of these outstanding.
+    /// Renders one tile. A worker has at most one job of any kind outstanding.
     Render(RenderJob),
+    /// Measures what a page is made of, without rasterizing it.
+    Analyze(AnalyzeJob),
+    /// Reads a page's text layer into a slot.
+    ExtractText(TextJob),
     /// Exits cleanly.
     Shutdown,
     /// Nothing has been asked of the worker for a while: it should give memory back.
@@ -73,11 +102,12 @@ pub enum FatalCode {
     /// The document handle could not be mapped.
     #[error("the document could not be mapped")]
     DocumentMap = 3,
-    /// `pdfium.dll` is missing or incompatible.
-    #[error("the PDFium library could not be loaded")]
+    /// The library that reads the format is missing or incompatible.
+    #[error("the rendering library could not be loaded")]
     LibraryLoad = 4,
-    /// PDFium rejected the document; the detail word holds `FPDF_GetLastError`.
-    #[error("PDFium could not open the document")]
+    /// The worker could not open the document. The detail word is the format's own reason, such
+    /// as `FPDF_GetLastError` for a PDF.
+    #[error("the worker could not open the document")]
     DocumentOpen = 5,
     /// The first message was not `Init`.
     #[error("the worker did not receive an initialization message")]
@@ -102,7 +132,7 @@ impl FatalCode {
     }
 }
 
-/// Why one tile could not be rendered. The worker stays usable afterwards.
+/// Why one job could not be done. The worker stays usable afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[repr(u32)]
 pub enum TileFailure {
@@ -118,9 +148,15 @@ pub enum TileFailure {
     /// `FPDFBitmap_CreateEx` failed.
     #[error("bitmap could not be created")]
     BitmapCreate = 4,
-    /// PDFium reported a render failure.
+    /// The renderer reported a failure.
     #[error("render failed")]
     RenderFailed = 5,
+    /// The page's data could not be decoded.
+    #[error("page data could not be decoded")]
+    DecodeFailed = 6,
+    /// The result does not fit a slot.
+    #[error("result too large for a slot")]
+    TooLarge = 7,
 }
 
 impl TileFailure {
@@ -131,6 +167,8 @@ impl TileFailure {
             3 => Self::PageLoad,
             4 => Self::BitmapCreate,
             5 => Self::RenderFailed,
+            6 => Self::DecodeFailed,
+            7 => Self::TooLarge,
             _ => return None,
         })
     }
@@ -191,7 +229,7 @@ pub enum WorkerMessage {
         /// Microseconds spent before stopping.
         elapsed_us: u32,
     },
-    /// The job failed; the slot holds garbage and may be reused.
+    /// A job with a slot failed; the slot holds garbage and may be reused.
     TileFailed {
         /// Failed job.
         job_seq: u64,
@@ -199,6 +237,35 @@ pub enum WorkerMessage {
         slot: u32,
         /// What went wrong.
         failure: TileFailure,
+    },
+    /// What a page is made of.
+    PageContent {
+        /// Finished job.
+        job_seq: u64,
+        /// The page.
+        page: u32,
+        /// The measurements.
+        content: PageContent,
+        /// Microseconds spent on the job.
+        elapsed_us: u32,
+    },
+    /// A page could not be classified.
+    AnalysisFailed {
+        /// Failed job.
+        job_seq: u64,
+        /// What went wrong.
+        failure: TileFailure,
+    },
+    /// The slot holds a page's text layer.
+    TextDone {
+        /// Finished job.
+        job_seq: u64,
+        /// The job's slot.
+        slot: u32,
+        /// Bytes written at the start of the slot.
+        len: u32,
+        /// Microseconds spent on the job.
+        elapsed_us: u32,
     },
     /// The worker cannot continue and is about to exit.
     Fatal {
@@ -230,6 +297,8 @@ const TAG_RENDER: u32 = 2;
 const TAG_SHUTDOWN: u32 = 3;
 const TAG_TRIM: u32 = 4;
 const TAG_SEND_GEOMETRY: u32 = 5;
+const TAG_ANALYZE: u32 = 6;
+const TAG_EXTRACT_TEXT: u32 = 7;
 const TAG_READY: u32 = 10;
 const TAG_GEOMETRY: u32 = 11;
 const TAG_GEOMETRY_END: u32 = 12;
@@ -238,6 +307,9 @@ const TAG_TILE_CANCELLED: u32 = 14;
 const TAG_TILE_FAILED: u32 = 15;
 const TAG_FATAL: u32 = 16;
 const TAG_HINTS: u32 = 17;
+const TAG_PAGE_CONTENT: u32 = 18;
+const TAG_ANALYSIS_FAILED: u32 = 19;
+const TAG_TEXT_DONE: u32 = 20;
 
 /// Most `/PageLayout` code a worker may send.
 const MAX_PAGE_LAYOUT_CODE: u8 = 6;
@@ -341,6 +413,20 @@ impl HostMessage {
                     .u16(job.tile.x)
                     .u16(job.tile.y)
                     .u32(job.tile.scale)
+                    .u8(u8::from(job.background))
+                    .frame
+            }
+            Self::Analyze(job) => {
+                Encoder::new(TAG_ANALYZE)
+                    .u64(job.job_seq)
+                    .u32(job.page)
+                    .frame
+            }
+            Self::ExtractText(job) => {
+                Encoder::new(TAG_EXTRACT_TEXT)
+                    .u32(job.slot)
+                    .u64(job.job_seq)
+                    .u32(job.page)
                     .frame
             }
             Self::Shutdown => Encoder::new(TAG_SHUTDOWN).frame,
@@ -377,6 +463,19 @@ impl HostMessage {
                     job_seq,
                     slot,
                     tile: TileKey { page, scale, x, y },
+                    background: d.u8() != 0,
+                }))
+            }
+            TAG_ANALYZE => Ok(Self::Analyze(AnalyzeJob {
+                job_seq: d.u64(),
+                page: d.u32(),
+            })),
+            TAG_EXTRACT_TEXT => {
+                let slot = d.u32();
+                Ok(Self::ExtractText(TextJob {
+                    slot,
+                    job_seq: d.u64(),
+                    page: d.u32(),
                 }))
             }
             TAG_SHUTDOWN => Ok(Self::Shutdown),
@@ -455,6 +554,39 @@ impl WorkerMessage {
                     .u32(slot)
                     .u64(job_seq)
                     .u32(failure as u32)
+                    .frame
+            }
+            Self::PageContent {
+                job_seq,
+                page,
+                content,
+                elapsed_us,
+            } => {
+                Encoder::new(TAG_PAGE_CONTENT)
+                    .u32(page)
+                    .u64(job_seq)
+                    .u32(content.text_chars)
+                    .f32(content.image_coverage)
+                    .u32(elapsed_us)
+                    .frame
+            }
+            Self::AnalysisFailed { job_seq, failure } => {
+                Encoder::new(TAG_ANALYSIS_FAILED)
+                    .u32(failure as u32)
+                    .u64(job_seq)
+                    .frame
+            }
+            Self::TextDone {
+                job_seq,
+                slot,
+                len,
+                elapsed_us,
+            } => {
+                Encoder::new(TAG_TEXT_DONE)
+                    .u32(slot)
+                    .u64(job_seq)
+                    .u32(len)
+                    .u32(elapsed_us)
                     .frame
             }
             Self::Fatal { code, detail } => {
@@ -541,6 +673,44 @@ impl WorkerMessage {
                     detail: d.u32(),
                 })
             }
+            TAG_PAGE_CONTENT => {
+                let page = d.u32();
+                let job_seq = d.u64();
+                let content = PageContent {
+                    text_chars: d.u32(),
+                    image_coverage: d.f32(),
+                };
+                if !content.is_plausible() {
+                    return Err(WireError::Malformed {
+                        tag,
+                        value: content.image_coverage.to_bits(),
+                    });
+                }
+                Ok(Self::PageContent {
+                    job_seq,
+                    page,
+                    content,
+                    elapsed_us: d.u32(),
+                })
+            }
+            TAG_ANALYSIS_FAILED => {
+                let value = d.u32();
+                let failure =
+                    TileFailure::from_u32(value).ok_or(WireError::Malformed { tag, value })?;
+                Ok(Self::AnalysisFailed {
+                    job_seq: d.u64(),
+                    failure,
+                })
+            }
+            TAG_TEXT_DONE => {
+                let slot = d.u32();
+                Ok(Self::TextDone {
+                    slot,
+                    job_seq: d.u64(),
+                    len: d.u32(),
+                    elapsed_us: d.u32(),
+                })
+            }
             _ => Err(WireError::Malformed { tag, value: tag }),
         }
     }
@@ -591,6 +761,16 @@ mod tests {
                 job_seq: u64::MAX - 1,
                 slot: 63,
                 tile: tile(),
+                background: true,
+            }),
+            HostMessage::Analyze(AnalyzeJob {
+                job_seq: 77,
+                page: 4_000_000,
+            }),
+            HostMessage::ExtractText(TextJob {
+                job_seq: 78,
+                slot: 3,
+                page: 12,
             }),
             HostMessage::Shutdown,
             HostMessage::Trim,
@@ -644,6 +824,25 @@ mod tests {
                 code: FatalCode::DocumentOpen,
                 detail: 4,
             },
+            WorkerMessage::PageContent {
+                job_seq: 5,
+                page: 6,
+                content: PageContent {
+                    text_chars: 1_234,
+                    image_coverage: 0.875,
+                },
+                elapsed_us: 7,
+            },
+            WorkerMessage::AnalysisFailed {
+                job_seq: 5,
+                failure: TileFailure::DecodeFailed,
+            },
+            WorkerMessage::TextDone {
+                job_seq: 5,
+                slot: 2,
+                len: 4_096,
+                elapsed_us: 9,
+            },
         ];
         for message in messages {
             assert_eq!(WorkerMessage::decode(&message.encode()).unwrap(), message);
@@ -672,6 +871,26 @@ mod tests {
             WorkerMessage::decode(&failed),
             Err(WireError::Malformed { value: 99, .. })
         ));
+
+        let mut content = WorkerMessage::PageContent {
+            job_seq: 1,
+            page: 0,
+            content: PageContent {
+                text_chars: 0,
+                image_coverage: 0.5,
+            },
+            elapsed_us: 0,
+        }
+        .encode();
+        // The coverage follows the tag (4), page (4), job number (8) and character count (4).
+        content[20..24].copy_from_slice(&2.0f32.to_le_bytes());
+        assert!(
+            matches!(
+                WorkerMessage::decode(&content),
+                Err(WireError::Malformed { .. })
+            ),
+            "a page cannot be covered twice over"
+        );
 
         for (at, value) in [(4, 7), (5, 3)] {
             let mut hints = WorkerMessage::Hints {

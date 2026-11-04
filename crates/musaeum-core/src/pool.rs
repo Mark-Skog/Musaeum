@@ -22,11 +22,15 @@ use std::time::{Duration, Instant};
 use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::MAX_WORKERS;
+use musaeum_shm::tile::{THUMBNAIL_EDGE, page_pixels, thumbnail_scale};
 use musaeum_shm::wire::{
-    FatalCode, HostMessage, InitParams, PROTOCOL_VERSION, RenderJob, WorkerMessage, read_frame,
-    write_frame,
+    AnalyzeJob, FatalCode, HostMessage, InitParams, PROTOCOL_VERSION, RenderJob, TextJob,
+    WorkerMessage, read_frame, write_frame,
 };
-use musaeum_shm::{DeliveryRing, PageGeometry, PixelSlab, TILE_BYTES, TileAnnouncement};
+use musaeum_shm::{
+    DeliveryRing, PageContent, PageGeometry, PixelSlab, TILE_BYTES, TILE_SIZE, TextLayer,
+    TileAnnouncement, TileKey,
+};
 use thiserror::Error;
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -35,7 +39,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use crate::demand::parse_demand;
 use crate::geometry::{Direction, DocumentHints, PageLayout};
-use crate::scheduler::{CancelOrder, ReadyTile, Scheduler, TileOutcome};
+use crate::scheduler::{CancelOrder, ReadyTile, Scheduler, SideResult, TileOutcome, Work};
 use crate::stats::{PoolStats, StatsCollector};
 
 /// `"MTLB"`, the first word of a Path A tile batch.
@@ -54,6 +58,67 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// Receives one batch of tiles. An empty batch means the session is closing.
 pub type Poller = Box<dyn FnOnce(Vec<u8>) + Send + 'static>;
+
+/// Work done at the scheduler's lowest priority, when nobody is waiting for a tile.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BackgroundWork {
+    /// Pages to classify, in this order.
+    pub analyze: Vec<u32>,
+    /// Pages to render a thumbnail of, in this order.
+    pub thumbnails: Vec<u32>,
+}
+
+/// What background work produced, one result at a time.
+#[derive(Debug, PartialEq)]
+pub enum BackgroundResult {
+    /// What a page is made of.
+    Content {
+        /// The page.
+        page: u32,
+        /// The measurements.
+        content: PageContent,
+    },
+    /// A page's thumbnail: RGBA rows, packed, at most [`THUMBNAIL_EDGE`] pixels a side.
+    Thumbnail {
+        /// The page.
+        page: u32,
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+        /// The pixels.
+        pixels: Vec<u8>,
+    },
+    /// A page could not be classified, or its thumbnail drawn.
+    Failed {
+        /// The page.
+        page: u32,
+        /// Whether it was the thumbnail that failed.
+        thumbnail: bool,
+    },
+    /// Everything asked for so far is done or given up.
+    Finished,
+}
+
+/// Receives background results, on the pool's thread: it should hand them on, not work on them.
+pub type BackgroundSink = Box<dyn FnMut(BackgroundResult) + Send + 'static>;
+
+/// Why a page's text layer could not be read.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum TextError {
+    /// The document has no such page.
+    #[error("page {0} does not exist")]
+    NoSuchPage(u32),
+    /// The worker could not read it, or crashed trying.
+    #[error("the text layer could not be read")]
+    Failed,
+    /// The worker's answer did not hold a valid text layer.
+    #[error("the worker sent a malformed text layer: {0}")]
+    Malformed(String),
+}
+
+/// Answers a request for a page's text layer.
+pub type TextReply = Sender<Result<TextLayer, TextError>>;
 
 /// How to start a pool.
 #[derive(Clone, Debug)]
@@ -154,6 +219,8 @@ enum Event {
         worker: usize,
         instance: u64,
     },
+    Background(BackgroundWork, BackgroundSink),
+    Text(u32, TextReply),
     Stats(Sender<PoolStats>),
     Pids(Sender<Vec<Option<u32>>>),
     KillWorker(usize),
@@ -233,6 +300,8 @@ impl RenderPool {
             cancels: Vec::new(),
             released: Vec::new(),
             trimmed: false,
+            background: None,
+            text_waiters: HashMap::new(),
         };
         let thread = thread::Builder::new()
             .name("render-pool".into())
@@ -294,6 +363,21 @@ impl RenderPool {
         let (sender, receiver) = mpsc::channel();
         self.events.send(Event::Stats(sender)).ok()?;
         receiver.recv().ok()
+    }
+
+    /// Starts classifying pages and rendering thumbnails, at the lowest priority there is: only
+    /// while no wanted tile waits, and never on every worker at once. Results go to `sink`, which
+    /// replaces any earlier one, ending with [`BackgroundResult::Finished`].
+    pub fn start_background(&self, work: BackgroundWork, sink: BackgroundSink) {
+        let _ = self.events.send(Event::Background(work, sink));
+    }
+
+    /// Asks for a page's text layer, ahead of every tile. The answer arrives on the receiver; if
+    /// the pool stops first, the receiver reports a disconnection.
+    pub fn request_text(&self, page: u32) -> Receiver<Result<TextLayer, TextError>> {
+        let (reply, answer) = mpsc::channel();
+        let _ = self.events.send(Event::Text(page, reply));
+        answer
     }
 
     /// Fault injection for tests: kills a worker as if it had crashed.
@@ -513,7 +597,8 @@ impl Spawner {
             instance,
             child,
             stdin,
-            locked_down: self.config.policy == Policy::Lockdown,
+            // Both sandboxed policies start on a startup token the worker has to drop.
+            locked_down: self.config.policy != Policy::Unrestricted,
         })
     }
 }
@@ -737,6 +822,10 @@ struct EventLoop {
     released: Vec<u32>,
     /// Whether the workers have already been told to give memory back since the last work.
     trimmed: bool,
+    /// Where background results go, and whether `Finished` has been sent for the work so far.
+    background: Option<(BackgroundSink, bool)>,
+    /// Who is waiting for each page's text layer.
+    text_waiters: HashMap<u32, Vec<TextReply>>,
 }
 
 impl EventLoop {
@@ -802,7 +891,10 @@ impl EventLoop {
     /// Returns `false` when the loop should stop.
     fn handle(&mut self, event: Event) -> bool {
         // Only work counts. A poll of the statistics is not a reason to keep memory.
-        if matches!(event, Event::Demand(_) | Event::Worker { .. }) {
+        if matches!(
+            event,
+            Event::Demand(_) | Event::Worker { .. } | Event::Background(..) | Event::Text(..)
+        ) {
             self.trimmed = false;
         }
         match event {
@@ -825,6 +917,18 @@ impl EventLoop {
             Event::Exited { worker, instance } => {
                 if self.is_current(worker, instance) {
                     self.on_worker_exit(worker);
+                }
+            }
+            Event::Background(work, sink) => self.on_background(work, sink),
+            Event::Text(page, reply) => {
+                if page as usize >= self.pages.len() {
+                    let _ = reply.send(Err(TextError::NoSuchPage(page)));
+                } else {
+                    let waiters = self.text_waiters.entry(page).or_default();
+                    if waiters.is_empty() {
+                        self.scheduler.request_text(page);
+                    }
+                    waiters.push(reply);
                 }
             }
             Event::Stats(reply) => {
@@ -862,21 +966,47 @@ impl EventLoop {
                     .set_clock(self.started.elapsed().as_micros() as u64);
                 self.scheduler
                     .on_demand(demand.epoch, &demand.tiles, &mut self.cancels);
-                self.stats.totals.cancels_requested += self.cancels.len() as u64;
-                for order in &self.cancels {
-                    // A sequence number always fits the cell, and the index was validated
-                    // when the pool started.
-                    if let Ok(cell) = self.slab.cancel_cell(order.worker) {
-                        cell.store(order.job_seq, Ordering::Release);
-                        self.cancel_times.insert(order.job_seq, Instant::now());
-                    }
-                }
+                self.send_cancels();
             }
             Err(error) => {
                 self.stats.totals.invalid_demands += 1;
                 eprintln!("rejected a demand list: {error}");
             }
         }
+    }
+
+    /// Asks workers to stop the jobs in `self.cancels`.
+    fn send_cancels(&mut self) {
+        self.stats.totals.cancels_requested += self.cancels.len() as u64;
+        for order in &self.cancels {
+            // A sequence number always fits the cell, and the index was validated
+            // when the pool started.
+            if let Ok(cell) = self.slab.cancel_cell(order.worker) {
+                cell.store(order.job_seq, Ordering::Release);
+                self.cancel_times.insert(order.job_seq, Instant::now());
+            }
+        }
+        self.cancels.clear();
+    }
+
+    fn on_background(&mut self, work: BackgroundWork, sink: BackgroundSink) {
+        let pages = &self.pages;
+        let analyze = work
+            .analyze
+            .into_iter()
+            .filter(|&page| (page as usize) < pages.len())
+            .map(Work::Analyze);
+        let thumbnails = work.thumbnails.into_iter().filter_map(|page| {
+            let size = *pages.get(page as usize)?;
+            Some(Work::Thumbnail(TileKey {
+                page,
+                scale: thumbnail_scale(size, THUMBNAIL_EDGE),
+                x: 0,
+                y: 0,
+            }))
+        });
+        self.scheduler.add_background(analyze.chain(thumbnails));
+        self.background = Some((sink, false));
     }
 
     fn on_worker_message(&mut self, worker: usize, message: WorkerMessage) {
@@ -889,7 +1019,14 @@ impl EventLoop {
             } => {
                 // Pairs with the worker's release fence: its pixel writes are visible now.
                 fence(Ordering::Acquire);
-                self.stats.tile_done(render_us, load_us);
+                if matches!(
+                    self.scheduler.job_work(worker, job_seq),
+                    Some(Work::Thumbnail(_))
+                ) {
+                    self.stats.thumbnail_done(render_us);
+                } else {
+                    self.stats.tile_done(render_us, load_us);
+                }
                 self.cancel_times.remove(&job_seq);
                 let done_us = self.started.elapsed().as_micros() as u32;
                 self.scheduler.on_outcome(
@@ -918,6 +1055,29 @@ impl EventLoop {
                 eprintln!("worker {worker} failed job {job_seq}: {failure}");
                 self.scheduler
                     .on_outcome(worker, job_seq, slot, TileOutcome::Failed)
+            }
+            WorkerMessage::PageContent {
+                job_seq,
+                page,
+                content,
+                elapsed_us,
+            } => {
+                self.stats.analyzed(elapsed_us);
+                self.scheduler
+                    .on_analysis(worker, job_seq, Some(page), Some(content))
+            }
+            WorkerMessage::AnalysisFailed { job_seq, failure } => {
+                self.stats.totals.side_failures += 1;
+                eprintln!("worker {worker} could not classify job {job_seq}: {failure}");
+                self.scheduler.on_analysis(worker, job_seq, None, None)
+            }
+            WorkerMessage::TextDone {
+                job_seq, slot, len, ..
+            } => {
+                // As for a tile: what the worker wrote into the slot is visible now.
+                fence(Ordering::Acquire);
+                self.stats.totals.texts_done += 1;
+                self.scheduler.on_text(worker, job_seq, slot, len)
             }
             WorkerMessage::Ready {
                 protocol: PROTOCOL_VERSION,
@@ -991,7 +1151,84 @@ impl EventLoop {
     fn pump(&mut self) {
         self.collect_releases();
         self.deliver();
+        self.deliver_side_results();
+        self.scheduler.preempt_background(&mut self.cancels);
+        self.send_cancels();
         self.dispatch();
+    }
+
+    /// Hands finished side work to whoever asked for it, copying it out of its slot first so the
+    /// slot can be used again at once.
+    fn deliver_side_results(&mut self) {
+        while let Some(result) = self.scheduler.next_side_result() {
+            match result {
+                SideResult::Thumbnail { slot, tile } => {
+                    let size = self.pages[tile.page as usize];
+                    let width = (page_pixels(size.width_pt, tile.scale) as u32).min(TILE_SIZE);
+                    let height = (page_pixels(size.height_pt, tile.scale) as u32).min(TILE_SIZE);
+                    let pixels = self.slab.copy_slot_rect(slot, width, height);
+                    self.release_side_slot(slot);
+                    if let Ok(pixels) = pixels {
+                        self.send_background(BackgroundResult::Thumbnail {
+                            page: tile.page,
+                            width,
+                            height,
+                            pixels,
+                        });
+                    }
+                }
+                SideResult::Text { slot, page, len } => {
+                    let bytes = self.slab.copy_slot_prefix(slot, len as usize);
+                    self.release_side_slot(slot);
+                    let answer = match bytes {
+                        Ok(bytes) => TextLayer::decode(&bytes)
+                            .map_err(|error| TextError::Malformed(error.to_string())),
+                        Err(_) => Err(TextError::Failed),
+                    };
+                    self.answer_text(page, &answer);
+                }
+                SideResult::Content { page, content } => {
+                    self.send_background(BackgroundResult::Content { page, content });
+                }
+                SideResult::Failed(work) => match work {
+                    Work::Thumbnail(tile) => self.send_background(BackgroundResult::Failed {
+                        page: tile.page,
+                        thumbnail: true,
+                    }),
+                    Work::Analyze(page) => self.send_background(BackgroundResult::Failed {
+                        page,
+                        thumbnail: false,
+                    }),
+                    Work::Text(page) => self.answer_text(page, &Err(TextError::Failed)),
+                    Work::Tile(_) => {}
+                },
+            }
+        }
+        if !self.scheduler.has_background_work()
+            && let Some((sink, finished)) = &mut self.background
+            && !*finished
+        {
+            *finished = true;
+            sink(BackgroundResult::Finished);
+        }
+    }
+
+    fn release_side_slot(&mut self, slot: u32) {
+        if let Err(error) = self.scheduler.release_side_slot(slot) {
+            eprintln!("slot accounting error: {error}");
+        }
+    }
+
+    fn send_background(&mut self, result: BackgroundResult) {
+        if let Some((sink, _)) = &mut self.background {
+            sink(result);
+        }
+    }
+
+    fn answer_text(&mut self, page: u32, answer: &Result<TextLayer, TextError>) {
+        for reply in self.text_waiters.remove(&page).unwrap_or_default() {
+            let _ = reply.send(answer.clone());
+        }
     }
 
     fn collect_releases(&mut self) {
@@ -1084,11 +1321,23 @@ impl EventLoop {
                 self.scheduler.on_worker_lost(order.worker);
                 continue;
             };
-            let job = HostMessage::Render(RenderJob {
-                job_seq: order.job_seq,
-                slot: order.slot,
-                tile: order.tile,
-            });
+            let job = match order.work {
+                Work::Tile(tile) | Work::Thumbnail(tile) => HostMessage::Render(RenderJob {
+                    job_seq: order.job_seq,
+                    slot: order.slot,
+                    tile,
+                    background: matches!(order.work, Work::Thumbnail(_)),
+                }),
+                Work::Analyze(page) => HostMessage::Analyze(AnalyzeJob {
+                    job_seq: order.job_seq,
+                    page,
+                }),
+                Work::Text(page) => HostMessage::ExtractText(TextJob {
+                    job_seq: order.job_seq,
+                    slot: order.slot,
+                    page,
+                }),
+            };
             if write_frame(&mut process.stdin, &job.encode())
                 .and_then(|()| process.stdin.flush())
                 .is_err()

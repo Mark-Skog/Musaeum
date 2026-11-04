@@ -224,6 +224,11 @@ impl Library {
         &self.database
     }
 
+    /// Where page thumbnails are kept, beside the cache they belong with.
+    pub fn thumbnails(&self) -> crate::thumbnails::ThumbnailStore {
+        crate::thumbnails::ThumbnailStore::new(&self.paths.cache_dir)
+    }
+
     pub(crate) fn cache(&self) -> Option<&Database> {
         self.cache.as_ref()
     }

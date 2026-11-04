@@ -26,6 +26,7 @@ mod reconcile;
 mod scan;
 mod search;
 mod sql;
+mod thumbnails;
 
 pub use content::ContentReport;
 pub use db::backup::{BackupInfo, BackupPolicy};
@@ -44,7 +45,10 @@ pub use model::{
 };
 pub use probe::{FsProbe, RealFileSystem};
 pub use reading::{
-    DocumentGeometry, OpenedFile, PageOrientation, PageRecord, ReadingMode, ReadingState, Spreads,
+    CONTENT_MAJORITY_PERCENT, CONTENT_RULES_VERSION, DocumentContent, DocumentGeometry, OpenedFile,
+    PageContentClass, PageContentRecord, PageOrientation, PageRecord, ReadingMode, ReadingState,
+    Spreads, content_summary,
 };
 pub use reconcile::ReconcileScope;
 pub use search::{DEFAULT_SEARCH_LIMIT, MatchKind, SearchHit};
+pub use thumbnails::ThumbnailStore;

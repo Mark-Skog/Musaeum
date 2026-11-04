@@ -64,7 +64,14 @@ fn role_of(pid: u32, exe: &str, command_line: &str) -> String {
     if pid == std::process::id() {
         return "core".to_owned();
     }
-    if exe.eq_ignore_ascii_case("musaeum-render-pdf.exe") {
+    if [
+        "musaeum-render-pdf.exe",
+        "musaeum-render-raster.exe",
+        "musaeum-render-djvu.exe",
+    ]
+    .iter()
+    .any(|worker| exe.eq_ignore_ascii_case(worker))
+    {
         return "render-worker".to_owned();
     }
     let kind = command_line

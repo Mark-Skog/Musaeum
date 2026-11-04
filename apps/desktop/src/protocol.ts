@@ -100,6 +100,8 @@ export interface SavedReadingState {
 
 export interface SessionInfo {
   id: number;
+  /** Which worker reads the file, told from its bytes. */
+  format: 'pdf' | 'comic' | 'djvu';
   delivery: DeliveryPath;
   pageCount: number;
   orientation: string;
@@ -116,6 +118,8 @@ export interface SessionInfo {
   /** The library's document, if the file is in the library. */
   documentId: number | null;
   readingState: SavedReadingState | null;
+  /** Pages left to classify and to draw thumbnails of, in the background, when it opened. */
+  background: { toClassify: number; toDraw: number };
 }
 
 export interface BenchOptions {
@@ -127,7 +131,10 @@ export interface BenchOptions {
 }
 
 export interface StartupOptions {
-  pdf: string | null;
+  /** A fixed-layout document: PDF, CBZ, CBR or DjVu. */
+  document: string | null;
+  /** Whether a test drives this window from outside, and the reader's state is exposed for it. */
+  e2e: boolean;
   epub: string | null;
   bookProtection: 'full' | 'csp-only' | 'sandbox-only' | 'none';
   delivery: DeliveryRequest;

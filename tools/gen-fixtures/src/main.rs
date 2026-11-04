@@ -59,6 +59,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     report(&path, started)?;
 
     let started = Instant::now();
+    gen_fixtures::comics::write_comic_fixtures(&out)?;
+    for name in ["comic.cbz", "comic-rar4.cbr", "comic-rar5.cbr", "manga.cbz"] {
+        report(&out.join(name), started)?;
+    }
+
+    let started = Instant::now();
+    let path = out.join("book.djvu");
+    gen_fixtures::djvu::write_djvu_fixture(&path)?;
+    report(&path, started)?;
+
+    let started = Instant::now();
+    let path = out.join("colors.pdf");
+    gen_fixtures::color::write_color_fixture(&path)?;
+    report(&path, started)?;
+
+    let started = Instant::now();
+    let path = out.join("content.pdf");
+    gen_fixtures::write_content_fixture(&path)?;
+    report(&path, started)?;
+
+    let started = Instant::now();
     let path = out.join("large.epub");
     gen_fixtures::epub::write_large_epub(&path)?;
     report(&path, started)?;

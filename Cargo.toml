@@ -2,9 +2,14 @@
 resolver = "3"
 members = [
     "crates/musaeum-shm",
+    "crates/musaeum-worker",
+    "crates/musaeum-archive",
     "crates/musaeum-core",
+    "crates/musaeum-djvu",
     "crates/musaeum-sandbox",
+    "crates/musaeum-render-djvu",
     "crates/musaeum-render-pdf",
+    "crates/musaeum-render-raster",
     "crates/musaeum-fs",
     "crates/musaeum-ingest",
     "crates/musaeum-library",
@@ -14,6 +19,7 @@ members = [
     "tools/gen-fixtures",
     "tools/library-bench",
     "tools/pool-bench",
+    "tools/visual-check",
 ]
 
 [workspace.package]
@@ -24,12 +30,15 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
+musaeum-archive = { path = "crates/musaeum-archive" }
 musaeum-core = { path = "crates/musaeum-core" }
+musaeum-djvu = { path = "crates/musaeum-djvu" }
 musaeum-fs = { path = "crates/musaeum-fs" }
 musaeum-ingest = { path = "crates/musaeum-ingest" }
 musaeum-library = { path = "crates/musaeum-library" }
 musaeum-sandbox = { path = "crates/musaeum-sandbox" }
 musaeum-shm = { path = "crates/musaeum-shm" }
+musaeum-worker = { path = "crates/musaeum-worker" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 
 blake3 = "1"
@@ -55,6 +64,20 @@ unsafe_op_in_unsafe_fn = "deny"
 # Every unsafe block in this workspace crosses a process or FFI boundary, so each
 # one has to state why it is sound.
 undocumented_unsafe_blocks = "deny"
+
+# Decoding, resampling and compressing images unoptimized is tens of times slower, so tests of the
+# comic worker would measure the build instead of the code. Only these crates are optimized.
+[profile.dev.package]
+fast_image_resize.opt-level = 3
+fdeflate.opt-level = 3
+gif.opt-level = 3
+image.opt-level = 3
+image-webp.opt-level = 3
+jpeg-encoder.opt-level = 3
+miniz_oxide.opt-level = 3
+png.opt-level = 3
+weezl.opt-level = 3
+zune-jpeg.opt-level = 3
 
 [profile.release]
 opt-level = 3

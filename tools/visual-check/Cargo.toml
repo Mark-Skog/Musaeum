@@ -1,0 +1,22 @@
+[package]
+name = "visual-check"
+description = "Compares what the reader's window shows with pages drawn whole by each format's library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gen-fixtures.workspace = true
+musaeum-core.workspace = true
+musaeum-render-djvu = { path = "../../crates/musaeum-render-djvu" }
+musaeum-render-pdf = { path = "../../crates/musaeum-render-pdf" }
+musaeum-render-raster = { path = "../../crates/musaeum-render-raster" }
+musaeum-shm.workspace = true
+musaeum-worker = { workspace = true, features = ["harness"] }
+png = "0.18"
+serde_json.workspace = true
+
+[lints]
+workspace = true

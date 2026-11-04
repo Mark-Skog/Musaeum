@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Data** | 2026-11-03 |
-| **Situação** | Construída e medida no Windows, aguardando a auditoria do projeto |
+| **Situação** | Decisões aceitas. Em 2026-11-03, o projeto aprovou a Parte 1, que entrou na `fase-2` em `2ea3790`, e autorizou a Parte 2 |
 | **Máquina das medições** | A mesma das fases anteriores: Ryzen 5 5600G, 31 GB, RX 7600, monitor de 75 Hz, SSD NVMe, Windows 11, Microsoft Defender ativo |
 | **Escopo** | O pipeline de layout fixo para PDF. CBZ, CBR e DjVu ficam para as próximas partes da Fase 2 |
 
@@ -17,7 +17,7 @@ de estados do plano e guarda a posição na biblioteca. Tudo foi validado nos 15
 Os resultados que mais pesam:
 
 1. **Nítido em um quadro depois do zoom.** Em 6 fatores de zoom que nenhuma potência de 2 alcança, em dois PDFs
-   do acervo, a tela ficou nítida 13,1 a 13,5 ms depois de a animação parar: um quadro a 75 Hz, contra a meta de
+   do acervo, a tela ficou nítida 13,3 a 13,4 ms depois de a animação parar: um quadro a 75 Hz, contra a meta de
    100 ms. Os tiles da escala final são pedidos durante a animação (D3).
 2. **Worker morto, leitura segue.** Workers terminados de fora, no meio de render pesado, foram substituídos em
    P50 de 20 a 26 ms e máximo de 31 ms. O tile seguinte chegou em no máximo 65 ms, contra a meta de 1 s.
@@ -38,9 +38,9 @@ Os resultados que mais pesam:
 | Git consolidado | `fase-1` commitada (1db4ca5), `main` avançado sem merge, `fase-0-parte-2` e `fase-1` apagadas, `fase-2` criada | Árvore limpa no início da fase |
 | Continuidade de caminho refinada | 8 cenários reais em `continuity.rs`: tipo diferente, `/ID[0]` diferente, `dc:identifier` diferente, mesmo ID, ID só de um lado, provisório até o hash, bytes de outro documento, nota feita no meio | Só vira revisão com o mesmo tipo e sem conflito de ID. No conflito: documento próprio, sugestão com a evidência, o arquivo antigo ausente e nada perdido |
 | Primeira migração real | Biblioteca no esquema da Fase 1, aberta pela versão nova | Cópia `before-upgrade-from-v1` feita antes, dados preservados, uma segunda abertura não copia de novo |
-| Escala exata | Worker real renderiza 1,37 px/pt e as bordas caem no pixel previsto. No app, 6 zooms em 2 PDFs reais | Nítido 13,1–13,5 ms após parar. 0 quadros em branco |
+| Escala exata | Worker real renderiza 1,37 px/pt e as bordas caem no pixel previsto. No app, 6 zooms em 2 PDFs reais | Nítido 13,3–13,4 ms após parar. 0 quadros em branco |
 | Cancelamento no meio do render | Página vetorial sintética e escaneamento real de 2,2 MB por página | Vetorial: interrompido no meio. Escaneado: 10 de 10 cancelados, latência P50 17,6 ms e máximo 22,7 ms |
-| LRU com orçamento | Testes do cache e o benchmark de zoom | Orçamento em bytes (`--tile-budget-mb`), padrão de 4 telas. 52 a 83 despejos por sessão, nenhum de tile em uso |
+| LRU com orçamento | Testes do cache e o benchmark de zoom | Orçamento em bytes (`--tile-budget-mb`), padrão de 4 telas. 55 a 85 despejos por sessão, nenhum de tile em uso |
 | Supervisor | 8 mortes por `TerminateProcess` em PDF sintético e 6 em escaneamento real, sempre com render pesado em andamento | Substituto pronto em P50 20 e 26 ms, máximo 31 ms. Sessão segue |
 | `page_geometry` no `cache.db` | 144 PDFs reais medidos, gravados e lidos de volta | 144 de 144 idênticos na volta. Medir: P50 33 ms, máximo 396 ms em 1.493 páginas |
 | `/PageLayout` e `/Direction` | 11 testes, incluindo cada truncamento e cada byte trocado de um arquivo. No acervo, pelo worker isolado | 36 `SinglePage`, 3 `OneColumn`, 2 `TwoPageRight`, 103 sem. 12 com `L2R`, 0 com `R2L` |
@@ -59,7 +59,12 @@ na Lixeira.
   cache e o relatório ficaram numa pasta temporária fora do acervo. Os workers rodam no mesmo sandbox do app.
 - **O zoom** foi medido no app de verdade (`--scenario zoom`), com janela de 1600 × 900, no caminho C, em dois livros
   do acervo: um texto (*Discrete Mathematics with Applications*) e o escaneamento mais pesado (*Color and Light*).
-  O tempo até nítido conta do último quadro em movimento ao primeiro quadro sem nenhum tile substituto.
+  O tempo até nítido conta do último quadro em movimento ao primeiro quadro sem nenhum tile substituto. Os números
+  da seção 5 foram medidos de novo em 3 de novembro, depois dos dois ajustes finais (uma refatoração das vistas, sem
+  mudança de comportamento, e a correção da velocidade de rolagem, D8), com a máquina parada: 5 minutos sem uso,
+  GPU a 5%, nenhum jogo aberto. O build já inclui a Parte 2, com a margem dos tiles (ADR 0004, D16). A primeira
+  medição, da compilação anterior aos ajustes, deu nítido em 13,1 a 13,5 ms, trabalho máximo de 3,5 ms e 52 a 83
+  despejos.
 - **O layout** foi validado aplicando o próprio código do compositor (`spreads.ts`, `view.ts`) às páginas medidas
   do acervo, guardadas no `cache.db`.
 
@@ -67,8 +72,6 @@ Os limites:
 
 - **O app não foi exercitado por uma pessoa.** O modo paginado, a barra de leitura e a gravação da posição pelo app
   estão cobertos por testes das partes. O benchmark de zoom roda no modo contínuo, que é o que os cenários roteirizam.
-- **Os números de zoom são da compilação anterior a dois ajustes finais:** uma refatoração das vistas, sem mudança de
-  comportamento, e a correção da velocidade de rolagem (D8). Não medi de novo porque a máquina estava em uso.
 - **Trackpad e roda do mouse** foram distinguidos com sequências de eventos sintéticas, modeladas no que o Chromium
   produz no Windows. Nenhum dispositivo físico foi usado.
 - **Uma máquina, 75 Hz, uma GPU dedicada.** 120 Hz, GPU integrada e macOS continuam sem medição.
@@ -213,11 +216,11 @@ evento. No produto, era um buraco entre armar o watch e varrer. Um teste novo es
 
 | Medida | Resultado |
 |---|---|
-| Até nítido depois de parar | 13,1 a 13,5 ms, 12 de 12 zooms |
+| Até nítido depois de parar | 13,3 a 13,4 ms, 12 de 12 zooms |
 | Quadros em branco | 0 |
-| Trabalho por quadro | P99 2,2 ms, máximo 3,5 ms (meta 8,3 ms) |
+| Trabalho por quadro | P99 2,2 ms, máximo 3,9 ms (meta 8,3 ms) |
 | Quadros com substituto | 22 a 28 por zoom, a duração da animação |
-| Orçamento de GPU | 80 MiB, 52 a 83 despejos |
+| Orçamento de GPU | 80 MiB, 55 a 85 despejos |
 
 ## 6. Limitações conhecidas
 

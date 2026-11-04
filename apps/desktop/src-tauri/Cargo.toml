@@ -12,6 +12,7 @@ tauri-build.workspace = true
 
 [dependencies]
 musaeum-core.workspace = true
+musaeum-fs.workspace = true
 musaeum-library.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true

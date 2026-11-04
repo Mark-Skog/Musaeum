@@ -1,14 +1,17 @@
 //! Command-line options.
 //!
 //! ```text
-//! musaeum-desktop [--pdf PATH | --epub PATH] [--delivery auto|a|b|c] [--workers N]
+//! musaeum-desktop [--document PATH | --pdf PATH | --epub PATH] [--delivery auto|a|b|c] [--workers N]
 //!                 [--pull-batch N] [--gpu-layers N] [--tile-budget-mb N] [--library DIR]
 //!                 [--bench OUT.json] [--main-stress-ms N]
 //!                 [--scenario full|quick|smoke|zoom|memory|layout|security]
 //!                 [--uncapped] [--zoom Z] [--width W] [--height H]
 //!                 [--delivery-fault FAULT[,FAULT...]] [--no-sandbox]
-//!                 [--epub-protection full|csp-only|sandbox-only|none]
+//!                 [--epub-protection full|csp-only|sandbox-only|none] [--e2e]
 //! ```
+//!
+//! `--document` opens any fixed-layout file: PDF, CBZ, CBR or DjVu, told apart by their bytes, not
+//! their names. `--pdf` is the same option under the name it had when PDF was the only one.
 
 use std::path::PathBuf;
 use std::thread;
@@ -110,8 +113,10 @@ pub struct BenchOptions {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupOptions {
-    /// The PDF to open right away, if any.
-    pub pdf: Option<PathBuf>,
+    /// The fixed-layout document to open right away, if any.
+    pub document: Option<PathBuf>,
+    /// Exposes the reader's state to the page, for a test that drives the real window.
+    pub e2e: bool,
     /// The EPUB to open right away, if any.
     pub epub: Option<PathBuf>,
     /// Which of a book's barriers are up.
@@ -153,7 +158,8 @@ impl StartupOptions {
     /// Parses the process arguments, excluding the program name.
     pub fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut options = Self {
-            pdf: None,
+            document: None,
+            e2e: false,
             epub: None,
             book_protection: BookProtection::Full,
             delivery: DeliveryRequest::Auto,
@@ -178,7 +184,8 @@ impl StartupOptions {
         while let Some(flag) = args.next() {
             let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
             match flag.as_str() {
-                "--pdf" => options.pdf = Some(PathBuf::from(value()?)),
+                "--document" | "--pdf" => options.document = Some(PathBuf::from(value()?)),
+                "--e2e" => options.e2e = true,
                 "--epub" => options.epub = Some(PathBuf::from(value()?)),
                 "--epub-protection" => {
                     options.book_protection = match value()?.as_str() {
@@ -225,8 +232,8 @@ impl StartupOptions {
             }
         }
 
-        if options.pdf.is_some() && options.epub.is_some() {
-            return Err("open a PDF or an EPUB, not both".to_owned());
+        if options.document.is_some() && options.epub.is_some() {
+            return Err("open a fixed-layout document or an EPUB, not both".to_owned());
         }
         if !matches!(
             scenario.as_str(),
@@ -241,11 +248,12 @@ impl StartupOptions {
         }
         if out.is_none() && options.no_sandbox {
             return Err(
-                "--no-sandbox exposes the system to a hostile PDF, so it needs --bench".to_owned(),
+                "--no-sandbox exposes the system to a hostile document, so it needs --bench"
+                    .to_owned(),
             );
         }
         if let Some(out) = out {
-            if options.pdf.is_none() && options.epub.is_none() && scenario != "memory" {
+            if options.document.is_none() && options.epub.is_none() && scenario != "memory" {
                 return Err("--bench needs a document, except with --scenario memory".to_owned());
             }
             options.bench = Some(BenchOptions {
@@ -283,7 +291,7 @@ mod tests {
         let options = parse(&[]).unwrap();
         assert_eq!(options.delivery, DeliveryRequest::Auto);
         assert!(options.delivery_faults.is_empty());
-        assert!(options.pdf.is_none());
+        assert!(options.document.is_none());
         assert!(options.bench.is_none());
         assert!((2..=4).contains(&options.workers));
     }

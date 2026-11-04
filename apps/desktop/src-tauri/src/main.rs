@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod background;
 mod book;
 mod memory;
 mod options;

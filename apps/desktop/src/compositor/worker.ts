@@ -15,6 +15,7 @@ import {
   type BenchOptions,
   PROBE_HOST_WORD,
   PROBE_SCRIPT_WORD,
+  SCALE_ONE,
   type SessionInfo,
   tileBaseUrl,
 } from '../protocol';
@@ -27,9 +28,16 @@ import {
   RingDelivery,
   type TileConsumer,
 } from './delivery';
-import { FramePlanner, TileList } from './frame-planner';
+import { FramePlanner, TileList, wantedScale } from './frame-planner';
 import { parseGeometry } from './layout';
-import type { FromWorker, InitMessage, ProbeRequest, ToWorker } from './messages';
+import type {
+  FromWorker,
+  InitMessage,
+  Inspection,
+  ProbeRequest,
+  ShownPage,
+  ToWorker,
+} from './messages';
 import { Reader, type ReadingSnapshot } from './reader';
 import { TileRenderer } from './renderer';
 import type { PageLayoutHint } from './spreads';
@@ -240,10 +248,44 @@ class Compositor {
       case 'zoom':
         reader.setZoom(reader.zoomFactor * message.factor, now);
         break;
+      case 'inspect':
+        post(this.inspect());
+        return;
       default:
         return;
     }
     this.wake();
+  }
+
+  /** The reader as the last frame drew it, for a test driving the real window. */
+  private inspect(): Inspection {
+    const { reader, current, planner } = this;
+    const pages: ShownPage[] = [];
+    for (let at = 0; at < current.count; at++) {
+      const page = current.pages[at];
+      const widthPt = this.widths[page];
+      const heightPt = this.heights[page];
+      const x = Math.round(current.x[at]);
+      const y = Math.round(current.y[at]);
+      const scale = wantedScale(current.scales[at], widthPt, heightPt);
+      const right = x + widthPt * (scale / SCALE_ONE);
+      const bottom = y + heightPt * (scale / SCALE_ONE);
+      if (x < this.viewWidth && y < this.viewHeight && right > 0 && bottom > 0) {
+        pages.push({ page, x, y, scale, widthPt, heightPt });
+      }
+    }
+    const { counters } = planner;
+    return {
+      type: 'inspection',
+      snapshot: reader.snapshot(),
+      animating: reader.mode.kind === 'paginated' && reader.mode.animate,
+      moving: reader.isMoving(),
+      sharp: counters.tilesVisible > 0 && counters.uncovered === 0 && counters.fallback === 0,
+      framePending: this.frameScheduled,
+      viewWidth: this.viewWidth,
+      viewHeight: this.viewHeight,
+      pages,
+    };
   }
 
   wake(): void {

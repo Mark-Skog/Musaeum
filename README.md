@@ -2,16 +2,18 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 2 do Plano Diretor**, o layout fixo. O que existe hoje: o leitor de PDF, com
-tiles na escala exata da tela, páginas duplas, modo paginado e contínuo e a posição guardada na
-biblioteca; o leitor fluido (EPUB) da Fase 0; e a biblioteca da Fase 1, com SQLite, identidade de
-arquivos, indexador, diário de operações em disco e uma CLI. Ainda não há interface de produto além da
-barra de leitura.
+O projeto está na **Fase 2 do Plano Diretor**, o layout fixo. O que existe hoje: o leitor de layout fixo
+para PDF, quadrinhos (CBZ e CBR) e DjVu, cada formato num processo isolado, com tiles na escala exata da
+tela, páginas duplas, modo paginado e contínuo, a posição guardada na biblioteca, a classificação de cada
+página em texto, escaneada ou híbrida e miniaturas em disco; o leitor fluido (EPUB) da Fase 0; e a
+biblioteca da Fase 1, com SQLite, identidade de arquivos, indexador, diário de operações em disco e uma
+CLI. Ainda não há interface de produto além da barra de leitura.
 
 As decisões e os números de cada fase estão em
 [`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md),
-[`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md) e
-[`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md).
+[`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md),
+[`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md) e
+[`docs/adr/0004-fase-2-parte-2.md`](docs/adr/0004-fase-2-parte-2.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -24,7 +26,13 @@ crates/
   musaeum-core/        Agendador (máquina de estados pura) e supervisor dos workers,
                        sem dependência de Tauri
   musaeum-sandbox/     Token restrito, mitigações, job object e estação de janelas isolada
+  musaeum-worker/      O que todo worker de render compartilha: handshake, handles, laço de
+                       controle, cancelamento, e o arnês que os testes usam
   musaeum-render-pdf/  Processo isolado que rasteriza tiles com PDFium
+  musaeum-archive/     libarchive vendorizada, só a leitura de ZIP, RAR e RAR5
+  musaeum-render-raster/  Processo isolado que desenha quadrinhos (CBZ, CBR)
+  musaeum-djvu/        DjVuLibre vendorizada, atrás de uma ponte em C++
+  musaeum-render-djvu/ Processo isolado que desenha DjVu
   musaeum-fs/          File IDs de 128 bits, listagem sem abrir arquivos, leitura que recusa
                        placeholders de nuvem, watcher que avisa quando perde eventos
   musaeum-ingest/      Processo isolado que lê identificadores e metadados dos livros, e o que
@@ -39,13 +47,17 @@ apps/desktop/
   src/reader/          Leitor fluido, numa origem própria, com o foliate-js atrás de um adaptador
 vendor/
   foliate-js/          Parte do foliate-js, fixada em um commit, com uma alteração documentada
+  libarchive/          libarchive 3.8.11, o lado de leitura, com origem e config.h documentados
+  djvulibre/           DjVuLibre 3.5.30, a biblioteca libdjvu
   third-party.json     Licenças do que entra no app sem passar por um gerenciador de pacotes
 tools/
   fetch-pdfium.ps1     Baixa a build fixada do PDFium e confere o SHA-256
-  gen-fixtures/        Gera os PDFs e os EPUBs de teste, incluindo um EPUB hostil
+  gen-fixtures/        Gera os PDFs, quadrinhos, DjVu e EPUBs de teste, incluindo um EPUB hostil
   pool-bench/          Mede o pool de render sem WebView
   library-bench/       Mede a biblioteca com 100 mil arquivos reais, tecla por tecla
   corpus-check/        Valida a biblioteca e o pipeline num acervo real, só lendo
+  visual-check/        Compara a janela com páginas desenhadas inteiras, e as cores do PDFium
+  e2e-reader.mjs       Testa a janela real: modos, atalhos, posição salva e comparação visual
   run-bench.mjs        Roda a matriz dos Experimentos A e B
   run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
   measure-memory.mjs   Mede a RAM do app inteiro
@@ -73,15 +85,19 @@ cd ..\..
 Abrir um documento de forma interativa:
 
 ```powershell
-.\target\release\musaeum-desktop.exe --pdf fixtures\spreads.pdf
-.\target\release\musaeum-desktop.exe --pdf D:\Livros\um-livro.pdf --library D:\MinhaBiblioteca
+.\target\release\musaeum-desktop.exe --document fixtures\spreads.pdf
+.\target\release\musaeum-desktop.exe --document fixtures\comic.cbz
+.\target\release\musaeum-desktop.exe --document fixtures\book.djvu
+.\target\release\musaeum-desktop.exe --document D:\Livros\um-livro.pdf --library D:\MinhaBiblioteca
 .\target\release\musaeum-desktop.exe --epub fixtures\large.epub
 ```
 
-No PDF, a barra de leitura no alto troca entre paginado e contínuo, liga e desliga a animação da
-passagem de página (que não existe no contínuo), escolhe páginas duplas e muda o zoom. As setas,
-Page Up/Down, Espaço, Home e End navegam; Ctrl com +, - e 0 mudam o zoom, e Ctrl com a roda ou o gesto
-de pinça amplia em torno do ponteiro. Com `--library`, ou com a biblioteca padrão se ela já existir, a
+`--document` abre PDF, CBZ, CBR ou DjVu; o formato vem dos primeiros bytes do arquivo, não do nome, e
+`--pdf` continua valendo como o mesmo comando. A barra de leitura no alto troca entre paginado e
+contínuo, liga e desliga a animação da passagem de página (que não existe no contínuo), escolhe páginas
+duplas e muda o zoom. `C` alterna entre paginado e contínuo e `A` liga e desliga a animação. As
+setas, Page Up/Down, Espaço, Home e End navegam; Ctrl com +, - e 0 mudam o zoom, e Ctrl com a roda ou o
+gesto de pinça amplia em torno do ponteiro. Com `--library`, ou com a biblioteca padrão se ela já existir, a
 posição, o modo, o zoom e as páginas duplas de um livro da biblioteca são guardados e voltam na próxima
 abertura. Abrir um arquivo nunca cria uma biblioteca. `--tile-budget-mb N` limita a memória de GPU dos
 tiles. No EPUB, as setas passam as páginas.
@@ -142,6 +158,18 @@ Três regras valem para tudo isso:
   respeitam `/PageLayout` e a leitura da direita para a esquerda.
 - **Workers.** Um worker que cai ou é encerrado é substituído em dezenas de milissegundos, e a leitura
   segue. Um tile que derruba workers duas vezes deixa de ser pedido.
+- **Três formatos, um pipeline.** PDF vai para o PDFium, quadrinhos para a libarchive e decodificadores
+  de imagem em Rust, DjVu para a DjVuLibre. Cada um num worker isolado que fala o mesmo protocolo, então
+  tiles, geometria, páginas duplas, modos e recuperação são os mesmos. Os workers de quadrinhos e DjVu
+  ligam tudo estaticamente e rodam no sandbox mais estrito, sem win32k e só com DLLs da Microsoft.
+- **Do que a página é feita.** Em segundo plano, cada página é classificada como texto, escaneada (uma
+  imagem da página, sem camada de texto) ou híbrida (a imagem com o texto de um OCR por cima). A classe,
+  as medidas que a decidiram e o resumo do documento ficam em `page_geometry` e `document_geometry`,
+  no `cache.db`.
+- **Miniaturas.** Na menor prioridade do agendador, nunca em todos os workers e canceladas assim que um
+  tile visível precisa do worker, cada página ganha uma miniatura de até 256 px em
+  `cache\thumbnails\v1\ab\<hash>\<página>.jpg`, pelo hash BLAKE3 do arquivo (`ab` são os dois
+  primeiros dígitos dele).
 
 ## Validar num acervo real
 
@@ -150,10 +178,27 @@ cargo build --release -p corpus-check -p musaeum-render-pdf -p musaeum-library -
 .\target\release\corpus-check.exe --corpus D:\Livros --work D:\Temp\verificacao --sample 12
 ```
 
-Indexa a árvore inteira, mede todas as páginas de todos os PDFs, renderiza uma amostra difícil,
-cancela renders pesados no meio e mata workers durante a leitura. O acervo só é lido: a ferramenta lista
+Indexa a árvore inteira, mede e classifica todas as páginas de todos os PDFs, desenha as miniaturas de
+uma amostra, renderiza essa amostra, cancela renders pesados no meio e mata workers durante a leitura. O acervo só é lido: a ferramenta lista
 tamanho, datas e atributos de tudo antes e depois e falha se algo mudar. Banco, cache e relatório ficam
 em `--work`, que precisa estar fora do acervo. Tudo roda abaixo da prioridade normal.
+
+## A janela real e a comparação visual
+
+```powershell
+cd apps\desktop; npm run build:app; cd ..\..
+cargo build --release -p musaeum-cli -p visual-check -p musaeum-library --bins
+node tools\e2e-reader.mjs --corpus-sample amostra.txt
+```
+
+Conduz a janela real pelo protocolo de depuração do próprio WebView2: troca de modo pela barra e pelos
+atalhos, com e sem animação, confere que o Locator (página e ponto u, v) não se mexe, fecha, reabre e
+confere que o `library.db` devolveu exatamente o que foi salvo. Depois compara páginas da janela com as
+mesmas páginas desenhadas inteiras pela biblioteca de cada formato, e as cores do PDFium com as
+referências. Cliques e teclas entram pela página, sem mover o mouse nem mandar teclas para a janela que
+estiver em foco, mas a janela aparece: a ferramenta só começa se ninguém usou o computador no último
+minuto. `amostra.txt` lista, por linha, `caminho|página,página` de livros de um acervo, que só são
+lidos.
 
 ## Os caminhos de entrega de pixels
 
@@ -183,7 +228,7 @@ não troca de caminho, porque falharia em todos.
 
 ## O sandbox do renderizador
 
-O PDF é entrada hostil, então o worker é tratado como se já estivesse comprometido. Ele roda
+Todo arquivo de livro é entrada hostil, então cada worker é tratado como se já estivesse comprometido. Ele roda
 com um token restrito sem nenhum grupo utilizável, em nível de integridade baixo, com mitigações
 de processo, em um job object próprio e em uma estação de janelas separada. O worker carrega o
 PDFium, entra em lockdown e só depois lê qualquer mensagem do host. Daí em diante, só tem o que
@@ -191,6 +236,10 @@ o host duplicou para ele: um handle somente leitura do documento e a memória co
 
 `tests/sandbox.rs` prova isso tentando: `sandbox-probe` se comporta como um worker comprometido,
 e cada tentativa negada dentro do sandbox precisa dar certo fora dele.
+
+Os workers de quadrinhos e DjVu não carregam DLL nenhuma de terceiros, então rodam com uma política
+ainda mais estrita: sem win32k e sem DLLs que a Microsoft não assinou. O do PDF não pode, porque o
+`pdfium.dll` atual usa o user32.
 
 `--no-sandbox` existe só para medir o custo do sandbox e exige `--bench`.
 
@@ -219,7 +268,9 @@ node tools\check-licenses.mjs
 ```
 
 Os testes de integração em `crates/musaeum-render-pdf/tests/` usam processos reais, memória
-compartilhada real e o PDFium real, então exigem o `fetch-pdfium.ps1` antes.
+compartilhada real e o PDFium real, então exigem o `fetch-pdfium.ps1` antes. Os de
+`musaeum-render-raster` e `musaeum-render-djvu` fazem o mesmo com a libarchive e a DjVuLibre, que
+são compiladas do fonte vendorizado pelo compilador C++ do Visual Studio.
 
 A bateria da biblioteca em `crates/musaeum-library/tests/` trabalha com arquivos reais, File IDs reais,
 o worker real no sandbox real e eventos reais do sistema. Alguns testes tocam em coisas do sistema, e

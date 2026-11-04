@@ -1,0 +1,22 @@
+[package]
+name = "musaeum-render-djvu"
+description = "Isolated worker process that renders DjVu documents with DjVuLibre into shared memory."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+musaeum-djvu.workspace = true
+musaeum-sandbox.workspace = true
+musaeum-shm.workspace = true
+musaeum-worker.workspace = true
+
+[dev-dependencies]
+gen-fixtures.workspace = true
+musaeum-core.workspace = true
+musaeum-worker = { workspace = true, features = ["harness"] }
+
+[lints]
+workspace = true

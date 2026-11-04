@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri": "tauri",
-    "build:app": "cargo build --release -p musaeum-render-pdf -p gen-fixtures && tauri build --no-bundle",
+    "build:app": "cargo build --release -p musaeum-render-pdf -p musaeum-render-raster -p musaeum-render-djvu -p gen-fixtures && tauri build --no-bundle",
     "bench": "node ../../tools/run-bench.mjs"
   },
   "dependencies": {

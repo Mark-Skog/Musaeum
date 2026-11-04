@@ -88,8 +88,8 @@ pub struct Known {
 }
 
 /// Looks a file up. Anything that fails just means less is known.
-pub fn look_up(library: &Library, pdf: &Path) -> Known {
-    let Ok(Some(file)) = library.opened_file(pdf) else {
+pub fn look_up(library: &Library, document: &Path) -> Known {
+    let Ok(Some(file)) = library.opened_file(document) else {
         return Known::default();
     };
     let geometry = file

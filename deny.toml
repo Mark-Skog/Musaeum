@@ -37,6 +37,11 @@ allow = [
 confidence-threshold = 0.93
 # Some of this list is only used by what is vendored, which reads it from here too.
 unused-allowed-license = "allow"
+# Accepted for one crate at a time, so the license does not spread unnoticed. The IJG license is
+# permissive and compatible with the GPL; PDFium's libjpeg already brings its credit line along.
+exceptions = [
+    { allow = ["IJG"], crate = "jpeg-encoder" },
+]
 
 [licenses.private]
 # The workspace's own crates, which are the GPL-3.0-or-later this is all about.

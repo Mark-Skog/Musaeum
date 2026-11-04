@@ -559,6 +559,7 @@ fn render_all(document: &Path, pages: u32, policy: Policy) -> Vec<Vec<u8>> {
                 x: 0,
                 y: 0,
             },
+            background: false,
         });
         write_frame(&mut stdin, &job.encode()).unwrap();
         stdin.flush().unwrap();

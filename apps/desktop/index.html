@@ -71,9 +71,9 @@
   <body>
     <canvas id="surface"></canvas>
     <nav id="reading-bar" aria-label="Leitura" hidden>
-      <button id="mode-paginated" type="button" aria-pressed="false">Paginado</button>
-      <button id="mode-continuous" type="button" aria-pressed="false">Contínuo</button>
-      <label title="Só existe no modo paginado"><input id="page-turn" type="checkbox" /> Animação</label>
+      <button id="mode-paginated" type="button" aria-pressed="false" aria-keyshortcuts="C" title="Paginado (C alterna)">Paginado</button>
+      <button id="mode-continuous" type="button" aria-pressed="false" aria-keyshortcuts="C" title="Contínuo (C alterna)">Contínuo</button>
+      <label title="Só existe no modo paginado (A liga e desliga)"><input id="page-turn" type="checkbox" aria-keyshortcuts="A" /> Animação</label>
       <select id="spreads" aria-label="Páginas duplas">
         <option value="auto">Duplas: como o arquivo pede</option>
         <option value="single">Uma página</option>

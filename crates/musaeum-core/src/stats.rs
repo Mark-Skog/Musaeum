@@ -60,6 +60,14 @@ pub struct PoolStats {
     pub results_discarded: u64,
     /// Jobs that failed.
     pub tiles_failed: u64,
+    /// Thumbnails rendered, counted apart from the tiles above.
+    pub thumbnails_done: u64,
+    /// Pages classified.
+    pub pages_analyzed: u64,
+    /// Text layers read.
+    pub texts_done: u64,
+    /// Background and text jobs that failed.
+    pub side_failures: u64,
     /// Workers replaced after dying.
     pub worker_restarts: u32,
     /// Workers killed for sending a report that contradicts the host's state.
@@ -78,6 +86,10 @@ pub struct PoolStats {
     pub batch_copy_us: Summary,
     /// Microseconds from finding a worker dead to its replacement being ready for jobs.
     pub recovery_us: Summary,
+    /// Microseconds per thumbnail.
+    pub thumbnail_us: Summary,
+    /// Microseconds to classify a page.
+    pub analyze_us: Summary,
 }
 
 /// Collects raw samples on the pool's thread.
@@ -89,6 +101,8 @@ pub(crate) struct StatsCollector {
     cancel_latency_us: Vec<u32>,
     batch_copy_us: Vec<u32>,
     recovery_us: Vec<u32>,
+    thumbnail_us: Vec<u32>,
+    analyze_us: Vec<u32>,
 }
 
 fn record(samples: &mut Vec<u32>, value: u32) {
@@ -102,6 +116,16 @@ impl StatsCollector {
         self.totals.tiles_done += 1;
         record(&mut self.render_us, render_us);
         record(&mut self.load_us, load_us);
+    }
+
+    pub(crate) fn thumbnail_done(&mut self, render_us: u32) {
+        self.totals.thumbnails_done += 1;
+        record(&mut self.thumbnail_us, render_us);
+    }
+
+    pub(crate) fn analyzed(&mut self, micros: u32) {
+        self.totals.pages_analyzed += 1;
+        record(&mut self.analyze_us, micros);
     }
 
     pub(crate) fn cancel_confirmed(&mut self, latency_us: u32) {
@@ -123,6 +147,8 @@ impl StatsCollector {
             cancel_latency_us: Summary::of(&self.cancel_latency_us),
             batch_copy_us: Summary::of(&self.batch_copy_us),
             recovery_us: Summary::of(&self.recovery_us),
+            thumbnail_us: Summary::of(&self.thumbnail_us),
+            analyze_us: Summary::of(&self.analyze_us),
             ..self.totals.clone()
         }
     }

@@ -3,7 +3,8 @@
 //!
 //! The position is the user's and lives in `library.db`. The pages can always be read again from the
 //! file, so they live in `cache.db`, by the exact bytes, which is also what keeps them right after the
-//! file is renamed and never wrong after it is edited.
+//! file is renamed and never wrong after it is edited. That goes for their size and shape, and for what
+//! they are made of: text, a scan, or a scan with OCR's text over it.
 
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{OptionalExtension, params};
@@ -159,6 +160,95 @@ text_column!(
     Landscape => "landscape",
     Square => "square"
 );
+
+/// What a page is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageContentClass {
+    /// Text and drawings the document describes.
+    Text,
+    /// A picture of the page, with no text layer.
+    Scanned,
+    /// A picture of the page with a text layer, as OCR leaves one.
+    Hybrid,
+}
+
+impl PageContentClass {
+    /// How the cache writes this.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Scanned => "scanned",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+text_column!(
+    PageContentClass,
+    Text => "text",
+    Scanned => "scanned",
+    Hybrid => "hybrid"
+);
+
+/// Which rules classified a page. Pages classified by other rules count as not classified.
+pub const CONTENT_RULES_VERSION: i64 = 1;
+
+/// The share of a document's pages, in percent, that one class needs to name the whole document.
+/// Below it the document is `mixed`. Strict unanimity left most text books `mixed` over a scanned
+/// cover or a few plates, so the project chose a qualified majority at the Phase 2 audit.
+pub const CONTENT_MAJORITY_PERCENT: u64 = 95;
+
+/// What a document is made of, from how many of its pages are of each class: the class that at
+/// least [`CONTENT_MAJORITY_PERCENT`] of them have, or `mixed`, and whether every page has it.
+/// `None` for a document with no pages.
+pub fn content_summary(text: u64, scanned: u64, hybrid: u64) -> Option<(&'static str, bool)> {
+    let total = text + scanned + hybrid;
+    if total == 0 {
+        return None;
+    }
+    let counts = [("text", text), ("scanned", scanned), ("hybrid", hybrid)];
+    let uniform = counts.iter().filter(|(_, count)| *count > 0).count() == 1;
+    let class = counts
+        .iter()
+        .find(|(_, count)| count * 100 >= total * CONTENT_MAJORITY_PERCENT)
+        .map_or("mixed", |(class, _)| *class);
+    Some((class, uniform))
+}
+
+/// What one page is made of, and the measurements that decided it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PageContentRecord {
+    /// The class.
+    pub class: PageContentClass,
+    /// Characters in the page's text layer, white space not counted.
+    pub text_chars: u32,
+    /// Fraction of the page that raster images cover, from 0 to 1.
+    pub image_coverage: f32,
+}
+
+/// What a file's pages are made of, as far as they have been classified.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DocumentContent {
+    /// Every page, in order: `None` until it is classified by the current rules.
+    pub pages: Vec<Option<PageContentRecord>>,
+    /// `text`, `scanned` or `hybrid` if at least [`CONTENT_MAJORITY_PERCENT`] of the pages are
+    /// that, `mixed` if not; `None` until every page is classified.
+    pub summary: Option<String>,
+    /// Whether every page has the same class; `None` until every page is classified.
+    pub is_strictly_uniform: Option<bool>,
+}
+
+impl DocumentContent {
+    /// The pages still to classify.
+    pub fn unclassified(&self) -> Vec<u32> {
+        (0u32..)
+            .zip(&self.pages)
+            .filter(|(_, page)| page.is_none())
+            .map(|(index, _)| index)
+            .collect()
+    }
+}
 
 /// Most zoom a reading state may hold, which is also the database's limit.
 const MAX_ZOOM: f64 = 64.0;
@@ -331,6 +421,124 @@ impl Library {
         })
     }
 
+    /// What the pages of the file with these bytes are made of, if its pages were measured before.
+    /// A page classified by older rules counts as not classified.
+    pub fn page_content(&self, blake3: &Hash) -> Result<Option<DocumentContent>> {
+        let Some(cache) = self.cache() else {
+            return Ok(None);
+        };
+        cache.read(|connection| {
+            let summary: Option<(Option<String>, Option<bool>)> = connection
+                .prepare_cached(
+                    "SELECT content, is_strictly_uniform FROM document_geometry WHERE blake3 = ?1",
+                )?
+                .query_row([blake3.as_slice()], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?;
+            let Some((summary, is_strictly_uniform)) = summary else {
+                return Ok(None);
+            };
+            let pages = connection
+                .prepare_cached(
+                    "SELECT content, text_chars, image_coverage, content_version FROM page_geometry
+                     WHERE blake3 = ?1 ORDER BY page",
+                )?
+                .query_map([blake3.as_slice()], |row| {
+                    let class: Option<PageContentClass> = row.get(0)?;
+                    let version: Option<i64> = row.get(3)?;
+                    Ok(match (class, version) {
+                        (Some(class), Some(CONTENT_RULES_VERSION)) => Some(PageContentRecord {
+                            class,
+                            text_chars: row.get::<_, Option<u32>>(1)?.unwrap_or(0),
+                            image_coverage: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0) as f32,
+                        }),
+                        _ => None,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let complete = pages.iter().all(Option::is_some);
+            Ok(Some(DocumentContent {
+                pages,
+                summary: summary.filter(|_| complete),
+                is_strictly_uniform: is_strictly_uniform.filter(|_| complete),
+            }))
+        })
+    }
+
+    /// Records what some pages of the file with these bytes are made of. Once every page is
+    /// classified, the file's summary is written too. Pages that were never measured are skipped,
+    /// and without a cache this does nothing.
+    pub fn store_page_content(
+        &self,
+        blake3: &Hash,
+        pages: &[(u32, PageContentRecord)],
+    ) -> Result<()> {
+        let Some(cache) = self.cache() else {
+            return Ok(());
+        };
+        for (_, record) in pages {
+            if !(record.image_coverage.is_finite() && (0.0..=1.0).contains(&record.image_coverage))
+            {
+                return Err(Error::Refused(format!(
+                    "a page cannot be {} covered",
+                    record.image_coverage
+                )));
+            }
+        }
+        let blake3 = *blake3;
+        let pages = pages.to_vec();
+        cache.write(move |transaction| {
+            for (page, record) in &pages {
+                transaction
+                    .prepare_cached(
+                        "UPDATE page_geometry SET content = ?3, text_chars = ?4, image_coverage = ?5,
+                                                  content_version = ?6
+                         WHERE blake3 = ?1 AND page = ?2",
+                    )?
+                    .execute(params![
+                        blake3.as_slice(),
+                        i64::from(*page),
+                        record.class,
+                        record.text_chars,
+                        f64::from(record.image_coverage),
+                        CONTENT_RULES_VERSION,
+                    ])?;
+            }
+            let (total, classified, text, scanned, hybrid): (i64, i64, i64, i64, i64) = transaction
+                .prepare_cached(
+                    "SELECT count(*),
+                            count(*) FILTER (WHERE content IS NOT NULL AND content_version = ?2),
+                            count(*) FILTER (WHERE content = 'text'),
+                            count(*) FILTER (WHERE content = 'scanned'),
+                            count(*) FILTER (WHERE content = 'hybrid')
+                     FROM page_geometry WHERE blake3 = ?1",
+                )?
+                .query_row(params![blake3.as_slice(), CONTENT_RULES_VERSION], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                })?;
+            let count = |value: i64| u64::try_from(value).unwrap_or(0);
+            let summary = content_summary(count(text), count(scanned), count(hybrid));
+            if let Some((summary, uniform)) = summary.filter(|_| classified == total) {
+                transaction
+                    .prepare_cached(
+                        "UPDATE document_geometry SET content = ?2, is_strictly_uniform = ?3,
+                             text_pages = ?4, scanned_pages = ?5, hybrid_pages = ?6,
+                             classified_at = ?7
+                         WHERE blake3 = ?1",
+                    )?
+                    .execute(params![
+                        blake3.as_slice(),
+                        summary,
+                        uniform,
+                        text,
+                        scanned,
+                        hybrid,
+                        now_ms()
+                    ])?;
+            }
+            Ok(())
+        })
+    }
+
     /// Keeps the pages of the file with these bytes, replacing what was there. Without a cache this
     /// does nothing, since the pages can always be measured again.
     pub fn store_page_geometry(&self, blake3: &Hash, geometry: &DocumentGeometry) -> Result<()> {
@@ -411,6 +619,41 @@ mod tests {
             .summary(),
             "mixed"
         );
+    }
+
+    #[test]
+    fn only_pages_classified_by_these_rules_count() {
+        let content = DocumentContent {
+            pages: vec![
+                Some(PageContentRecord {
+                    class: PageContentClass::Text,
+                    text_chars: 10,
+                    image_coverage: 0.0,
+                }),
+                None,
+                None,
+            ],
+            summary: None,
+            is_strictly_uniform: None,
+        };
+        assert_eq!(content.unclassified(), vec![1, 2]);
+    }
+
+    #[test]
+    fn one_class_names_the_document_from_95_percent_of_its_pages() {
+        assert_eq!(content_summary(0, 0, 0), None);
+        assert_eq!(content_summary(300, 0, 0), Some(("text", true)));
+        assert_eq!(content_summary(0, 12, 0), Some(("scanned", true)));
+        // A text book with a scanned cover and plates: 95% exactly is enough.
+        assert_eq!(content_summary(19, 1, 0), Some(("text", false)));
+        assert_eq!(content_summary(570, 28, 2), Some(("text", false)));
+        // Just under 95% is not.
+        assert_eq!(content_summary(18, 1, 1), Some(("mixed", false)));
+        assert_eq!(content_summary(1162, 0, 88), Some(("mixed", false)));
+        // OCR scans whose blank pages have no text layer.
+        assert_eq!(content_summary(0, 3, 97), Some(("hybrid", false)));
+        // With few pages, one page of another class is already too many.
+        assert_eq!(content_summary(9, 1, 0), Some(("mixed", false)));
     }
 
     #[test]

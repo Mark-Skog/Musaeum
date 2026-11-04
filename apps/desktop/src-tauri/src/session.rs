@@ -9,8 +9,8 @@ use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use musaeum_core::{
-    DeliveryMode, DocumentOrientation, PoolConfig, PoolStats, RenderPool, geometry_bytes,
-    summarize_orientation,
+    DeliveryMode, DocumentOrientation, FixedFormat, PoolConfig, PoolStats, RenderPool,
+    geometry_bytes, summarize_orientation,
 };
 use musaeum_library::Library;
 use musaeum_sandbox::Policy;
@@ -19,6 +19,7 @@ use musaeum_shm::{PixelSlab, ShmRegion};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, LogicalSize, Manager, State, WebviewWindow};
 
+use crate::background::{self, Pending};
 use crate::memory::MemorySampler;
 use crate::options::{DeliveryFault, DeliveryPath, StartupOptions};
 use crate::reading::{self, SavedReading};
@@ -57,8 +58,9 @@ pub struct AppState {
     /// 500 ms, probably from what reading another process's private working set costs it.
     memory: Option<MemorySampler>,
     started: Instant,
-    /// Opened the first time a document is, off the main thread.
-    library: OnceLock<Option<Library>>,
+    /// Opened the first time a document is, off the main thread. Shared with the thread that keeps
+    /// what background work produces.
+    library: OnceLock<Option<Arc<Library>>>,
 }
 
 impl AppState {
@@ -79,9 +81,9 @@ impl AppState {
     }
 
     /// The library, if there is one to remember things in.
-    fn library(&self) -> Option<&Library> {
+    fn library(&self) -> Option<&Arc<Library>> {
         self.library
-            .get_or_init(|| reading::open_library(self.options.library.as_deref()))
+            .get_or_init(|| reading::open_library(self.options.library.as_deref()).map(Arc::new))
             .as_ref()
     }
 
@@ -138,7 +140,7 @@ impl AppState {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSessionArgs {
-    pdf: PathBuf,
+    document: PathBuf,
     delivery: DeliveryPath,
     workers: usize,
 }
@@ -148,6 +150,7 @@ pub struct OpenSessionArgs {
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     id: u32,
+    format: FixedFormat,
     delivery: DeliveryPath,
     page_count: usize,
     orientation: DocumentOrientation,
@@ -160,6 +163,7 @@ pub struct SessionInfo {
     geometry_cached: bool,
     document_id: Option<i64>,
     reading_state: Option<SavedReading>,
+    background: Pending,
 }
 
 /// Returns the command-line options.
@@ -220,23 +224,29 @@ pub fn open_session(
 ) -> Result<SessionInfo, OpenSessionError> {
     stop_and_release(&window, &state);
 
+    // Only the first bytes are read here, to choose the worker; nothing in them is interpreted.
+    let format = FixedFormat::of_file(&args.document)
+        .map_err(|error| {
+            OpenSessionError::other(format!("reading {}: {error}", args.document.display()))
+        })?
+        .ok_or_else(|| OpenSessionError::other("not a PDF, CBZ, CBR or DjVu file".to_owned()))?;
     let worker_exe = std::env::current_exe()
         .map_err(|error| OpenSessionError::other(format!("locating the app: {error}")))?
-        .with_file_name("musaeum-render-pdf.exe");
+        .with_file_name(format.worker_exe());
     // A benchmark measures opening a document from scratch, so it does not use the library.
     let known = match state.library() {
-        Some(library) if state.options.bench.is_none() => reading::look_up(library, &args.pdf),
+        Some(library) if state.options.bench.is_none() => reading::look_up(library, &args.document),
         _ => reading::Known::default(),
     };
     let config = PoolConfig {
         worker_exe,
-        document: args.pdf.clone(),
+        document: args.document.clone(),
         worker_count: args.workers,
         process_memory_limit: Some(WORKER_MEMORY_LIMIT),
         policy: if state.options.no_sandbox {
             Policy::Unrestricted
         } else {
-            Policy::Lockdown
+            format.policy()
         },
         startup_timeout: STARTUP_TIMEOUT,
         known_geometry: known.geometry.as_ref().map(reading::known_geometry),
@@ -297,6 +307,15 @@ pub fn open_session(
         }
     }
 
+    // Classes and thumbnails are kept by the file's bytes, so only a file the library has hashed
+    // gets them; a benchmark leaves them alone, like everything else the library keeps.
+    let background = match (state.library(), known.file.and_then(|file| file.blake3)) {
+        (Some(library), Some(hash)) if state.options.bench.is_none() => {
+            background::start(&pool, Arc::clone(library), hash)
+        }
+        _ => Pending::default(),
+    };
+
     let stats = pool.stats().unwrap_or_default();
     let session = Arc::new(Session {
         id: state.next_id.fetch_add(1, Ordering::Relaxed),
@@ -306,6 +325,7 @@ pub fn open_session(
     });
     let info = SessionInfo {
         id: session.id,
+        format,
         delivery: args.delivery,
         page_count: session.pool.pages().len(),
         orientation: summarize_orientation(session.pool.pages()),
@@ -318,6 +338,7 @@ pub fn open_session(
         geometry_cached,
         document_id: known.file.map(|file| file.document),
         reading_state: known.reading,
+        background,
     };
     *state
         .current

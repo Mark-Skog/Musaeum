@@ -151,7 +151,7 @@ fn path_as_text<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::E
     serializer.serialize_str(&path.to_string_lossy())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
         .iter()

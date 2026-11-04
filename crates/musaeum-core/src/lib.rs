@@ -5,18 +5,25 @@
 //! tool. [`scheduler`] is a pure state machine; [`pool`] gives it processes and pipes.
 
 pub mod demand;
+pub mod format;
 pub mod geometry;
 pub mod pool;
 pub mod scheduler;
 pub mod stats;
+pub mod thumbnail;
 
 pub use demand::{Demand, DemandError, encode_demand, parse_demand};
+pub use format::FixedFormat;
 pub use geometry::{
     Direction, DocumentHints, DocumentOrientation, Orientation, PageLayout, geometry_bytes,
     summarize_orientation,
 };
-pub use pool::{DeliveryMode, Poller, PoolConfig, PoolError, RenderPool, encode_tile_batch};
+pub use pool::{
+    BackgroundResult, BackgroundSink, BackgroundWork, DeliveryMode, Poller, PoolConfig, PoolError,
+    RenderPool, TextError, TextReply, encode_tile_batch,
+};
 pub use scheduler::{
-    CancelOrder, DispatchOrder, ReadyTile, Scheduler, SchedulerError, TileOutcome,
+    CancelOrder, DispatchOrder, NO_SLOT, ReadyTile, Scheduler, SchedulerError, SideResult,
+    TileOutcome, Work,
 };
 pub use stats::{PoolStats, Summary};

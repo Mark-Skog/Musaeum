@@ -24,7 +24,7 @@ use std::sync::atomic::AtomicU64;
 use thiserror::Error;
 
 use crate::region::ShmRegion;
-use crate::tile::{TILE_BYTES, TILE_SIZE};
+use crate::tile::{TILE_BYTES, TILE_SIZE, TILE_STRIDE};
 
 /// `"MSLB"`, the first word of every slab.
 pub const SLAB_MAGIC: u32 = u32::from_le_bytes(*b"MSLB");
@@ -207,6 +207,43 @@ impl PixelSlab {
         unsafe { ptr::copy_nonoverlapping(src, dst.as_mut_ptr().cast::<u8>(), TILE_BYTES) };
         Ok(())
     }
+
+    /// Copies the first `len` bytes of a slot, such as a text layer, clamped to the slot.
+    pub fn copy_slot_prefix(&self, slot: u32, len: usize) -> Result<Vec<u8>, SlabError> {
+        let src = self.slot_ptr(slot)?;
+        let len = len.min(TILE_BYTES);
+        let mut out: Vec<u8> = Vec::with_capacity(len);
+        // SAFETY: `src` addresses `TILE_BYTES` readable bytes and `len` is no more than that;
+        // `out` has room for `len` bytes and cannot overlap shared memory.
+        unsafe {
+            ptr::copy_nonoverlapping(src, out.as_mut_ptr(), len);
+            out.set_len(len);
+        }
+        Ok(out)
+    }
+
+    /// Copies the `width` × `height` pixels at a slot's top-left corner, rows packed tightly, as
+    /// for a thumbnail drawn into one corner of a tile. Both sides are clamped to the tile.
+    pub fn copy_slot_rect(&self, slot: u32, width: u32, height: u32) -> Result<Vec<u8>, SlabError> {
+        let src = self.slot_ptr(slot)?;
+        let row = width.min(TILE_SIZE) as usize * 4;
+        let rows = height.min(TILE_SIZE) as usize;
+        let mut out: Vec<u8> = Vec::with_capacity(row * rows);
+        for y in 0..rows {
+            // SAFETY: row `y` of the slot starts `y * TILE_STRIDE` bytes in and holds at least
+            // `row` readable bytes, since both are clamped to the tile; `out` has room for them.
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    src.add(y * TILE_STRIDE),
+                    out.as_mut_ptr().add(y * row),
+                    row,
+                );
+            }
+        }
+        // SAFETY: the loop initialized `rows` rows of `row` bytes.
+        unsafe { out.set_len(row * rows) };
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -289,5 +326,30 @@ mod tests {
         // SAFETY: `copy_slot` initialized exactly `TILE_BYTES` bytes.
         unsafe { out.set_len(TILE_BYTES) };
         assert!(out.iter().all(|&byte| byte == 0x22));
+    }
+
+    #[test]
+    fn partial_copies_take_exactly_the_bytes_asked_for() {
+        let slab = slab(1);
+        let base = slab.slot_ptr(0).unwrap();
+        // SAFETY: slot zero exists and this test is single-threaded. Each row holds its index.
+        unsafe {
+            for y in 0..TILE_SIZE as usize {
+                ptr::write_bytes(base.add(y * TILE_STRIDE), y as u8, TILE_STRIDE);
+            }
+        }
+        assert_eq!(slab.copy_slot_prefix(0, 10).unwrap(), vec![0u8; 10]);
+        assert_eq!(
+            slab.copy_slot_prefix(0, usize::MAX).unwrap().len(),
+            TILE_BYTES
+        );
+
+        let rect = slab.copy_slot_rect(0, 3, 2).unwrap();
+        assert_eq!(rect, [vec![0u8; 12], vec![1u8; 12]].concat());
+        assert_eq!(
+            slab.copy_slot_rect(0, 10_000, 1).unwrap().len(),
+            TILE_STRIDE
+        );
+        assert!(slab.copy_slot_rect(1, 1, 1).is_err());
     }
 }

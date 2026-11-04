@@ -17,8 +17,8 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use common::{Fixture, pdf};
 use musaeum_fs::{OpenError, ReadPattern, open_content};
@@ -47,6 +47,17 @@ static FETCHES: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 /// What each placeholder has in the cloud, by its identity.
 static CLOUD: Mutex<Option<HashMap<u32, Vec<u8>>>> = Mutex::new(None);
 static NEXT_IDENTITY: AtomicU32 = AtomicU32::new(1);
+/// Held while a sync root is registered and connected, or disconnected and unregistered. The tests
+/// run in parallel and all register roots of one provider, and Windows once refused a registration
+/// with 0x80070490 (element not found) in 50 runs, with other tests registering and removing roots at
+/// the same time. The Cloud Files documentation does not say these calls may overlap, so they no
+/// longer do; the tests themselves still run at once.
+static REGISTRATION: Mutex<()> = Mutex::new(());
+
+/// The registration lock. A test that failed while holding it leaves nothing half done for the next.
+fn registration_lock() -> MutexGuard<'static, ()> {
+    REGISTRATION.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn fetches(identity: u32) -> u32 {
     FETCHES
@@ -149,6 +160,7 @@ impl SyncRoot {
             HardLink: CF_HARDLINK_POLICY_NONE,
             PlaceholderManagement: CF_PLACEHOLDER_MANAGEMENT_POLICY_DEFAULT,
         };
+        let registering = registration_lock();
         // SAFETY: the path is null-terminated, and both structures are complete and outlive the call.
         let result = unsafe {
             CfRegisterSyncRoot(
@@ -182,6 +194,7 @@ impl SyncRoot {
             )
         };
         assert_eq!(result, 0, "connecting to the sync root: {result:#x}");
+        drop(registering);
         Self {
             path: path.to_owned(),
             connection,
@@ -271,6 +284,7 @@ impl SyncRoot {
 impl Drop for SyncRoot {
     fn drop(&mut self) {
         let path = wide(self.path.as_os_str());
+        let _unregistering = registration_lock();
         // SAFETY: the connection came from `CfConnectSyncRoot`, and the path is null-terminated.
         unsafe {
             CfDisconnectSyncRoot(self.connection);

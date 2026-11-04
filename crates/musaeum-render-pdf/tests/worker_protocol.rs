@@ -102,6 +102,7 @@ impl Worker {
             job_seq,
             slot,
             tile,
+            background: false,
         }));
         self.receive().expect("the worker should answer")
     }
@@ -399,6 +400,7 @@ fn cancellation_interrupts_a_render_already_in_progress() {
             job_seq,
             slot: 0,
             tile: heavy,
+            background: false,
         }));
         std::thread::sleep(delay);
         worker

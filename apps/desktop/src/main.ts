@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { Samples } from './bench/metrics';
 import { runBook } from './book-host';
-import type { FromWorker, ReaderStatus, ToWorker } from './compositor/messages';
+import type { FromWorker, Inspection, ReaderStatus, ToWorker } from './compositor/messages';
 import { type DeliveryEvidence, type DeliveryPlan, planDelivery } from './delivery-select';
 import { mainThreadSeesHostWrites, probeSharedBuffer } from './probe';
 import {
@@ -115,8 +115,15 @@ function connectReadingBar(send: (message: ToWorker) => void): (status: ReaderSt
   };
 }
 
-/** Sends what the pointer and the keyboard do to the compositor, in device pixels. */
-function forwardInput(canvas: HTMLCanvasElement, send: (message: ToWorker) => void): void {
+/**
+ * Sends what the pointer and the keyboard do to the compositor, in device pixels. `status` gives
+ * what the reading bar last showed, which the shortcuts that act like its controls start from.
+ */
+function forwardInput(
+  canvas: HTMLCanvasElement,
+  send: (message: ToWorker) => void,
+  status: () => ReaderStatus | null,
+): void {
   const at = (event: MouseEvent): { x: number; y: number } => {
     const box = canvas.getBoundingClientRect();
     return {
@@ -165,8 +172,24 @@ function forwardInput(canvas: HTMLCanvasElement, send: (message: ToWorker) => vo
     if (typing && target.id !== 'page-turn') {
       return;
     }
+    const plain = !event.ctrlKey && !event.altKey && !event.metaKey;
+    const shown = status();
+    // The reading bar's controls, from the keyboard: C switches between paginated and continuous,
+    // A turns the page-turn animation on or off, which only paginated reading has.
+    if (plain && shown !== null && (event.key === 'c' || event.key === 'C')) {
+      event.preventDefault();
+      send({ type: 'set-mode', mode: shown.mode === 'paginated' ? 'continuous' : 'paginated' });
+      return;
+    }
+    if (plain && shown !== null && (event.key === 'a' || event.key === 'A')) {
+      event.preventDefault();
+      if (shown.mode === 'paginated') {
+        send({ type: 'set-animation', on: !shown.animating });
+      }
+      return;
+    }
     const zoomKey = event.ctrlKey && ['=', '+', '-', '0'].includes(event.key);
-    if (zoomKey || (!event.ctrlKey && !event.altKey && READER_KEYS.has(event.key))) {
+    if (zoomKey || (plain && READER_KEYS.has(event.key))) {
       event.preventDefault();
       send({ type: 'key', key: event.key, ctrl: event.ctrlKey, shift: event.shiftKey });
     }
@@ -208,14 +231,16 @@ async function gatherDeliveryEvidence(
 }
 
 async function openOnPath(
-  pdf: string,
+  document: string,
   path: DeliveryPath,
   workers: number,
   inbox: SharedBufferInbox | null,
 ): Promise<OpenedSession> {
   let session: SessionInfo;
   try {
-    session = await invoke<SessionInfo>('open_session', { args: { pdf, delivery: path, workers } });
+    session = await invoke<SessionInfo>('open_session', {
+      args: { document, delivery: path, workers },
+    });
   } catch (error) {
     const failure = error as OpenSessionError;
     throw failure.deliveryFailed
@@ -241,14 +266,14 @@ async function openOnPath(
 
 /** Walks down the plan until a path opens, recording every path that failed on the way. */
 async function openFirstWorkingPath(
-  pdf: string,
+  document: string,
   plan: DeliveryPlan,
   workers: number,
   inbox: SharedBufferInbox | null,
 ): Promise<OpenedSession> {
   for (const path of plan.candidates) {
     try {
-      return await openOnPath(pdf, path, workers, inbox);
+      return await openOnPath(document, path, workers, inbox);
     } catch (error) {
       if (!(error instanceof DeliveryPathFailure)) {
         throw error;
@@ -322,8 +347,10 @@ async function run(options: StartupOptions): Promise<void> {
     await runBook(options, (message) => void failBench(bench, message));
     return;
   }
-  if (options.pdf === null) {
-    hud.textContent = 'Abra um documento com: musaeum-desktop --pdf CAMINHO ou --epub CAMINHO';
+  if (options.document === null) {
+    hud.textContent =
+      'Abra um documento com: musaeum-desktop --document CAMINHO (PDF, CBZ, CBR, DjVu) ' +
+      'ou --epub CAMINHO';
     if (measuringMemory) {
       await runMemoryScenario(null, () => ({}));
     }
@@ -346,6 +373,12 @@ async function run(options: StartupOptions): Promise<void> {
   let opening: Record<string, number> = {};
   let documentId: number | null = null;
   let showStatus: ((status: ReaderStatus) => void) | null = null;
+  let lastStatus: ReaderStatus | null = null;
+  const savedStates: unknown[] = [];
+  const inspections: ((inspection: Inspection) => void)[] = [];
+  // The compositor drops what it is sent before it is ready, so the hooks for tests wait for it.
+  let compositorReady = false;
+  let exposeTestHooks: (() => void) | null = null;
 
   worker.addEventListener('message', (event: MessageEvent<FromWorker>) => {
     const message = event.data;
@@ -354,9 +387,14 @@ async function run(options: StartupOptions): Promise<void> {
         hud.textContent = message.text;
         break;
       case 'status':
+        lastStatus = message;
         showStatus?.(message);
         break;
+      case 'inspection':
+        inspections.shift()?.(message);
+        break;
       case 'reading-state':
+        savedStates.push(message.state);
         if (documentId !== null) {
           const reading = { document: documentId, reading: message.state };
           invoke('save_reading_state', reading).catch((error) =>
@@ -366,6 +404,8 @@ async function run(options: StartupOptions): Promise<void> {
         break;
       case 'ready':
         console.info(`GPU: ${message.gpu}; clock round trip ${message.clockRttMs.toFixed(2)} ms`);
+        compositorReady = true;
+        exposeTestHooks?.();
         break;
       case 'bench-done':
         finished = true;
@@ -413,7 +453,7 @@ async function run(options: StartupOptions): Promise<void> {
   const evidence = await gatherDeliveryEvidence(worker, inbox, options);
   const plan = planDelivery(options.delivery, evidence);
   const { session, buffers } = await openFirstWorkingPath(
-    options.pdf,
+    options.document,
     plan,
     options.workers,
     inbox,
@@ -484,7 +524,31 @@ async function run(options: StartupOptions): Promise<void> {
     send({ type: 'resize', width, height });
   }).observe(canvas);
 
-  forwardInput(canvas, send);
+  forwardInput(canvas, send, () => lastStatus);
+
+  if (options.e2e) {
+    // For tests that drive this window from outside, through the WebView's debugging protocol:
+    // what the reader holds, exactly, and nothing that would let them change it but the input a
+    // person would give. They appear only once the compositor runs: a question asked before that
+    // would be dropped, and the test would wait for its answer forever.
+    exposeTestHooks = () => {
+      (window as unknown as { musaeumE2E: unknown }).musaeumE2E = {
+        session,
+        status: () => lastStatus,
+        saved: () => savedStates.slice(),
+        inspect: () =>
+          new Promise<Inspection>((resolve) => {
+            inspections.push(resolve);
+            send({ type: 'inspect' });
+          }),
+        devicePixelRatio,
+        canvas: () => canvas.getBoundingClientRect().toJSON(),
+      };
+    };
+    if (compositorReady) {
+      exposeTestHooks();
+    }
+  }
 
   if (bench !== null) {
     startMainThreadStress(bench.mainStressMs);

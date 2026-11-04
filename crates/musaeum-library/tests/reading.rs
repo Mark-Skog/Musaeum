@@ -5,8 +5,8 @@ mod common;
 
 use common::{Fixture, TempDir, options, pdf, pdf_with_id};
 use musaeum_library::{
-    DocumentGeometry, Error, Library, LibraryPaths, PageOrientation, PageRecord, ReadingMode,
-    ReadingState, Spreads,
+    DocumentGeometry, Error, Library, LibraryPaths, PageContentClass, PageContentRecord,
+    PageOrientation, PageRecord, ReadingMode, ReadingState, Spreads,
 };
 
 fn state(page: u32) -> ReadingState {
@@ -203,6 +203,81 @@ fn the_pages_of_a_file_are_kept_by_its_bytes() {
         Some(shorter),
         "measuring again replaces all of it"
     );
+}
+
+#[test]
+fn what_pages_are_made_of_is_kept_a_page_at_a_time_and_summed_up_once_all_are_known() {
+    let mut fixture = Fixture::new();
+    let hash = [9u8; 32];
+    assert_eq!(
+        fixture.library().page_content(&hash).unwrap(),
+        None,
+        "nothing measured yet"
+    );
+
+    let page = PageRecord {
+        width_pt: 612.0,
+        height_pt: 792.0,
+        orientation: PageOrientation::Portrait,
+    };
+    fixture
+        .library()
+        .store_page_geometry(
+            &hash,
+            &DocumentGeometry {
+                pages: vec![page; 3],
+                ..DocumentGeometry::default()
+            },
+        )
+        .unwrap();
+    let content = fixture.library().page_content(&hash).unwrap().unwrap();
+    assert_eq!(content.unclassified(), vec![0, 1, 2]);
+    assert_eq!(content.summary, None);
+    assert_eq!(content.is_strictly_uniform, None);
+
+    let record = |class, text_chars, image_coverage| PageContentRecord {
+        class,
+        text_chars,
+        image_coverage,
+    };
+    fixture
+        .library()
+        .store_page_content(
+            &hash,
+            &[
+                (0, record(PageContentClass::Scanned, 0, 1.0)),
+                (2, record(PageContentClass::Hybrid, 1_200, 0.98)),
+                // A page the geometry does not have is ignored.
+                (9, record(PageContentClass::Text, 5, 0.0)),
+            ],
+        )
+        .unwrap();
+    let content = fixture.library().page_content(&hash).unwrap().unwrap();
+    assert_eq!(content.unclassified(), vec![1]);
+    assert_eq!(
+        content.pages[2],
+        Some(record(PageContentClass::Hybrid, 1_200, 0.98))
+    );
+    assert_eq!(content.summary, None, "not every page is known");
+    assert_eq!(content.is_strictly_uniform, None);
+
+    fixture
+        .library()
+        .store_page_content(&hash, &[(1, record(PageContentClass::Scanned, 3, 1.0))])
+        .unwrap();
+    fixture.close();
+    fixture.reopen();
+    let content = fixture.library().page_content(&hash).unwrap().unwrap();
+    assert!(content.unclassified().is_empty());
+    assert_eq!(content.summary.as_deref(), Some("mixed"));
+    assert_eq!(content.is_strictly_uniform, Some(false));
+
+    assert!(matches!(
+        fixture
+            .library()
+            .store_page_content(&hash, &[(0, record(PageContentClass::Text, 0, 2.0))]),
+        Err(Error::Refused(_))
+    ));
 }
 
 /// The schema as Phase 1 shipped it, and what that phase's library would have written in it.

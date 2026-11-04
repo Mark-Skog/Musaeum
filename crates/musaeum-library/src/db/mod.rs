@@ -53,6 +53,10 @@ pub(crate) const CACHE_MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: include_str!("../../migrations/cache/0002_page_geometry.sql"),
     },
+    Migration {
+        version: 3,
+        sql: include_str!("../../migrations/cache/0003_page_content.sql"),
+    },
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);

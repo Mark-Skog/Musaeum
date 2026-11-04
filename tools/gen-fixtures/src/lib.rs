@@ -5,6 +5,9 @@
 //! the same arguments always produce the same bytes.
 
 pub mod books;
+pub mod color;
+pub mod comics;
+pub mod djvu;
 pub mod epub;
 
 use std::fmt::Write as _;
@@ -337,6 +340,124 @@ pub fn write_spread_fixture(path: &Path) -> io::Result<()> {
             )
         },
     )
+}
+
+/// The text the content fixture's text layers carry, OCR's or not.
+pub const CONTENT_SENTENCE: &str = "The quick brown fox jumps over the lazy dog";
+
+/// What each page of [`write_content_fixture`] is made of, as a classifier should see it.
+///
+/// | Page | Made of | Class |
+/// |------|---------|-------|
+/// | 0 | Lines of visible text | text |
+/// | 1 | A picture of the page | scanned |
+/// | 2 | A picture with OCR's invisible text over it | hybrid |
+/// | 3 | A picture with a page number stamped on it | scanned |
+/// | 4 | A picture inside a form XObject, with invisible text | hybrid |
+/// | 5 | Half a page of figure, half of text | text |
+/// | 6 | Nothing | text |
+/// | 7 | Text, on a page shown turned a quarter clockwise | text |
+pub const CONTENT_CLASSES: [&str; 8] = [
+    "text", "scanned", "hybrid", "scanned", "hybrid", "text", "text", "text",
+];
+
+/// Pages that a content classifier and a text-layer reader have to get right. See
+/// [`CONTENT_CLASSES`].
+pub fn write_content_fixture(path: &Path) -> io::Result<()> {
+    const WIDTH: f32 = 595.0;
+    const HEIGHT: f32 = 842.0;
+    const IMAGE_ID: usize = 4;
+    const FORM_ID: usize = 5;
+    const FIRST_PAGE: usize = 6;
+    const PAGES: usize = CONTENT_CLASSES.len();
+
+    let out = BufWriter::new(File::create(path)?);
+    let mut pdf = PdfWriter {
+        out,
+        position: 0,
+        offsets: vec![0],
+    };
+    pdf.bytes(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n")?;
+    pdf.object(
+        CATALOG_ID,
+        &format!("<< /Type /Catalog /Pages {PAGES_ID} 0 R >>"),
+    )?;
+    let kids: String = (0..PAGES)
+        .map(|page| format!("{} 0 R ", FIRST_PAGE + page * 2))
+        .collect();
+    pdf.object(
+        PAGES_ID,
+        &format!("<< /Type /Pages /Count {PAGES} /Kids [ {kids}] >>"),
+    )?;
+    pdf.object(
+        FONT_ID,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    )?;
+    let scan = scanned_page_image(620, 877, 7)?;
+    pdf.stream(
+        IMAGE_ID,
+        &format!(
+            "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceGray \
+             /BitsPerComponent 8 /Filter /FlateDecode",
+            scan.width, scan.height
+        ),
+        &scan.compressed,
+    )?;
+    // A form that draws the picture over the whole page, as some scanners wrap their output.
+    let form = format!("q {WIDTH} 0 0 {HEIGHT} 0 0 cm /Im0 Do Q");
+    pdf.stream(
+        FORM_ID,
+        &format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 {WIDTH} {HEIGHT}] \
+             /Resources << /XObject << /Im0 {IMAGE_ID} 0 R >> >> /Filter /FlateDecode"
+        ),
+        &deflate(form.as_bytes())?,
+    )?;
+
+    let lines = |render_mode: u32, count: usize| {
+        let mut text = format!("BT /F1 14 Tf {render_mode} Tr 18 TL 60 780 Td\n");
+        for _ in 0..count {
+            writeln!(text, "({CONTENT_SENTENCE}) Tj T*").expect("writing to a String cannot fail");
+        }
+        text.push_str("ET\n");
+        text
+    };
+    let picture = format!("q {WIDTH} 0 0 {HEIGHT} 0 0 cm /Im0 Do Q\n");
+    for page in 0..PAGES {
+        let (content, rotate) = match page {
+            0 => (lines(0, 30), 0),
+            1 => (picture.clone(), 0),
+            2 => (picture.clone() + &lines(3, 30), 0),
+            3 => (
+                picture.clone() + "BT /F1 10 Tf 0 g 290 20 Td (12) Tj ET\n",
+                0,
+            ),
+            4 => ("/Fm0 Do\n".to_owned() + &lines(3, 30), 0),
+            5 => (
+                format!("q {WIDTH} 0 0 {} 0 0 cm /Im0 Do Q\n", HEIGHT / 2.0) + &lines(0, 15),
+                0,
+            ),
+            6 => (String::new(), 0),
+            _ => (lines(0, 3), 90),
+        };
+        let id = FIRST_PAGE + page * 2;
+        pdf.object(
+            id,
+            &format!(
+                "<< /Type /Page /Parent {PAGES_ID} 0 R /MediaBox [0 0 {WIDTH} {HEIGHT}] \
+                 /Rotate {rotate} /Resources << /Font << /F1 {FONT_ID} 0 R >> \
+                 /XObject << /Im0 {IMAGE_ID} 0 R /Fm0 {FORM_ID} 0 R >> >> /Contents {} 0 R >>",
+                id + 1
+            ),
+        )?;
+        pdf.stream(
+            id + 1,
+            "/Filter /FlateDecode",
+            &deflate(content.as_bytes())?,
+        )?;
+    }
+    pdf.finish()?;
+    Ok(())
 }
 
 /// One page per font that PDFium has to find on its own, because none of them is embedded:

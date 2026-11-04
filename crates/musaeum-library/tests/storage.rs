@@ -224,7 +224,7 @@ fn a_cache_from_a_newer_version_is_replaced_too() {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2, "the version this program writes");
+    assert_eq!(version, 3, "the version this program writes");
 }
 
 // --- What cannot be replaced ---

@@ -19,10 +19,11 @@ use std::os::windows::ffi::OsStrExt;
 use std::process::ExitCode;
 use std::ptr;
 
-use musaeum_render_pdf::engine::{CancelProbe, Document, RenderOutcome};
+use musaeum_render_pdf::engine::Document;
 use musaeum_render_pdf::startup::{self, Attached};
 use musaeum_shm::TileKey;
 use musaeum_shm::wire::{HostMessage, read_frame};
+use musaeum_worker::{CancelProbe, Engine, RenderOutcome};
 use windows_sys::Wdk::Foundation::{NtQueryObject, OBJECT_ATTRIBUTES};
 use windows_sys::Wdk::Storage::FileSystem::{FILE_OPEN, NtCreateFile};
 use windows_sys::Wdk::System::Threading::NtQueryInformationProcess;
@@ -647,7 +648,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         y: 0,
     };
     // SAFETY: nothing else writes to this slot, and `slot_ptr` checked it holds a whole tile.
-    let rendered = unsafe { opened.render_tile(target, tile, &probe) };
+    let rendered = unsafe { opened.render_tile(target, tile, false, &probe) };
     report(
         "render_into_slab",
         match rendered {

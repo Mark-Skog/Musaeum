@@ -82,6 +82,29 @@ pub fn tile_grid(page: PageGeometry, scale: u32) -> (u64, u64) {
     )
 }
 
+/// Longest edge of a page thumbnail, in pixels.
+pub const THUMBNAIL_EDGE: u32 = 256;
+
+/// The finest scale at which the whole page fits in a square of `edge` pixels, so that its
+/// thumbnail is the single tile at `x = 0, y = 0`. `edge` is at most [`TILE_SIZE`]. Only a page
+/// longer than `edge` × 64 points, which PDF without `/UserUnit` does not allow, still overflows it.
+pub fn thumbnail_scale(page: PageGeometry, edge: u32) -> u32 {
+    let edge = edge.clamp(1, TILE_SIZE);
+    let longest = page.width_pt.max(page.height_pt);
+    if !longest.is_finite() || longest <= 0.0 {
+        return MIN_SCALE;
+    }
+    // An edge rounds to `edge` pixels up to just under `edge + 0.5`, so the largest scale is the
+    // last one below that.
+    let fits = ((f64::from(edge) + 0.5) * f64::from(SCALE_ONE) / f64::from(longest)).ceil() - 1.0;
+    let mut scale = fits.clamp(f64::from(MIN_SCALE), f64::from(MAX_SCALE)) as u32;
+    // Floating-point error can still land one pixel over.
+    while scale > MIN_SCALE && page_pixels(longest, scale) > u64::from(edge) {
+        scale -= 1;
+    }
+    scale
+}
+
 /// Whether `key` addresses an existing tile of `page`.
 pub fn tile_in_page(key: TileKey, page: PageGeometry) -> bool {
     if !(MIN_SCALE..=MAX_SCALE).contains(&key.scale)
@@ -162,6 +185,32 @@ mod tests {
         };
         assert!(tile_in_page(key(SCALE_ONE), banner));
         assert!(!tile_in_page(key(MAX_SCALE), banner));
+    }
+
+    #[test]
+    fn a_thumbnail_is_one_tile_as_large_as_the_box_allows() {
+        let scale = thumbnail_scale(LETTER, THUMBNAIL_EDGE);
+        assert_eq!(page_pixels(792.0, scale), 256);
+        assert!(page_pixels(612.0, scale) <= 256);
+        assert_eq!(tile_grid(LETTER, scale), (1, 1));
+        assert!(
+            page_pixels(792.0, scale + 1) > 256,
+            "the next step up would not fit"
+        );
+
+        let landscape = PageGeometry {
+            width_pt: 1190.0,
+            height_pt: 842.0,
+        };
+        assert_eq!(
+            page_pixels(1190.0, thumbnail_scale(landscape, THUMBNAIL_EDGE)),
+            256
+        );
+        let empty = PageGeometry {
+            width_pt: 0.0,
+            height_pt: 0.0,
+        };
+        assert_eq!(thumbnail_scale(empty, THUMBNAIL_EDGE), MIN_SCALE);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! corpus-check --corpus DIR --work DIR [--out REPORT.json] [--sample N] [--skip-render]
+//!              [--skip-content]
 //! ```
 //!
 //! The collection is only ever read. Every file and folder in it, with its size, dates and
@@ -17,12 +18,16 @@
 //!    keeps the result in `cache.db` and reads it back;
 //! 3. renders a sample of whole pages at the scale a reader would see, chosen for being heavy
 //!    scans, mixing page shapes, being long, and being ordinary;
-//! 4. takes heavy renders back part way, and kills a worker in the middle of one.
+//! 4. takes heavy renders back part way, and kills a worker in the middle of one;
+//! 5. classifies every page of every PDF as text, scanned or hybrid, as background work in the
+//!    sandboxed workers, keeps the classes in `cache.db`, and draws the thumbnails of the sample
+//!    into the store on disk.
 
+mod content;
 mod render;
 mod snapshot;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -42,6 +47,7 @@ struct Options {
     out: Option<PathBuf>,
     sample: usize,
     skip_render: bool,
+    skip_content: bool,
 }
 
 fn parse_options() -> Result<Options, String> {
@@ -50,6 +56,7 @@ fn parse_options() -> Result<Options, String> {
     let mut out = None;
     let mut sample = 10;
     let mut skip_render = false;
+    let mut skip_content = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -63,6 +70,7 @@ fn parse_options() -> Result<Options, String> {
                     .map_err(|error| format!("--sample: {error}"))?;
             }
             "--skip-render" => skip_render = true,
+            "--skip-content" => skip_content = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -80,6 +88,7 @@ fn parse_options() -> Result<Options, String> {
         out,
         sample,
         skip_render,
+        skip_content,
     })
 }
 
@@ -298,12 +307,50 @@ fn run(options: &Options) -> Result<bool, String> {
         reports.push(report);
     }
 
+    let chosen = choose_sample(&reports, options.sample);
+
+    // --- 5. What every page is made of, and the sample's thumbnails ---
+    let mut contents = Vec::new();
+    if !options.skip_content {
+        let sampled: HashSet<&str> = chosen
+            .iter()
+            .map(|(_, relative)| relative.as_str())
+            .collect();
+        for (index, report) in reports.iter().enumerate() {
+            let path = options.corpus.join(&report.path);
+            let Some(pages) = geometries.get(&path) else {
+                continue;
+            };
+            let thumbnails = sampled.contains(report.path.as_str());
+            eprintln!(
+                "[{}/{}] classifying {}{}",
+                index + 1,
+                reports.len(),
+                report.path,
+                if thumbnails { ", with thumbnails" } else { "" }
+            );
+            let hash = library
+                .opened_file(&path)
+                .ok()
+                .flatten()
+                .and_then(|file| file.blake3);
+            let run = content::classify(&worker, &path, pages, 4, thumbnails, &library, hash);
+            if let Err(OpenFailure::Core(message)) = &run {
+                core_failures.push(format!("{}: {message}", report.path));
+            }
+            contents.push(json!({
+                "path": report.path,
+                "thumbnails": thumbnails,
+                "result": run.map_err(|error| format!("{error:?}")),
+            }));
+        }
+    }
+
     // --- 3 and 4. A sample, rendered, cancelled and killed ---
     let mut samples = Vec::new();
     let mut cancel = json!(null);
     let mut kill = json!(null);
     if !options.skip_render {
-        let chosen = choose_sample(&reports, options.sample);
         for (reason, relative) in &chosen {
             let path = options.corpus.join(relative);
             let Some(pages) = geometries.get(&path) else {
@@ -417,6 +464,7 @@ fn run(options: &Options) -> Result<bool, String> {
         "samples": samples,
         "cancel": cancel,
         "kill": kill,
+        "content": contents,
         "core_failures": core_failures,
     });
     let text = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;

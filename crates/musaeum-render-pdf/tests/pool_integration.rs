@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use gen_fixtures::CONTENT_CLASSES;
 use musaeum_core::{
-    DeliveryMode, PoolConfig, PoolError, RenderPool, encode_demand, geometry_bytes,
+    BackgroundResult, BackgroundWork, DeliveryMode, PoolConfig, PoolError, RenderPool, TextError,
+    encode_demand, geometry_bytes,
 };
 use musaeum_sandbox::Policy;
 use musaeum_shm::ring::ring_len;
@@ -535,4 +537,184 @@ fn dropping_the_pool_answers_parked_pollers_and_stops_the_workers() {
         Ok(0),
         "the poller must not hang"
     );
+}
+
+/// Collects background results until `Finished`.
+fn collect_background(results: &Receiver<BackgroundResult>) -> Vec<BackgroundResult> {
+    let mut collected = Vec::new();
+    loop {
+        match results
+            .recv_timeout(WAIT)
+            .expect("background work should finish")
+        {
+            BackgroundResult::Finished => return collected,
+            result => collected.push(result),
+        }
+    }
+}
+
+fn start_background(pool: &RenderPool, work: BackgroundWork) -> Receiver<BackgroundResult> {
+    let (sender, results) = mpsc::channel();
+    pool.start_background(
+        work,
+        Box::new(move |result| {
+            let _ = sender.send(result);
+        }),
+    );
+    results
+}
+
+#[test]
+fn background_work_classifies_every_page_and_draws_its_thumbnail() {
+    let path = temp_dir("background").join("content.pdf");
+    gen_fixtures::write_content_fixture(&path).unwrap();
+    let (pool, _tiles) = start_pull(path, 2, 8);
+    let pages: Vec<u32> = (0..CONTENT_CLASSES.len() as u32).collect();
+    let results = start_background(
+        &pool,
+        BackgroundWork {
+            analyze: pages.clone(),
+            thumbnails: pages,
+        },
+    );
+
+    let mut classes = vec![""; CONTENT_CLASSES.len()];
+    let mut thumbnails = vec![None; CONTENT_CLASSES.len()];
+    for result in collect_background(&results) {
+        match result {
+            BackgroundResult::Content { page, content } => {
+                classes[page as usize] = content.class().as_str();
+            }
+            BackgroundResult::Thumbnail {
+                page,
+                width,
+                height,
+                pixels,
+            } => {
+                assert_eq!(pixels.len(), (width * height * 4) as usize);
+                // Opaque, as every rendered page is.
+                assert!(
+                    pixels
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|pixel| pixel[3] == 255)
+                );
+                thumbnails[page as usize] = Some((width, height));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+    assert_eq!(classes, CONTENT_CLASSES);
+    for (page, size) in thumbnails.iter().enumerate() {
+        // A 595 × 842 page fits 256 pixels tall; the last one is shown turned on its side.
+        let expected = if page == 7 { (256, 181) } else { (181, 256) };
+        assert_eq!(*size, Some(expected), "page {page}");
+    }
+
+    let stats = pool.stats().unwrap();
+    assert_eq!(stats.pages_analyzed, 8);
+    assert_eq!(stats.thumbnails_done, 8);
+    assert_eq!(stats.tiles_done, 0, "thumbnails are not counted as tiles");
+    println!(
+        "classify: p50 {} µs, max {} µs; thumbnail: p50 {} µs, max {} µs",
+        stats.analyze_us.p50, stats.analyze_us.max, stats.thumbnail_us.p50, stats.thumbnail_us.max
+    );
+}
+
+#[test]
+fn wanted_tiles_go_first_while_background_work_runs() {
+    let path = temp_dir("background-first").join("vector.pdf");
+    gen_fixtures::write_vector_fixture(&path, 60).unwrap();
+    let (pool, tiles) = start_pull(path, 2, 8);
+    let all: Vec<u32> = (0..60).collect();
+    let results = start_background(
+        &pool,
+        BackgroundWork {
+            analyze: all.clone(),
+            thumbnails: all,
+        },
+    );
+
+    // A reader turning pages while thumbnails are being drawn.
+    let mut waits = Vec::new();
+    for page in 0..10 {
+        let asked = Instant::now();
+        pool.submit_demand(encode_demand(page + 1, &[tile(page, 0, 0, 0)]));
+        loop {
+            let received = tiles.recv_timeout(WAIT).expect("a wanted tile arrives");
+            if received.words.page == page {
+                waits.push(asked.elapsed());
+                break;
+            }
+        }
+    }
+    let finished = collect_background(&results);
+    assert_eq!(finished.len(), 120, "every page classified and drawn");
+    waits.sort();
+    println!(
+        "tiles while background work runs: p50 {:?}, max {:?}",
+        waits[waits.len() / 2],
+        waits[waits.len() - 1]
+    );
+    let stats = pool.stats().unwrap();
+    assert_eq!(stats.protocol_violations, 0);
+}
+
+#[test]
+fn a_text_layer_comes_back_decoded_and_bad_pages_are_refused() {
+    let path = temp_dir("text").join("content.pdf");
+    gen_fixtures::write_content_fixture(&path).unwrap();
+    let (pool, _tiles) = start_pull(path, 1, 4);
+    pool.submit_demand(encode_demand(1, &[tile(1, 1, 0, 0), tile(1, 1, 1, 0)]));
+    let layer = pool
+        .request_text(0)
+        .recv_timeout(WAIT)
+        .unwrap()
+        .expect("page 0 has text");
+    assert_eq!(layer.words.len(), 270);
+    assert_eq!(layer.words[0].text, "The");
+    assert_eq!(
+        pool.request_text(99).recv_timeout(WAIT).unwrap(),
+        Err(TextError::NoSuchPage(99))
+    );
+    assert!(
+        pool.request_text(1)
+            .recv_timeout(WAIT)
+            .unwrap()
+            .unwrap()
+            .words
+            .is_empty()
+    );
+}
+
+#[test]
+fn background_work_finishes_even_when_its_worker_is_killed() {
+    let path = temp_dir("background-kill").join("scan.pdf");
+    gen_fixtures::write_scan_fixture(&path, 40).unwrap();
+    let (pool, _tiles) = start_pull(path, 1, 8);
+    let all: Vec<u32> = (0..40).collect();
+    let results = start_background(
+        &pool,
+        BackgroundWork {
+            analyze: all.clone(),
+            thumbnails: all,
+        },
+    );
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(40));
+        if let Some(pid) = pool.worker_pids()[0] {
+            terminate(pid);
+        }
+    }
+    let finished = collect_background(&results);
+    let failed = finished
+        .iter()
+        .filter(|result| matches!(result, BackgroundResult::Failed { .. }))
+        .count();
+    // A job that dies twice is given up on; nothing else is lost.
+    assert_eq!(finished.len(), 80);
+    assert!(failed <= 1, "{failed} pages given up");
+    let stats = pool.stats().unwrap();
+    assert!(stats.worker_restarts >= 1);
 }
