@@ -60,6 +60,7 @@ fn the_worker_runs_with_everything_locked_and_still_reads_a_book() {
         &Request {
             handle,
             format: Format::Epub,
+            task: musaeum_ingest::protocol::Task::Extract,
         },
     )
     .unwrap();

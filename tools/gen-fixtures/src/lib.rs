@@ -9,6 +9,7 @@ pub mod color;
 pub mod comics;
 pub mod djvu;
 pub mod epub;
+pub mod flow;
 
 use std::fmt::Write as _;
 use std::fs::File;

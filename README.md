@@ -2,18 +2,21 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 2 do Plano Diretor**, o layout fixo. O que existe hoje: o leitor de layout fixo
-para PDF, quadrinhos (CBZ e CBR) e DjVu, cada formato num processo isolado, com tiles na escala exata da
-tela, páginas duplas, modo paginado e contínuo, a posição guardada na biblioteca, a classificação de cada
-página em texto, escaneada ou híbrida e miniaturas em disco; o leitor fluido (EPUB) da Fase 0; e a
-biblioteca da Fase 1, com SQLite, identidade de arquivos, indexador, diário de operações em disco e uma
-CLI. Ainda não há interface de produto além da barra de leitura.
+O projeto está na **Fase 3 do Plano Diretor**, o layout fluido. O que existe hoje: o normalizador dos
+livros fluidos (EPUB 2 e 3, MOBI, AZW3, FB2, TXT e Markdown), que roda num processo isolado e entrega cada
+livro como um pacote EPUB 3 inerte, com seções de no máximo 200 KiB, e o motor de posição (EPUB CFI e
+Locator); o leitor de layout fixo da Fase 2 para PDF, quadrinhos (CBZ e CBR) e DjVu, com tiles na escala
+exata da tela, páginas duplas, modo paginado e contínuo, a posição guardada na biblioteca, a classificação
+de cada página e miniaturas em disco; o leitor fluido (EPUB) da Fase 0; e a biblioteca da Fase 1, com
+SQLite, identidade de arquivos, indexador, diário de operações em disco e uma CLI. Ainda não há interface
+de produto além da barra de leitura.
 
 As decisões e os números de cada fase estão em
 [`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md),
 [`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md),
-[`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md) e
-[`docs/adr/0004-fase-2-parte-2.md`](docs/adr/0004-fase-2-parte-2.md).
+[`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md),
+[`docs/adr/0004-fase-2-parte-2.md`](docs/adr/0004-fase-2-parte-2.md) e
+[`docs/adr/0005-fase-3-parte-1.md`](docs/adr/0005-fase-3-parte-1.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -35,10 +38,14 @@ crates/
   musaeum-render-djvu/ Processo isolado que desenha DjVu
   musaeum-fs/          File IDs de 128 bits, listagem sem abrir arquivos, leitura que recusa
                        placeholders de nuvem, watcher que avisa quando perde eventos
-  musaeum-ingest/      Processo isolado que lê identificadores e metadados dos livros, e o que
-                       o catálogo de um PDF pede (`/PageLayout`, `/Direction`)
+  musaeum-flow/        Normalizador dos livros fluidos e motor de posição (CFI e Locator), todo
+                       em Rust seguro: DOM, XML e HTML5, sanitizador, CSS, corte em partes,
+                       leitores de EPUB, MOBI, KF8, FB2, TXT e Markdown
+  musaeum-ingest/      Processo isolado que lê identificadores e metadados dos livros, o que o
+                       catálogo de um PDF pede (`/PageLayout`, `/Direction`), e normaliza os
+                       livros fluidos
   musaeum-library/     SQLite, reconhecimento de arquivos, indexador, diário de operações,
-                       posição de leitura e geometria das páginas
+                       posição de leitura, geometria das páginas e o cache dos livros normalizados
 apps/cli/              O binário `musaeum`: a biblioteca pela linha de comando
 apps/desktop/
   src-tauri/           Ponte Tauri: protocolos tile:// e book://, buffers do WebView2, harness
@@ -52,10 +59,12 @@ vendor/
   third-party.json     Licenças do que entra no app sem passar por um gerenciador de pacotes
 tools/
   fetch-pdfium.ps1     Baixa a build fixada do PDFium e confere o SHA-256
-  gen-fixtures/        Gera os PDFs, quadrinhos, DjVu e EPUBs de teste, incluindo um EPUB hostil
+  gen-fixtures/        Gera os PDFs, quadrinhos, DjVu e EPUBs de teste, um EPUB hostil e um mesmo
+                       livro em EPUB 3, EPUB 2, MOBI, AZW3, FB2, TXT e Markdown
   pool-bench/          Mede o pool de render sem WebView
   library-bench/       Mede a biblioteca com 100 mil arquivos reais, tecla por tecla
-  corpus-check/        Valida a biblioteca e o pipeline num acervo real, só lendo
+  corpus-check/        Valida a biblioteca, o pipeline e o normalizador num acervo real, só lendo
+  cfi-browser-check.mjs  Resolve no Chrome, com o foliate-js, os CFIs que o motor escreve
   visual-check/        Compara a janela com páginas desenhadas inteiras, e as cores do PDFium
   e2e-reader.mjs       Testa a janela real: modos, atalhos, posição salva e comparação visual
   run-bench.mjs        Roda a matriz dos Experimentos A e B
@@ -183,6 +192,16 @@ uma amostra, renderiza essa amostra, cancela renders pesados no meio e mata work
 tamanho, datas e atributos de tudo antes e depois e falha se algo mudar. Banco, cache e relatório ficam
 em `--work`, que precisa estar fora do acervo. Tudo roda abaixo da prioridade normal.
 
+Com `--flow-only`, ela faz outra coisa: normaliza duas vezes cada livro fluido no processo isolado,
+guarda o resultado no cache e confere cada posição de cada documento, como CFI e Locator, e cada CFI de
+EPUB contra o documento original:
+
+```powershell
+.\target\release\corpus-check.exe --corpus D:\Livros --work D:\Temp\fluido --flow-only
+node tools\cfi-browser-check.mjs --cache D:\Temp\fluido\cache
+.\target\release\musaeum.exe normalize livro.mobi D:\Temp\livro-normalizado.epub
+```
+
 ## A janela real e a comparação visual
 
 ```powershell
@@ -255,7 +274,10 @@ Um livro é entrada hostil também, e o foliate-js não oferece proteção próp
    origem `<protocolo>.localhost` de um protocolo registrado, e um script ali conseguiria chamar
    os comandos do app. Com o sufixo aleatório, a origem conta como remota e a ACL recusa a chamada.
 
-`tools/test-epub-security.mjs` testa cada barreira sozinha e, como controle, sem nenhuma.
+`tools/test-epub-security.mjs` testa cada barreira sozinha e, como controle, sem nenhuma. A Fase 3
+acrescenta uma quarta barreira, antes das outras: o normalizador tira scripts, eventos e referências
+que carregam de fora, sem mudar a posição de nada. Com `--normalized`, o teste abre o livro hostil
+normalizado sem nenhuma outra barreira.
 
 ## Testes
 

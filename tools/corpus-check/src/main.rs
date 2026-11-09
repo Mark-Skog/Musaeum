@@ -1,8 +1,8 @@
-//! Checks Phase 1 and Phase 2 on a real collection of books, without changing anything in it.
+//! Checks Phases 1 to 3 on a real collection of books, without changing anything in it.
 //!
 //! ```text
 //! corpus-check --corpus DIR --work DIR [--out REPORT.json] [--sample N] [--skip-render]
-//!              [--skip-content]
+//!              [--skip-content] [--flow-only]
 //! ```
 //!
 //! The collection is only ever read. Every file and folder in it, with its size, dates and
@@ -22,8 +22,13 @@
 //! 5. classifies every page of every PDF as text, scanned or hybrid, as background work in the
 //!    sandboxed workers, keeps the classes in `cache.db`, and draws the thumbnails of the sample
 //!    into the store on disk.
+//!
+//! With `--flow-only`, it does something else: every flowing book (EPUB, MOBI, AZW3, FB2, TXT,
+//! Markdown) is normalized twice in the sandboxed ingest worker, kept in the store on disk, and every
+//! position in it written as a CFI and a Locator and found again (see `flow.rs`).
 
 mod content;
+mod flow;
 mod render;
 mod snapshot;
 
@@ -48,6 +53,7 @@ struct Options {
     sample: usize,
     skip_render: bool,
     skip_content: bool,
+    flow_only: bool,
 }
 
 fn parse_options() -> Result<Options, String> {
@@ -57,6 +63,7 @@ fn parse_options() -> Result<Options, String> {
     let mut sample = 10;
     let mut skip_render = false;
     let mut skip_content = false;
+    let mut flow_only = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -71,6 +78,7 @@ fn parse_options() -> Result<Options, String> {
             }
             "--skip-render" => skip_render = true,
             "--skip-content" => skip_content = true,
+            "--flow-only" => flow_only = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -89,6 +97,7 @@ fn parse_options() -> Result<Options, String> {
         sample,
         skip_render,
         skip_content,
+        flow_only,
     })
 }
 
@@ -139,7 +148,12 @@ fn main() {
         }
     };
     lower_priority();
-    match run(&options) {
+    let result = if options.flow_only {
+        run_flow(&options)
+    } else {
+        run(&options)
+    };
+    match result {
         Ok(passed) => std::process::exit(if passed { 0 } else { 1 }),
         Err(message) => {
             eprintln!("{message}");
@@ -484,6 +498,119 @@ fn run(options: &Options) -> Result<bool, String> {
     eprintln!(
         "{} PDFs, {pages_total} pages, {with_id} with /ID, {mixed} mixed, {refused} refused by PDFium; Core failures: {}",
         reports.len(),
+        core_failures.len()
+    );
+    eprintln!("report: {}", out.display());
+    Ok(passed)
+}
+
+/// Every flowing book in the corpus, normalized and checked; the corpus listed before and after.
+fn run_flow(options: &Options) -> Result<bool, String> {
+    let started = Instant::now();
+    eprintln!("listing {} before anything else", options.corpus.display());
+    let before = snapshot::take(&options.corpus).map_err(|error| format!("listing: {error}"))?;
+    let books = flow::find_books(&options.corpus);
+    let store = musaeum_library::FlowStore::new(&options.work.join("cache"));
+    let mut client = flow::client();
+    let mut reports = Vec::new();
+    let mut core_failures = Vec::new();
+    for path in &books {
+        eprintln!("flow: {}", path.display());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            flow::check_book(&mut client, &store, path)
+        }));
+        match result {
+            Ok(report) => {
+                eprintln!(
+                    "  {} documents, {} parts, {} positions ({} failed), source CFIs {}/{}, {:.0} ms{}",
+                    report.documents,
+                    report.parts,
+                    report.positions,
+                    report.position_failures,
+                    report.source_matches,
+                    report.source_positions,
+                    report.normalize_ms,
+                    report
+                        .failure
+                        .as_deref()
+                        .map(|f| format!(", FAILED: {f}"))
+                        .unwrap_or_default()
+                );
+                reports.push(report);
+            }
+            Err(_) => core_failures.push(path.display().to_string()),
+        }
+    }
+    let restarts = client.restarts();
+    drop(client);
+
+    eprintln!("listing {} again", options.corpus.display());
+    let after =
+        snapshot::take(&options.corpus).map_err(|error| format!("listing again: {error}"))?;
+    let comparison = snapshot::compare(&before, &after);
+    let failed: Vec<&str> = reports
+        .iter()
+        .filter(|report| report.failure.is_some())
+        .map(|report| report.path.as_str())
+        .collect();
+    let sum = |value: fn(&flow::BookReport) -> u64| reports.iter().map(value).sum::<u64>();
+    let positions = sum(|r| r.positions);
+    let position_failures = sum(|r| r.position_failures);
+    let not_well_formed = sum(|r| r.parts_not_well_formed as u64);
+    let danger = sum(|r| r.parts_with_danger as u64);
+    let nondeterministic = reports
+        .iter()
+        .filter(|r| r.failure.is_none() && !r.deterministic)
+        .count();
+    let passed = comparison.unchanged()
+        && core_failures.is_empty()
+        && restarts == 0
+        && failed.is_empty()
+        && position_failures == 0
+        && not_well_formed == 0
+        && danger == 0
+        && nondeterministic == 0;
+    let report = json!({
+        "passed": passed,
+        "elapsed_s": started.elapsed().as_secs_f64(),
+        "corpus": options.corpus.display().to_string(),
+        "work": options.work.display().to_string(),
+        "read_only": comparison,
+        "unreadable_directories": before.unreadable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>(),
+        "normalizer": musaeum_flow::NORMALIZER_VERSION,
+        "books": reports.len(),
+        "failed": failed,
+        "worker_restarts": restarts,
+        "core_failures": core_failures,
+        "positions": positions,
+        "position_failures": position_failures,
+        "parts_not_well_formed": not_well_formed,
+        "parts_with_danger": danger,
+        "nondeterministic": nondeterministic,
+        "source_positions": sum(|r| r.source_positions),
+        "source_matches": sum(|r| r.source_matches),
+        "quotes_tried": sum(|r| r.quotes_tried),
+        "quotes_exact": sum(|r| r.quotes_exact),
+        "reports": reports,
+    });
+    let text = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
+    let out = options
+        .out
+        .clone()
+        .unwrap_or_else(|| options.work.join("flow-report.json"));
+    std::fs::write(&out, text).map_err(|error| format!("writing {}: {error}", out.display()))?;
+    eprintln!(
+        "{} files, {} folders, {:.1} GiB; unchanged: {}; access times updated by Windows: {}",
+        comparison.files,
+        comparison.directories,
+        comparison.bytes as f64 / f64::from(1u32 << 30),
+        comparison.unchanged(),
+        comparison.access_time_updated
+    );
+    eprintln!(
+        "{} flowing books, {} failed; {positions} positions, {position_failures} failed; worker restarts {restarts}; Core failures {}",
+        reports.len(),
+        failed.len(),
         core_failures.len()
     );
     eprintln!("report: {}", out.display());

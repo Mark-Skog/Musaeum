@@ -2,7 +2,7 @@
 // Experiment C's measurement: how long the fluid engine takes to lay a section out again when
 // the font size or the window changes, against the target of 100 ms.
 //
-//   node tools/run-epub-bench.mjs [--epub fixtures/large.epub] [--out layout]
+//   node tools/run-epub-bench.mjs [--epub fixtures/large.epub] [--out layout] [--bin DIR]
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 const TARGET_MS = 100;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const exe = join(root, 'target', 'release', 'musaeum-desktop.exe');
+const binAt = process.argv.indexOf('--bin');
+const exe = join(binAt >= 0 ? resolve(process.argv[binAt + 1]) : join(root, 'target', 'release'), 'musaeum-desktop.exe');
 const outDir = join(root, 'bench-results', 'epub');
 const epubAt = process.argv.indexOf('--epub');
 const epub = epubAt >= 0 ? resolve(process.argv[epubAt + 1]) : join(root, 'fixtures', 'large.epub');

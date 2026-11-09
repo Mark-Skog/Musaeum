@@ -75,6 +75,10 @@ impl<W: Write> ZipWriter<W> {
         Ok(())
     }
 
+    pub(crate) fn into_inner(self) -> W {
+        self.out
+    }
+
     pub(crate) fn finish(&mut self) -> io::Result<()> {
         self.out.write_all(&self.central)?;
         self.out.write_all(b"PK\x05\x06")?;

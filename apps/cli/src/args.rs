@@ -47,6 +47,11 @@ Backups
 Maintenance
   rebuild-search                         Write the search indexes again
 
+Flowing books
+  normalize BOOK OUT                     Normalize an EPUB, MOBI, AZW3, FB2, TXT or Markdown
+                                         file in the isolated worker; OUT is a folder, or a
+                                         file ending in .epub
+
 The library lives in %LOCALAPPDATA%\\Musaeum unless --library says otherwise.";
 
 /// What the command line asked for.
@@ -60,6 +65,10 @@ pub struct Invocation {
 /// One thing to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    Normalize {
+        book: PathBuf,
+        out: PathBuf,
+    },
     RootAdd {
         path: PathBuf,
         exclude: Vec<String>,
@@ -342,6 +351,10 @@ fn parse_command(command: &str, arguments: &mut Arguments) -> Result<Command, Ar
         },
         "reimport" => Ok(Command::Reimport {
             path: arguments.path("the file")?,
+        }),
+        "normalize" => Ok(Command::Normalize {
+            book: arguments.path("the book")?,
+            out: arguments.path("where to write it")?,
         }),
         "move" => Ok(Command::Move {
             source: arguments.path("what to move")?,

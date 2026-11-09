@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod epub;
+mod flow;
 mod pdf;
 pub mod pdf_catalog;
 mod zip;
@@ -118,6 +119,7 @@ pub fn extract(format: Format, source: &(impl ReadAt + ?Sized)) -> Result<Extrac
     match format {
         Format::Pdf => pdf::extract(source),
         Format::Epub => epub::extract(source),
+        other => flow::extract(other, source),
     }
 }
 

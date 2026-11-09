@@ -12,6 +12,8 @@ name = "musaeum"
 path = "src/main.rs"
 
 [dependencies]
+musaeum-flow.workspace = true
+musaeum-ingest.workspace = true
 musaeum-library.workspace = true
 serde.workspace = true
 serde_json.workspace = true

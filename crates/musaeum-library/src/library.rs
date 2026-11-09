@@ -224,6 +224,11 @@ impl Library {
         &self.database
     }
 
+    /// Where normalized books are kept, beside the cache they belong with.
+    pub fn flow(&self) -> crate::flow::FlowStore {
+        crate::flow::FlowStore::new(&self.paths.cache_dir)
+    }
+
     /// Where page thumbnails are kept, beside the cache they belong with.
     pub fn thumbnails(&self) -> crate::thumbnails::ThumbnailStore {
         crate::thumbnails::ThumbnailStore::new(&self.paths.cache_dir)

@@ -12,8 +12,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
+use musaeum_flow::NORMALIZER_VERSION;
+use musaeum_flow::package::{MANIFEST_PATH, Manifest};
 use musaeum_ingest::parse::Extracted;
-use musaeum_ingest::protocol::{Format, PROTOCOL_VERSION, Reply, Request, read_frame, write_frame};
+use musaeum_ingest::protocol::{
+    FileLimits, Format, PROTOCOL_VERSION, Reply, Request, Task, read_files, read_frame, write_frame,
+};
 use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::region::duplicate_file_read_only;
 
@@ -49,6 +53,16 @@ impl Default for IngestConfig {
 }
 
 impl IngestConfig {
+    /// For normalizing books: the whole book and its normalized form are in memory at once, and a
+    /// large one takes seconds.
+    pub fn for_normalizing() -> Self {
+        Self {
+            timeout: Duration::from_secs(180),
+            memory_limit: 3 << 30,
+            ..Self::default()
+        }
+    }
+
     fn executable(&self) -> Option<PathBuf> {
         self.exe.clone().or_else(|| {
             std::env::current_exe()
@@ -56,6 +70,93 @@ impl IngestConfig {
                 .map(|exe| exe.with_file_name(WORKER_FILE_NAME))
         })
     }
+}
+
+/// A normalized book as the worker sent it, checked: every path safe, the manifest readable and
+/// of this normalizer's version, and every file it names present.
+#[derive(Clone, Debug)]
+pub struct NormalizedFiles {
+    pub manifest: Manifest,
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// What came of asking for a normalized book.
+#[derive(Clone, Debug)]
+pub enum NormalizeOutcome {
+    Normalized(Box<NormalizedFiles>),
+    /// The worker says the book cannot be normalized, or it died on the way.
+    Nothing(String),
+    /// No worker could be started.
+    Unavailable(String),
+}
+
+/// The largest manifest the host parses.
+const MAX_MANIFEST: usize = 64 << 20;
+
+/// Checks what a worker sent as a normalized book. A worker a book took over could send anything,
+/// so nothing is assumed: paths were checked as they arrived, and here the manifest has to agree
+/// with the files.
+pub fn check_normalized(files: Vec<(String, Vec<u8>)>) -> Result<NormalizedFiles, String> {
+    let mut seen = std::collections::HashSet::new();
+    for (path, _) in &files {
+        if !seen.insert(path.to_ascii_lowercase()) {
+            return Err(format!("{path} comes twice"));
+        }
+    }
+    let manifest_bytes = files
+        .iter()
+        .find(|(path, _)| path == MANIFEST_PATH)
+        .map(|(_, data)| data)
+        .ok_or("there is no manifest")?;
+    if manifest_bytes.len() > MAX_MANIFEST {
+        return Err("the manifest is too large".to_owned());
+    }
+    let manifest: Manifest = serde_json::from_slice(manifest_bytes)
+        .map_err(|error| format!("the manifest makes no sense: {error}"))?;
+    if manifest.normalizer != NORMALIZER_VERSION {
+        return Err(format!(
+            "normalizer version {}, not {NORMALIZER_VERSION}",
+            manifest.normalizer
+        ));
+    }
+    if manifest.documents.is_empty() {
+        return Err("no documents".to_owned());
+    }
+    let present: std::collections::HashSet<&str> =
+        files.iter().map(|(path, _)| path.as_str()).collect();
+    for document in &manifest.documents {
+        if document.parts.is_empty() {
+            return Err(format!("{} has no parts", document.href));
+        }
+        for part in &document.parts {
+            if !present.contains(part.href.as_str()) {
+                return Err(format!("{} is missing", part.href));
+            }
+            if part.start.len() > 1024 || part.start.iter().any(|step| step % 2 != 0 || *step == 0)
+            {
+                return Err(format!("{} starts at an impossible place", part.href));
+            }
+        }
+    }
+    for resource in &manifest.resources {
+        if !present.contains(resource.href.as_str()) {
+            return Err(format!("{} is missing", resource.href));
+        }
+    }
+    // What the worker made has to be what the normalizer makes: well-formed and inert. A worker a
+    // book took over could send a script; it would not get past this.
+    for (path, data) in &files {
+        if !(path.ends_with(".xhtml") || path.ends_with(".svg")) {
+            continue;
+        }
+        let text = std::str::from_utf8(data).map_err(|_| format!("{path} is not UTF-8"))?;
+        let dom = musaeum_flow::xml::parse(text, &musaeum_flow::xml::Limits::default())
+            .map_err(|error| format!("{path} is not well-formed: {error}"))?;
+        if let Some(danger) = musaeum_flow::sanitize::find_danger(&dom) {
+            return Err(format!("{path} still has {danger}"));
+        }
+    }
+    Ok(NormalizedFiles { manifest, files })
 }
 
 /// What came of asking about a file.
@@ -70,14 +171,17 @@ pub(crate) enum IngestOutcome {
     Unavailable(String),
 }
 
+/// A reply, with the files that came after it if it was a normalized book.
+type Message = (Reply, Option<Vec<(String, Vec<u8>)>>);
+
 struct Worker {
     child: SandboxedChild,
     stdin: File,
-    replies: Receiver<std::io::Result<Option<Reply>>>,
+    replies: Receiver<std::io::Result<Option<Message>>>,
 }
 
 /// Keeps one worker, replacing it whenever it stops being trustworthy.
-pub(crate) struct IngestClient {
+pub struct IngestClient {
     config: IngestConfig,
     worker: Option<Worker>,
     restarts: u64,
@@ -87,6 +191,52 @@ pub(crate) struct IngestClient {
 }
 
 impl IngestClient {
+    /// Normalizes a flowing book, passed as a handle and never as a path.
+    pub fn normalize(&mut self, file: &File, format: Format) -> NormalizeOutcome {
+        if let Some(reason) = &self.cannot_start {
+            return NormalizeOutcome::Unavailable(reason.clone());
+        }
+        if self.worker.is_none() {
+            match self.start_worker() {
+                Ok(worker) => self.worker = Some(worker),
+                Err(reason) => {
+                    self.cannot_start = Some(reason.clone());
+                    return NormalizeOutcome::Unavailable(reason);
+                }
+            }
+        }
+        let timeout = self.config.timeout;
+        let Some(worker) = self.worker.as_mut() else {
+            return NormalizeOutcome::Unavailable("no worker".to_owned());
+        };
+        match ask(worker, file, format, Task::Normalize, timeout) {
+            Ok((Reply::Normalized { .. }, Some(files))) => match check_normalized(files) {
+                Ok(normalized) => NormalizeOutcome::Normalized(Box::new(normalized)),
+                Err(reason) => {
+                    // A worker that sends a book that does not hold together is not trusted again.
+                    self.discard(&reason);
+                    NormalizeOutcome::Nothing(format!("what the worker sent was refused: {reason}"))
+                }
+            },
+            Ok((Reply::Rejected { reason }, _)) => {
+                NormalizeOutcome::Nothing(clean(&reason, MAX_TITLE_CHARS).unwrap_or_default())
+            }
+            Ok(_) => match self.discard("it answered out of turn") {
+                IngestOutcome::Nothing(reason) => NormalizeOutcome::Nothing(reason),
+                _ => NormalizeOutcome::Nothing("the worker was replaced".to_owned()),
+            },
+            Err(reason) => match self.discard(&reason) {
+                IngestOutcome::Nothing(reason) => NormalizeOutcome::Nothing(reason),
+                _ => NormalizeOutcome::Nothing("the worker was replaced".to_owned()),
+            },
+        }
+    }
+
+    /// The process id of the current worker, if one is running.
+    pub fn current_worker(&self) -> Option<u32> {
+        self.worker.as_ref().map(|worker| worker.child.id())
+    }
+
     pub fn new(config: IngestConfig) -> Self {
         Self {
             config,
@@ -108,7 +258,7 @@ impl IngestClient {
     }
 
     /// Asks what is in `file`, passing it as a handle and never as a path.
-    pub fn extract(&mut self, file: &File, format: Format) -> IngestOutcome {
+    pub(crate) fn extract(&mut self, file: &File, format: Format) -> IngestOutcome {
         if let Some(reason) = &self.cannot_start {
             return IngestOutcome::Unavailable(reason.clone());
         }
@@ -125,12 +275,12 @@ impl IngestClient {
         let Some(worker) = self.worker.as_mut() else {
             return IngestOutcome::Unavailable("no worker".to_owned());
         };
-        match ask(worker, file, format, timeout) {
-            Ok(Reply::Extracted(extracted)) => IngestOutcome::Extracted(sanitized(extracted)),
-            Ok(Reply::Rejected { reason }) => {
+        match ask(worker, file, format, Task::Extract, timeout) {
+            Ok((Reply::Extracted(extracted), _)) => IngestOutcome::Extracted(sanitized(extracted)),
+            Ok((Reply::Rejected { reason }, _)) => {
                 IngestOutcome::Nothing(clean(&reason, MAX_TITLE_CHARS).unwrap_or_default())
             }
-            Ok(Reply::Ready { .. }) => self.discard("it answered out of turn"),
+            Ok(_) => self.discard("it answered out of turn"),
             Err(reason) => self.discard(&reason),
         }
     }
@@ -171,9 +321,17 @@ fn start_worker(exe: &Path, config: &IngestConfig) -> Result<Worker, String> {
         .name("ingest-reader".to_owned())
         .spawn(move || {
             loop {
-                let reply = read_frame::<Reply>(&mut stdout);
-                let finished = !matches!(reply, Ok(Some(_)));
-                if sender.send(reply).is_err() || finished {
+                let message = match read_frame::<Reply>(&mut stdout) {
+                    Ok(Some(Reply::Normalized { files, bytes })) => {
+                        read_files(&mut stdout, files, bytes, FileLimits::default())
+                            .map(|list| Some((Reply::Normalized { files, bytes }, Some(list))))
+                    }
+                    Ok(Some(reply)) => Ok(Some((reply, None))),
+                    Ok(None) => Ok(None),
+                    Err(error) => Err(error),
+                };
+                let finished = !matches!(message, Ok(Some(_)));
+                if sender.send(message).is_err() || finished {
                     return;
                 }
             }
@@ -196,8 +354,8 @@ fn start_worker(exe: &Path, config: &IngestConfig) -> Result<Worker, String> {
         replies,
     };
     match next_reply(&mut worker, config.timeout)? {
-        Reply::Ready { protocol } if protocol == PROTOCOL_VERSION => {}
-        other => return Err(format!("it did not say it was ready, but {other:?}")),
+        (Reply::Ready { protocol }, None) if protocol == PROTOCOL_VERSION => {}
+        (other, _) => return Err(format!("it did not say it was ready, but {other:?}")),
     }
     if config.policy != Policy::Unrestricted {
         match worker.child.is_impersonating() {
@@ -213,20 +371,28 @@ fn ask(
     worker: &mut Worker,
     file: &File,
     format: Format,
+    task: Task,
     timeout: Duration,
-) -> Result<Reply, String> {
+) -> Result<Message, String> {
     use std::os::windows::io::AsHandle;
 
     // If the worker fails to read this message, it never takes ownership of this handle, and the
     // process's end takes the handle with it.
     let handle = duplicate_file_read_only(file, worker.child.as_handle())
         .map_err(|error| format!("sharing the file: {error}"))?;
-    write_frame(&mut worker.stdin, &Request { handle, format })
-        .map_err(|error| format!("sending the request: {error}"))?;
+    write_frame(
+        &mut worker.stdin,
+        &Request {
+            handle,
+            format,
+            task,
+        },
+    )
+    .map_err(|error| format!("sending the request: {error}"))?;
     next_reply(worker, timeout)
 }
 
-fn next_reply(worker: &mut Worker, timeout: Duration) -> Result<Reply, String> {
+fn next_reply(worker: &mut Worker, timeout: Duration) -> Result<Message, String> {
     match worker.replies.recv_timeout(timeout) {
         Ok(Ok(Some(reply))) => Ok(reply),
         Ok(Ok(None)) => Err("it closed its pipe".to_owned()),

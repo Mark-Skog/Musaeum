@@ -8,7 +8,14 @@
 // It also shows how far a script gets when everything else has failed, since the separate
 // origin is all that is left to keep it away from the app.
 //
-//   node tools/test-epub-security.mjs [--port 48780]
+// With --normalized, the hostile book first goes through Musaeum's normalizer, in the isolated
+// worker (`musaeum normalize`), and is opened with no barrier at all and then with both: the
+// normalizer alone has to keep every script from running and every request from leaving.
+//
+//   node tools/test-epub-security.mjs [--port 48780] [--normalized] [--bin DIR]
+//
+// --bin takes the app, the CLI and the fixture generator from DIR instead of target/release, so a
+// build can be measured while the tree moves on.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -17,13 +24,17 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const exe = join(root, 'target', 'release', 'musaeum-desktop.exe');
-const generator = join(root, 'target', 'release', 'gen-fixtures.exe');
+const binAt = process.argv.indexOf('--bin');
+const bin = binAt >= 0 ? resolve(process.argv[binAt + 1]) : join(root, 'target', 'release');
+const exe = join(bin, 'musaeum-desktop.exe');
+const generator = join(bin, 'gen-fixtures.exe');
 const outDir = join(root, 'bench-results', 'epub-security');
+const normalized = process.argv.includes('--normalized');
+const cli = join(bin, 'musaeum.exe');
 const portAt = process.argv.indexOf('--port');
 const port = portAt >= 0 ? Number(process.argv[portAt + 1]) : 48780;
 
-for (const needed of [exe, generator]) {
+for (const needed of normalized ? [exe, generator, cli] : [exe, generator]) {
   if (!existsSync(needed)) {
     console.error(`${needed} not found. Run "npm run build:app" in apps/desktop first.`);
     process.exit(1);
@@ -33,7 +44,7 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
 // The book has the canary's address baked in, so it is written for this run.
-const book = join(outDir, 'hostile.epub');
+let book = join(outDir, 'hostile.epub');
 {
   const fixtures = join(outDir, 'fixtures');
   const made = spawnSync(
@@ -49,6 +60,15 @@ const book = join(outDir, 'hostile.epub');
   rmSync(fixtures, { recursive: true, force: true });
   const { writeFileSync } = await import('node:fs');
   writeFileSync(book, bytes);
+}
+if (normalized) {
+  const normalizedBook = join(outDir, 'hostile-normalized.epub');
+  const made = spawnSync(cli, ['normalize', book, normalizedBook], { stdio: 'ignore', windowsHide: true });
+  if (made.status !== 0 || !existsSync(normalizedBook)) {
+    console.error('could not normalize the hostile book');
+    process.exit(1);
+  }
+  book = normalizedBook;
 }
 
 /** What reached the canary during the current run. */
@@ -101,16 +121,23 @@ function check(protection, condition, message) {
   }
 }
 
-const configurations = [
-  // What ships: both barriers up. Nothing may run and nothing may leave.
-  { protection: 'full', scriptsRun: false, networkLeaks: false },
-  // WebKit's situation: sections keep `allow-scripts`, and the policy alone has to hold.
-  { protection: 'csp-only', scriptsRun: false, networkLeaks: false },
-  // The sandbox stops scripts by itself, but has no say over images and the like.
-  { protection: 'sandbox-only', scriptsRun: false, networkLeaks: true },
-  // The control: with no barrier up, the attacks work, or this test would prove nothing.
-  { protection: 'none', scriptsRun: true, networkLeaks: true },
-];
+const configurations = normalized
+  ? [
+      // The normalizer alone: no policy, no sandbox on the sections.
+      { protection: 'none', scriptsRun: false, networkLeaks: false },
+      // And what ships, on the normalized book.
+      { protection: 'full', scriptsRun: false, networkLeaks: false },
+    ]
+  : [
+      // What ships: both barriers up. Nothing may run and nothing may leave.
+      { protection: 'full', scriptsRun: false, networkLeaks: false },
+      // WebKit's situation: sections keep `allow-scripts`, and the policy alone has to hold.
+      { protection: 'csp-only', scriptsRun: false, networkLeaks: false },
+      // The sandbox stops scripts by itself, but has no say over images and the like.
+      { protection: 'sandbox-only', scriptsRun: false, networkLeaks: true },
+      // The control: with no barrier up, the attacks work, or this test would prove nothing.
+      { protection: 'none', scriptsRun: true, networkLeaks: true },
+    ];
 
 const rows = [];
 const reportsByRun = new Map();

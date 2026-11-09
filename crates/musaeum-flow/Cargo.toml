@@ -1,0 +1,32 @@
+[package]
+name = "musaeum-flow"
+description = "Turns flowing books (EPUB, MOBI, AZW3, FB2, TXT, Markdown) into one safe, deterministic shape, and finds positions in it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Tokenizes stylesheets the way a browser does, escapes included, so that no url() hides from the
+# sanitizer behind one.
+cssparser = "0.37"
+# Old books are in Windows-1252, Windows-1251, KOI8-R and the like; TXT files do not say which.
+chardetng = "0.1"
+encoding_rs = "0.8"
+flate2.workspace = true
+# The HTML parsing algorithm of the browsers, for HTML and for XHTML that is not well-formed XML.
+html5ever = "0.39"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The key of the IDPF font obfuscation is a SHA-1. Not used for anything that needs a secure hash.
+sha1_smol = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+gen-fixtures.workspace = true
+
+[lints]
+workspace = true

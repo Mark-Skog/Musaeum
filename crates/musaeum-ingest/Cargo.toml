@@ -1,6 +1,6 @@
 [package]
 name = "musaeum-ingest"
-description = "What Musaeum reads out of a book's bytes, in an isolated process: stable identifiers and basic metadata."
+description = "What Musaeum reads out of a book's bytes, in an isolated process: stable identifiers, metadata, and the normalized form of flowing books."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 flate2.workspace = true
+musaeum-flow.workspace = true
 musaeum-sandbox.workspace = true
 quick-xml.workspace = true
 serde.workspace = true

@@ -157,6 +157,7 @@ pub fn run(invocation: Invocation) -> Result<()> {
             let id = library.add_annotation(document, &text)?;
             println!("note {id} on document {document}");
         }
+        Command::Normalize { book, out } => normalize(&book, &out)?,
         Command::Reimport { path } => {
             let library = open(paths)?;
             let document = instance_at(&library, &path)?.document_id;
@@ -226,6 +227,65 @@ pub fn run(invocation: Invocation) -> Result<()> {
         }
         Command::RebuildSearch => open(paths)?.rebuild_search()?,
     }
+    Ok(())
+}
+
+/// Normalizes one book in the isolated worker, as the app does, and writes the result.
+fn normalize(book: &Path, out: &Path) -> Result<()> {
+    let extension = book
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let format = musaeum_ingest::protocol::Format::from_extension(&extension)
+        .filter(|format| format.flow().is_some())
+        .ok_or_else(|| Error::Refused(format!("{} is not a flowing book", book.display())))?;
+    let file = std::fs::File::open(book)
+        .map_err(|error| Error::Refused(format!("{}: {error}", book.display())))?;
+    let mut client =
+        musaeum_library::IngestClient::new(musaeum_library::IngestConfig::for_normalizing());
+    let started = Instant::now();
+    let normalized = match client.normalize(&file, format) {
+        musaeum_library::NormalizeOutcome::Normalized(normalized) => normalized,
+        musaeum_library::NormalizeOutcome::Nothing(reason)
+        | musaeum_library::NormalizeOutcome::Unavailable(reason) => {
+            return Err(Error::Refused(reason));
+        }
+    };
+    let elapsed = started.elapsed();
+    let write = |path: &Path, data: &[u8]| {
+        std::fs::write(path, data)
+            .map_err(|error| Error::Refused(format!("{}: {error}", path.display())))
+    };
+    if out
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"))
+    {
+        let book = musaeum_flow::package::NormalizedBook {
+            manifest: normalized.manifest.clone(),
+            files: normalized.files.clone(),
+        };
+        write(out, &book.to_epub())?;
+    } else {
+        for (path, data) in &normalized.files {
+            let target = out.join(path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| Error::Refused(format!("{}: {error}", parent.display())))?;
+            }
+            write(&target, data)?;
+        }
+    }
+    let stats = &normalized.manifest.stats;
+    println!(
+        "{} documents in {} parts ({} cut), largest part {} bytes, {} files; {:.0} ms in the worker",
+        stats.documents,
+        stats.parts,
+        stats.split_documents,
+        stats.largest_part,
+        normalized.files.len(),
+        elapsed.as_secs_f64() * 1000.0
+    );
     Ok(())
 }
 

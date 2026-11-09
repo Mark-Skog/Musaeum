@@ -225,7 +225,7 @@ fn record(
     }
 }
 
-fn year_of(date: &str) -> Option<i32> {
+pub(super) fn year_of(date: &str) -> Option<i32> {
     let digits = date.get(..4)?;
     if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -266,7 +266,7 @@ fn is_meaningful(value: &str) -> bool {
 }
 
 /// The digits of an ISBN, if this is one. Without a mark saying so, it has to say `isbn` itself.
-fn isbn_of(value: &str, marked: bool) -> Option<String> {
+pub(super) fn isbn_of(value: &str, marked: bool) -> Option<String> {
     let lower = value.to_ascii_lowercase();
     let rest = lower
         .strip_prefix("urn:isbn:")

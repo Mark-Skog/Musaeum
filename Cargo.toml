@@ -6,6 +6,7 @@ members = [
     "crates/musaeum-archive",
     "crates/musaeum-core",
     "crates/musaeum-djvu",
+    "crates/musaeum-flow",
     "crates/musaeum-sandbox",
     "crates/musaeum-render-djvu",
     "crates/musaeum-render-pdf",
@@ -33,6 +34,7 @@ publish = false
 musaeum-archive = { path = "crates/musaeum-archive" }
 musaeum-core = { path = "crates/musaeum-core" }
 musaeum-djvu = { path = "crates/musaeum-djvu" }
+musaeum-flow = { path = "crates/musaeum-flow" }
 musaeum-fs = { path = "crates/musaeum-fs" }
 musaeum-ingest = { path = "crates/musaeum-ingest" }
 musaeum-library = { path = "crates/musaeum-library" }

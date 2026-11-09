@@ -1,7 +1,7 @@
 //! Command line for the fixture generator.
 //!
 //! ```text
-//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N]
+//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow]
 //! ```
 
 use std::error::Error;
@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut scan_pages = 2000usize;
     let mut vector_pages = 500usize;
     let mut canary_port = 48780u16;
+    let mut only: Option<String> = None;
 
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -23,6 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--scan-pages" => scan_pages = value()?.parse()?,
             "--vector-pages" => vector_pages = value()?.parse()?,
             "--canary-port" => canary_port = value()?.parse()?,
+            "--only" => only = Some(value()?),
             other => return Err(format!("unknown argument: {other}").into()),
         }
     }
@@ -37,6 +39,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         Ok(())
     };
+
+    if only.as_deref() == Some("flow") {
+        let started = Instant::now();
+        gen_fixtures::flow::write_flow_fixtures(&out)?;
+        for name in [
+            "flow.epub",
+            "flow-epub2.epub",
+            "flow.mobi",
+            "flow.azw3",
+            "flow.fb2",
+            "flow-1251.fb2",
+            "flow.txt",
+            "flow.md",
+        ] {
+            report(&out.join(name), started)?;
+        }
+        return Ok(());
+    }
 
     let started = Instant::now();
     let path = out.join("mixed.pdf");
@@ -88,5 +108,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let path = out.join("hostile.epub");
     gen_fixtures::epub::write_hostile_epub(&path, canary_port)?;
     report(&path, started)?;
+
+    let started = Instant::now();
+    gen_fixtures::flow::write_flow_fixtures(&out)?;
+    for name in [
+        "flow.epub",
+        "flow-epub2.epub",
+        "flow.mobi",
+        "flow.azw3",
+        "flow.fb2",
+        "flow-1251.fb2",
+        "flow.txt",
+        "flow.md",
+    ] {
+        report(&out.join(name), started)?;
+    }
     Ok(())
 }
