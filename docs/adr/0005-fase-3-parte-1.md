@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Data** | 2026-11-04 |
-| **Situação** | Construída e medida no Windows, aguardando a auditoria do projeto. Os dois testes na janela real (seções 5.4 e 5.5) esperam o computador livre |
+| **Situação** | Decisões aceitas. O projeto auditou e aprovou a Parte 1, com as decisões da seção 8. Os dois testes na janela real (seções 5.4 e 5.5) rodaram em 2026-11-09, com o computador livre, e passaram |
 | **Máquina das medições** | A mesma das fases anteriores: Ryzen 5 5600G, 31 GB, RX 7600, monitor de 75 Hz, SSD NVMe, Windows 11, Microsoft Defender ativo |
 | **Escopo** | O normalizador dos formatos fluidos (EPUB 2 e 3, MOBI, AZW3, FB2, TXT, Markdown) no processo isolado `ingest`, e o motor de posição (EPUB CFI e Locator). O adaptador de leitura e a rolagem contínua ficam para a Parte 2 |
 
@@ -34,8 +34,11 @@ Os resultados que mais pesam:
    TXT e Markdown, e cada um sai com o mesmo texto, os mesmos capítulos no sumário e os mesmos metadados. Arquivos
    feitos pelo Calibre, um escritor independente, abrem igual (D9).
 7. **O livro hostil sai sem nada que execute ou chame a rede.** Os 39 vetores do EPUB hostil da Fase 0 saem
-   neutralizados, e um verificador escrito à parte do sanitizador não acha nada em nenhuma parte (D5). A prova na janela
-   real, sem nenhuma outra barreira, espera o computador livre (seção 5.4).
+   neutralizados, e um verificador escrito à parte do sanitizador não acha nada em nenhuma parte (D5). Na janela real,
+   sem CSP e sem sandbox nos iframes, o livro normalizado não rodou um script e não chegou à rede (seção 5.4).
+8. **Relayout abaixo de 100 ms no livro que antes levava 1,1 s.** No `large.epub` normalizado, o pior P95 de todas as
+   mudanças foi 70 ms, e a posição ficou em todas as 360 medições; sem o corte, as seções de 3 MiB levavam até 1.100 ms
+   (seção 5.5).
 
 ## 2. Entregas
 
@@ -154,8 +157,8 @@ continua apontando o mesmo nó. Em `<head>`, onde posição não importa, essas 
 
 Toda URL passa por um resolvedor que conhece o livro: o que aponta para dentro é reescrito para o pacote
 normalizado; imagens e fontes de fora, `javascript:`, `data:text/html`, `file:` e afins são removidos. Links para
-`http(s)`, `mailto` e `tel` ficam como links: só são seguidos com um clique, que o leitor intercepta. **Isso é uma
-decisão para a auditoria:** o pedido era remover referências externas; removi tudo que carrega sozinho e mantive
+`http(s)`, `mailto` e `tel` ficam como links: só são seguidos com um clique, que o leitor intercepta. **Aprovado na
+auditoria (seção 8):** o pedido era remover referências externas; removi tudo que carrega sozinho e mantive
 hiperlinks, que são conteúdo (bibliografias, notas).
 
 O CSS passa pelo tokenizador do Servo (`cssparser`): escapes como `u\72l(…)` não escondem nada. Cada `url()`, cada
@@ -295,7 +298,28 @@ Sem janela, o livro hostil da Fase 0 (39 vetores: 19 formas de rodar script, 20 
 formulários e 14 URLs removidas. O verificador independente não acha nada em nenhuma das 40 partes nem nas duas imagens
 SVG, e nenhum arquivo do pacote cita o servidor canário.
 
-**Na janela real: pendente.** O teste abre o livro hostil normalizado no app sem CSP e sem sandbox nos iframes, e depois com as duas barreiras, com o servidor canário escutando; e repete o controle da Fase 0 com o livro cru. Ele só começa com o computador livre, e o computador estava em uso.
+**Na janela real** (2026-11-09, computador livre e sem input do começo ao fim, WebView2 157). O teste abre o livro
+hostil normalizado no app, com o servidor canário escutando, primeiro sem nenhuma outra barreira (sem CSP e com
+`allow-scripts allow-same-origin` nos iframes das seções) e depois com as duas barreiras:
+
+| Livro | Barreiras | Seções | Capítulos carregados | Scripts que rodaram | Chegaram ao canário | Rede | Mensagens ao app |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Normalizado | Nenhuma | 40 | 39 de 39 | 0 | 0 | 0 | 0 |
+| Normalizado | CSP e sandbox | 40 | 39 de 39 | 0 | 0 | 0 | 0 |
+| Cru (controle) | Nenhuma | 39 | 39 de 39 | 10 | 15 | 17 | 15 |
+| Cru | CSP e sandbox | 39 | 39 de 39 | 0 | 0 | 0 | 0 |
+| Cru | Só CSP | 39 | 39 de 39 | 0 | 0 | 0 | 0 |
+| Cru | Só sandbox | 39 | 39 de 39 | 0 | 0 | 16 | 0 |
+
+O controle mostra que o teste prova alguma coisa: com o livro cru e nenhuma barreira, 15 vetores rodam e 17 pedidos
+saem para a rede. Com o livro normalizado e nenhuma barreira, nada. O normalizador é, sozinho, uma barreira inteira;
+a CSP e o sandbox continuam ligados no app.
+
+A primeira rodada acusou "39 de 40 seções carregadas". A 40ª é o `evil-frame.xhtml`, que no livro original não está no
+spine: é o alvo do vetor `frame-chapter`. O normalizador guarda os documentos fora do spine como seções não lineares,
+para que links ainda cheguem a eles, e este, sem o script neutralizado, fica vazio e sem o marcador de capítulo. O
+teste agora conta os capítulos e exige que a única seção sem marcador seja essa; os números da tabela são da segunda
+rodada, com os binários da Parte 1.
 
 ### 5.5 Relayout com as seções cortadas
 
@@ -303,7 +327,19 @@ O normalizador garante o tamanho: no acervo, nenhuma parte passa de 203.235 byte
 MiB viram partes de 171 e de 188 a 193 KiB. Na Fase 0, 200 KiB por seção levaram de 27 a 65 ms no P95 em todas as
 mudanças (ADR 0001, tabela 5.4).
 
-**Na janela real: pendente.** O benchmark da Fase 0 (`tools/run-epub-bench.mjs`), no `large.epub` normalizado, mede fonte, largura e janela nos modos paginado e contínuo; ele também espera o computador livre.
+**Na janela real** (2026-11-09, computador livre e sem input do começo ao fim, binários da Parte 1). O benchmark da
+Fase 0 (`tools/run-epub-bench.mjs`) no `large.epub` normalizado, que agora tem 68 seções; ele mede a menor, a mediana
+e a maior, 20 vezes cada mudança. Tempo até o quadro final na tela, P95 e máximo, em ms:
+
+| Seção | Fonte, paginado | Fonte, contínuo | Largura, paginado | Largura, contínuo | Janela, paginado | Janela, contínuo |
+|---|---:|---:|---:|---:|---:|---:|
+| 21 KiB | 16 (26) | 27 (27) | 25 (27) | 39 (40) | 31 (40) | 30 (31) |
+| 31 KiB (mediana) | 13 (26) | 15 (27) | 27 (27) | 41 (41) | 31 (31) | 30 (31) |
+| 193 KiB (a maior) | 40 (40) | 37 (40) | 53 (57) | 70 (72) | 68 (72) | 33 (33) |
+
+Todas as 18 combinações ficam abaixo de 100 ms, e a posição ficou no lugar nas 360 mudanças. A seção de 193 KiB leva o
+mesmo que a de 200 KiB da Fase 0 (de 27 a 65 ms no P95), e as seções de 1 e 3 MiB que levavam de 164 a 1.100 ms não
+existem mais. O pior caso de todos foi 72 ms.
 
 ### 5.6 Arquivos do Calibre
 
@@ -327,7 +363,7 @@ as linhas do sumário viravam capítulos vazios; três ou mais títulos seguidos
 - **O leitor ainda não usa o pacote normalizado.** O app da Fase 0 abre EPUB pelo `zip.js` do foliate-js; ligá-lo ao
   cache do normalizador, aos CFIs do leitor e ao Locator é a Parte 2. Os testes de janela usam o pacote normalizado
   empacotado como EPUB.
-- **Hiperlinks para a web ficam** (D5), à espera da decisão da auditoria.
+- **Hiperlinks para a web ficam** (D5), passivos: o leitor intercepta o clique (seção 8).
 - **Partes repetem o contêiner.** Um seletor como `.capitulo > p:first-child` passa a casar com o primeiro parágrafo de
   cada parte; o Calibre tem o mesmo efeito ao dividir.
 - **HUFF/CDIC** sem arquivo real de teste (D8). MOBI com DRM é recusado.
@@ -351,3 +387,19 @@ node tools\cfi-browser-check.mjs --cache D:\Temp\fluido\cache
 node tools\run-epub-bench.mjs --epub D:\Temp\large-normalizado.epub --out layout-normalizado
 node tools\test-epub-security.mjs --normalized
 ```
+
+## 8. Decisões da auditoria (2026-11-09)
+
+O projeto auditou a Parte 1 e a aprovou. As quatro decisões que estavam em aberto ficaram assim:
+
+1. **Hiperlinks para a web ficam, passivos** (D5). Os links `http(s)`, `mailto` e `tel` continuam links, que não
+   carregam nada sozinhos; o leitor intercepta o clique e decide o que fazer com ele. Tudo que carrega sem clique
+   continua removido.
+2. **O CFI canônico conta nos documentos originais do livro** (D6), e o CFI do leitor, nas partes; a conversão entre
+   os dois é aritmética.
+3. **Detecção conservadora de capítulos em TXT**: só linhas com palavra-chave e número, e três ou mais títulos
+   seguidos são um sumário, não capítulos.
+4. **`EXTRACTOR_VERSION` sobe para 3** (D11), e os metadados de MOBI, AZW3 e FB2 são lidos de novo na próxima
+   reconciliação.
+
+Os dois testes na janela real que faltavam rodaram depois da aprovação, com os mesmos binários (seções 5.4 e 5.5).

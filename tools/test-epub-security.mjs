@@ -176,9 +176,19 @@ for (const { protection, scriptsRun, networkLeaks } of configurations) {
     check(protection, scriptHits.length === 0, `scripts reached the canary: ${scriptHits}`);
     check(protection, reports.length === 0, `${reports.length} script reports arrived`);
     check(protection, stray.length === 0, `messages reached the app: ${JSON.stringify(stray)}`);
-    const loaded = sections.filter((section) => section.loaded).length;
-    const expected = sections.length - (networkLeaks ? 2 : 0);
-    check(protection, loaded >= expected, `only ${loaded} of ${sections.length} sections loaded`);
+    // The normalizer also keeps the documents the spine leaves out, as non-linear sections, so
+    // links can still reach them. The hostile book has one, the target of a frame vector; with
+    // its script neutralized it is empty and carries no chapter marker, by construction.
+    const outsideSpine = normalized ? ['evil-frame'] : [];
+    const chapters = sections.filter((section) => !outsideSpine.includes(section.name));
+    check(
+      protection,
+      sections.length - chapters.length === outsideSpine.length,
+      `expected ${outsideSpine.length} documents from outside the spine, found ${sections.length - chapters.length}`,
+    );
+    const loaded = chapters.filter((section) => section.loaded).length;
+    const expected = chapters.length - (networkLeaks ? 2 : 0);
+    check(protection, loaded >= expected, `only ${loaded} of ${chapters.length} chapters loaded`);
   }
   if (networkLeaks) {
     check(protection, netHits.length > 3, `only ${netHits.length} network attempts in the control`);
