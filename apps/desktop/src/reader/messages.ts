@@ -1,25 +1,103 @@
 /**
  * Between the main page and the reader iframe. This is the only channel the two have, and the
  * main page treats whatever comes through it as untrusted: a book that broke out of its
- * section could speak as the reader. So it is small, and nothing in it reaches the app's IPC
- * except what the benchmark needs, which is not there outside a benchmark.
+ * section could speak as the reader. So it is small, every message is checked field by field,
+ * and nothing in it reaches the app's IPC except the reader's position, which the host parses
+ * again, and what the benchmark needs, which is not there outside a benchmark.
  */
+
+import { isReadingStyle, type ReadingStyle } from './typography';
 
 export type ReaderScenario = 'interactive' | 'layout' | 'security' | 'memory' | 'smoke';
 
+/** The two ways of reading a flowing book. */
+export type FlowMode = 'paginated' | 'continuous';
+
+/** One part of the reading order, as the host describes it from the normalized book. */
+export interface SectionPlan {
+  href: string;
+  document: number;
+  part: number;
+  parts: number;
+  bytes: number;
+  textStart: number;
+  textLength: number;
+  bookTextStart: number;
+  linear: boolean;
+  /** Where the part starts in its document: even CFI steps below `<body>`; empty for the first. */
+  start: number[];
+}
+
+/** Where to go. */
+export type ReaderTarget = { href: string } | { cfi: string } | { fraction: number };
+
 export type ToReader =
   | { type: 'run'; scenario: ReaderScenario }
-  | { type: 'window-resized'; id: number };
+  | { type: 'window-resized'; id: number }
+  | {
+      type: 'open';
+      mode: FlowMode;
+      animated: boolean;
+      style: ReadingStyle;
+      position: string | null;
+      sections: SectionPlan[];
+      totalText: number;
+      reducedMotion: boolean;
+    }
+  | { type: 'set-mode'; mode: FlowMode }
+  | { type: 'set-animation'; animated: boolean }
+  | { type: 'set-style'; style: ReadingStyle }
+  | { type: 'go-to'; target: ReaderTarget }
+  | { type: 'turn'; step: 1 | -1 }
+  | { type: 'key'; key: string; shift: boolean };
+
+/** Keys the reader acts on itself, for when the host has them. */
+export const NAVIGATION_KEYS = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'PageUp',
+  'PageDown',
+  'Home',
+  'End',
+  ' ',
+]);
+
+/** Keys the reader passes up, because what they do belongs to the app. */
+export type Shortcut = 'mode' | 'animation' | 'escape' | 'contents';
 
 export type FromReader =
   | { type: 'ready'; sections: number; openMs: number }
   | { type: 'resize-window'; id: number; width: number; height: number }
   | { type: 'phase'; name: string }
   | { type: 'report'; report: Record<string, unknown> }
-  | { type: 'failed'; message: string };
+  | { type: 'failed'; message: string }
+  | { type: 'opened'; openMs: number }
+  | {
+      type: 'relocate';
+      /** The reader's CFI of the anchor: the first character the reader sees. */
+      cfi: string;
+      section: number;
+      /** How far through the book, by text, as the reader can tell; the host gets the exact one. */
+      progress: number;
+      atStart: boolean;
+      atEnd: boolean;
+      reason: string;
+    }
+  | { type: 'layout'; ms: number; change: string }
+  | { type: 'shortcut'; key: Shortcut }
+  | { type: 'link'; href: string };
+
+const MAX_CFI = 4096;
+const MAX_HREF = 2048;
+
+function isFraction(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
 
 /**
- * The checks `main.ts` runs on messages from the reader, written as a type guard so nothing
+ * The checks the main page runs on messages from the reader, written as a type guard so nothing
  * unchecked can be used.
  */
 export function isFromReader(data: unknown): data is FromReader {
@@ -46,6 +124,70 @@ export function isFromReader(data: unknown): data is FromReader {
       return typeof message.report === 'object' && message.report !== null;
     case 'failed':
       return typeof message.message === 'string';
+    case 'opened':
+      return typeof message.openMs === 'number';
+    case 'relocate':
+      return (
+        typeof message.cfi === 'string' &&
+        message.cfi.length <= MAX_CFI &&
+        message.cfi.startsWith('epubcfi(') &&
+        Number.isSafeInteger(message.section) &&
+        (message.section as number) >= 0 &&
+        isFraction(message.progress) &&
+        typeof message.atStart === 'boolean' &&
+        typeof message.atEnd === 'boolean' &&
+        typeof message.reason === 'string' &&
+        message.reason.length <= 32
+      );
+    case 'layout':
+      return (
+        typeof message.ms === 'number' &&
+        typeof message.change === 'string' &&
+        message.change.length <= 32
+      );
+    case 'shortcut':
+      return ['mode', 'animation', 'escape', 'contents'].includes(message.key as string);
+    case 'link':
+      return (
+        typeof message.href === 'string' &&
+        message.href.length <= MAX_HREF &&
+        /^(https?:|mailto:|tel:)/i.test(message.href)
+      );
+    default:
+      return false;
+  }
+}
+
+/** The checks the reader runs on what the main page sends. The page is trusted; this catches bugs. */
+export function isToReader(data: unknown): data is ToReader {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const message = data as Record<string, unknown>;
+  switch (message.type) {
+    case 'run':
+    case 'window-resized':
+      return true;
+    case 'open':
+      return (
+        (message.mode === 'paginated' || message.mode === 'continuous') &&
+        typeof message.animated === 'boolean' &&
+        isReadingStyle(message.style) &&
+        (message.position === null || typeof message.position === 'string') &&
+        Array.isArray(message.sections)
+      );
+    case 'set-mode':
+      return message.mode === 'paginated' || message.mode === 'continuous';
+    case 'set-animation':
+      return typeof message.animated === 'boolean';
+    case 'set-style':
+      return isReadingStyle(message.style);
+    case 'go-to':
+      return typeof message.target === 'object' && message.target !== null;
+    case 'turn':
+      return message.step === 1 || message.step === -1;
+    case 'key':
+      return typeof message.key === 'string' && typeof message.shift === 'boolean';
     default:
       return false;
   }

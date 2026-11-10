@@ -2,21 +2,24 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 3 do Plano Diretor**, o layout fluido. O que existe hoje: o normalizador dos
-livros fluidos (EPUB 2 e 3, MOBI, AZW3, FB2, TXT e Markdown), que roda num processo isolado e entrega cada
-livro como um pacote EPUB 3 inerte, com seções de no máximo 200 KiB, e o motor de posição (EPUB CFI e
-Locator); o leitor de layout fixo da Fase 2 para PDF, quadrinhos (CBZ e CBR) e DjVu, com tiles na escala
-exata da tela, páginas duplas, modo paginado e contínuo, a posição guardada na biblioteca, a classificação
-de cada página e miniaturas em disco; o leitor fluido (EPUB) da Fase 0; e a biblioteca da Fase 1, com
-SQLite, identidade de arquivos, indexador, diário de operações em disco e uma CLI. Ainda não há interface
-de produto além da barra de leitura.
+O projeto está na **Fase 3 do Plano Diretor**, o layout fluido, e chegou ao **marco Alpha**: uma
+biblioteca de uso diário com o leitor integrado. O que existe hoje: a biblioteca, que segue as pastas
+escolhidas e lista os livros em capas ou em lista, com busca instantânea e filtro por pasta; o leitor
+fluido para EPUB 2 e 3, MOBI, AZW3, FB2, TXT e Markdown, que lê cada livro normalizado num processo isolado
+e mostra em páginas, com a virada animada, ou numa rolagem contínua própria, com fonte, tamanho,
+entrelinha, margens e tema; o leitor de layout fixo da Fase 2 para PDF, quadrinhos (CBZ e CBR) e DjVu; a
+mesma barra, o mesmo sumário e os mesmos atalhos para os dois; e a posição de cada livro guardada na
+biblioteca, exata ao fechar e reabrir. Por baixo, o normalizador e o motor de posição (EPUB CFI e
+Locator) da Fase 3, o pipeline de tiles da Fase 2 e a biblioteca da Fase 1, com SQLite, identidade de
+arquivos, indexador, diário de operações em disco e uma CLI.
 
 As decisões e os números de cada fase estão em
 [`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md),
 [`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md),
 [`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md),
-[`docs/adr/0004-fase-2-parte-2.md`](docs/adr/0004-fase-2-parte-2.md) e
-[`docs/adr/0005-fase-3-parte-1.md`](docs/adr/0005-fase-3-parte-1.md).
+[`docs/adr/0004-fase-2-parte-2.md`](docs/adr/0004-fase-2-parte-2.md),
+[`docs/adr/0005-fase-3-parte-1.md`](docs/adr/0005-fase-3-parte-1.md) e
+[`docs/adr/0006-fase-3-parte-2.md`](docs/adr/0006-fase-3-parte-2.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -48,10 +51,14 @@ crates/
                        posição de leitura, geometria das páginas e o cache dos livros normalizados
 apps/cli/              O binário `musaeum`: a biblioteca pela linha de comando
 apps/desktop/
-  src-tauri/           Ponte Tauri: protocolos tile:// e book://, buffers do WebView2, harness
-  src/                 Thread principal e compositor WebGL2 em Web Worker: modos de leitura,
-                       páginas duplas, física da passagem de página e cache de tiles
-  src/reader/          Leitor fluido, numa origem própria, com o foliate-js atrás de um adaptador
+  src-tauri/           Ponte Tauri: protocolos tile://, book:// e thumb://, a biblioteca do app
+                       e o indexador, capas, livros normalizados, buffers do WebView2, harness
+  src/app/             A interface: biblioteca e leitor, em React com React Aria
+  src/fixed/           O leitor de layout fixo na thread principal
+  src/                 Compositor WebGL2 em Web Worker: modos de leitura, páginas duplas, física
+                       da passagem de página e cache de tiles
+  src/reader/          Leitor fluido, numa origem própria: a vista paginada (foliate-js atrás de
+                       um adaptador), a rolagem contínua própria, a âncora e a tipografia
 vendor/
   foliate-js/          Parte do foliate-js, fixada em um commit, com uma alteração documentada
   libarchive/          libarchive 3.8.11, o lado de leitura, com origem e config.h documentados
@@ -67,6 +74,10 @@ tools/
   cfi-browser-check.mjs  Resolve no Chrome, com o foliate-js, os CFIs que o motor escreve
   visual-check/        Compara a janela com páginas desenhadas inteiras, e as cores do PDFium
   e2e-reader.mjs       Testa a janela real: modos, atalhos, posição salva e comparação visual
+  e2e-alpha.mjs        Testa o Alpha na janela real: biblioteca, leitor e a posição em cada formato
+  reader-check.mjs     Testa o leitor fluido sem janela, num Chrome headless, em livros normalizados
+  lib/cdp.mjs          O que os testes de janela usam para falar com o WebView2 pelo CDP
+  lib/seam-oracle.mjs  Onde o texto depois de um corte deve cair, pelo documento inteiro
   run-bench.mjs        Roda a matriz dos Experimentos A e B
   run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
   measure-memory.mjs   Mede a RAM do app inteiro
@@ -91,7 +102,20 @@ cd ..\..
 .\target\release\gen-fixtures.exe --out fixtures
 ```
 
-Abrir um documento de forma interativa:
+Abrir o app:
+
+```powershell
+.\target\release\musaeum-desktop.exe
+.\target\release\musaeum-desktop.exe --library D:\MinhaBiblioteca
+```
+
+Sem biblioteca, o app pede a pasta dos livros, ou a pasta de uma biblioteca feita antes; ele cria a
+biblioteca em `%LOCALAPPDATA%\Musaeum`, ou na pasta que `--library` der, e nunca escreve na pasta dos
+livros. Um clique ou Enter abre o livro; `← Biblioteca` (ou Alt+←) volta. No leitor, `C` alterna entre
+paginado e contínuo e `A` liga e desliga a animação da virada, nos dois tipos de livro; `Aa` muda a
+tipografia de um livro fluido e `Sumário` mostra o sumário (o de um PDF vem dos seus marcadores).
+
+Abrir um documento direto, como nas fases anteriores e nas medições:
 
 ```powershell
 .\target\release\musaeum-desktop.exe --document fixtures\spreads.pdf
@@ -218,6 +242,33 @@ referências. Cliques e teclas entram pela página, sem mover o mouse nem mandar
 estiver em foco, mas a janela aparece: a ferramenta só começa se ninguém usou o computador no último
 minuto. `amostra.txt` lista, por linha, `caminho|página,página` de livros de um acervo, que só são
 lidos.
+
+O Alpha tem o seu teste de janela, que usa o app inteiro, da biblioteca ao leitor:
+
+```powershell
+node tools\e2e-alpha.mjs --phase fixtures
+node tools\e2e-alpha.mjs --phase corpus --corpus D:\Livros
+```
+
+Com as fixtures, cria uma biblioteca numa pasta temporária com um livro em cada formato, busca, filtra
+por pasta, abre cada livro com um clique e volta. Em cada formato fluido, vai ao meio do livro e muda
+fonte, entrelinha, margens, família, tema e janela, e alterna paginado e contínuo, conferindo depois de
+cada mudança que a âncora é o mesmo caractere e que está na página mostrada (paginado) ou a até uma linha
+do topo (contínuo); depois fecha e reabre o livro nos dois modos e confere a posição exata. Com um
+acervo, abre cada EPUB e cada PDF a partir da biblioteca e confere que o acervo não mudou. A ferramenta
+para se alguém usar o computador no meio.
+
+O leitor fluido também se testa sem janela, num Chrome headless com perfil temporário, nos livros que
+o `corpus-check --flow-only` normalizou na pasta de trabalho:
+
+```powershell
+.\target\release\corpus-check.exe --corpus D:\Livros --work D:\Temp\fluido --flow-only
+node tools\reader-check.mjs --cache D:\Temp\fluido\cache
+```
+
+Serve o `reader.html` construído com a política do app, roda o mesmo portão de posição da janela,
+reabre cada livro nos dois modos e confere cada emenda entre partes contra o documento inteiro, refeito
+das partes. Não abre janela nem usa input, e pode rodar com o computador em uso.
 
 ## Os caminhos de entrega de pixels
 

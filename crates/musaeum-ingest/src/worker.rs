@@ -29,8 +29,11 @@ pub fn main() -> ExitCode {
     }
 }
 
-/// A normalized book's files, or why there is none.
-fn normalize(request: &Request, file: File) -> Result<Vec<(String, Vec<u8>)>, String> {
+/// A normalized book, or why there is none.
+fn normalize(
+    request: &Request,
+    file: File,
+) -> Result<musaeum_flow::package::NormalizedBook, String> {
     let format = request
         .format
         .flow()
@@ -65,11 +68,34 @@ fn normalize(request: &Request, file: File) -> Result<Vec<(String, Vec<u8>)>, St
             )
         })
         .map_err(|error| error.to_string())?;
-    let book = worker
+    worker
         .join()
         .map_err(|_| "the normalizer panicked".to_owned())?
-        .map_err(|error| error.to_string())?;
-    Ok(book.files)
+        .map_err(|error| error.to_string())
+}
+
+/// The cover of a normalized book, if it names one that is there.
+fn cover_of(book: musaeum_flow::package::NormalizedBook) -> Vec<(String, Vec<u8>)> {
+    let Some(path) = book.manifest.metadata.cover.clone() else {
+        return Vec::new();
+    };
+    book.files
+        .into_iter()
+        .filter(|(name, _)| *name == path)
+        .take(1)
+        .collect()
+}
+
+fn send_files(output: &mut impl io::Write, files: &[(String, Vec<u8>)]) -> io::Result<()> {
+    let bytes = files.iter().map(|(_, data)| data.len() as u64).sum();
+    write_frame(
+        output,
+        &Reply::Normalized {
+            files: files.len() as u32,
+            bytes,
+        },
+    )?;
+    write_files(output, files)
 }
 
 fn run() -> io::Result<()> {
@@ -102,17 +128,11 @@ fn run() -> io::Result<()> {
                 write_frame(&mut output, &reply)?;
             }
             Task::Normalize => match normalize(&request, file) {
-                Ok(files) => {
-                    let bytes = files.iter().map(|(_, data)| data.len() as u64).sum();
-                    write_frame(
-                        &mut output,
-                        &Reply::Normalized {
-                            files: files.len() as u32,
-                            bytes,
-                        },
-                    )?;
-                    write_files(&mut output, &files)?;
-                }
+                Ok(book) => send_files(&mut output, &book.files)?,
+                Err(reason) => write_frame(&mut output, &Reply::Rejected { reason })?,
+            },
+            Task::Cover => match normalize(&request, file) {
+                Ok(book) => send_files(&mut output, &cover_of(book))?,
                 Err(reason) => write_frame(&mut output, &Reply::Rejected { reason })?,
             },
         }

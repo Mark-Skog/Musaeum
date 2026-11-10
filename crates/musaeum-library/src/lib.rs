@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod catalog;
 mod content;
 mod content_kind;
 mod db;
@@ -29,6 +30,7 @@ mod search;
 mod sql;
 mod thumbnails;
 
+pub use catalog::{BookFile, BookRow, BrowsePage, BrowseQuery, FolderEntry, MAX_BROWSE};
 pub use content::ContentReport;
 pub use db::backup::{BackupInfo, BackupPolicy};
 pub use error::{Error, Result};
@@ -36,7 +38,10 @@ pub use fingerprint::Hash;
 pub use flow::FlowStore;
 pub use identity::ReconcileReport;
 pub use indexer::{Indexer, IndexerConfig, IndexerEvent};
-pub use ingest::{IngestClient, IngestConfig, NormalizeOutcome, NormalizedFiles, check_normalized};
+pub use ingest::{
+    CoverOutcome, ImageKind, IngestClient, IngestConfig, NormalizeOutcome, NormalizedFiles,
+    check_normalized,
+};
 pub use journal::RecoveryReport;
 pub use library::{Library, LibraryOptions, LibraryPaths};
 pub use model::{
@@ -47,9 +52,9 @@ pub use model::{
 };
 pub use probe::{FsProbe, RealFileSystem};
 pub use reading::{
-    CONTENT_MAJORITY_PERCENT, CONTENT_RULES_VERSION, DocumentContent, DocumentGeometry, OpenedFile,
-    PageContentClass, PageContentRecord, PageOrientation, PageRecord, ReadingMode, ReadingState,
-    Spreads, content_summary,
+    CONTENT_MAJORITY_PERCENT, CONTENT_RULES_VERSION, DocumentContent, DocumentGeometry,
+    FlowReadingState, OpenedFile, PageContentClass, PageContentRecord, PageOrientation, PageRecord,
+    ReadingMode, ReadingState, Spreads, content_summary,
 };
 pub use reconcile::ReconcileScope;
 pub use search::{DEFAULT_SEARCH_LIMIT, MatchKind, SearchHit};

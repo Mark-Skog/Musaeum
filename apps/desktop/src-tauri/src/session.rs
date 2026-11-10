@@ -5,14 +5,14 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use musaeum_core::{
     DeliveryMode, DocumentOrientation, FixedFormat, PoolConfig, PoolStats, RenderPool,
     geometry_bytes, summarize_orientation,
 };
-use musaeum_library::Library;
+use musaeum_library::{IngestClient, Library};
 use musaeum_sandbox::Policy;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::{PixelSlab, ShmRegion};
@@ -23,6 +23,7 @@ use crate::background::{self, Pending};
 use crate::memory::MemorySampler;
 use crate::options::{DeliveryFault, DeliveryPath, StartupOptions};
 use crate::reading::{self, SavedReading};
+use crate::shelf::Shelf;
 use crate::webview2;
 
 /// Tile slots in the slab: 64 MiB.
@@ -58,12 +59,18 @@ pub struct AppState {
     /// 500 ms, probably from what reading another process's private working set costs it.
     memory: Option<MemorySampler>,
     started: Instant,
-    /// Opened the first time a document is, off the main thread. Shared with the thread that keeps
-    /// what background work produces.
-    library: OnceLock<Option<Arc<Library>>>,
+    /// The library, and what keeps it current.
+    pub shelf: Shelf,
+    /// The ingest worker that normalizes flowing books as they are opened, kept between books.
+    pub flow_client: Mutex<Option<IngestClient>>,
 }
 
 impl AppState {
+    /// Whether the app runs under a test (`--e2e`), which has commands of its own.
+    pub fn is_e2e(&self) -> bool {
+        self.options.e2e
+    }
+
     /// Creates the state with no session open.
     pub fn new(options: StartupOptions) -> Self {
         Self {
@@ -73,18 +80,17 @@ impl AppState {
                 .filter(|bench| bench.scenario == "memory")
                 .map(|_| MemorySampler::start()),
             started: Instant::now(),
+            shelf: Shelf::new(options.library.clone(), options.bench.is_some()),
+            flow_client: Mutex::new(None),
             options,
             current: RwLock::new(None),
             next_id: AtomicU32::new(1),
-            library: OnceLock::new(),
         }
     }
 
     /// The library, if there is one to remember things in.
-    fn library(&self) -> Option<&Arc<Library>> {
-        self.library
-            .get_or_init(|| reading::open_library(self.options.library.as_deref()).map(Arc::new))
-            .as_ref()
+    fn library(&self) -> Option<Arc<Library>> {
+        self.shelf.library()
     }
 
     /// The open session, if it has this id.
@@ -235,7 +241,9 @@ pub fn open_session(
         .with_file_name(format.worker_exe());
     // A benchmark measures opening a document from scratch, so it does not use the library.
     let known = match state.library() {
-        Some(library) if state.options.bench.is_none() => reading::look_up(library, &args.document),
+        Some(library) if state.options.bench.is_none() => {
+            reading::look_up(&library, &args.document)
+        }
         _ => reading::Known::default(),
     };
     let config = PoolConfig {
@@ -311,7 +319,7 @@ pub fn open_session(
     // gets them; a benchmark leaves them alone, like everything else the library keeps.
     let background = match (state.library(), known.file.and_then(|file| file.blake3)) {
         (Some(library), Some(hash)) if state.options.bench.is_none() => {
-            background::start(&pool, Arc::clone(library), hash)
+            background::start(&pool, library, hash)
         }
         _ => Pending::default(),
     };
@@ -375,6 +383,41 @@ pub fn save_reading_state(
     library
         .save_reading_state(open, &reading.into_state(revision))
         .map_err(|error| error.to_string())
+}
+
+/// An entry of a document's table of contents.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineItem {
+    label: String,
+    /// The zero-based page it leads to, if it leads anywhere.
+    page: Option<u32>,
+    /// 0 for the top level.
+    level: u16,
+}
+
+/// The open document's table of contents, from its outline: a PDF's bookmarks. Comics have none,
+/// and DjVu's outline is not read yet.
+#[tauri::command(async)]
+pub fn document_outline(
+    state: State<'_, AppState>,
+    session: u32,
+) -> Result<Vec<OutlineItem>, String> {
+    let session = state
+        .session(session)
+        .ok_or("that document is no longer open")?;
+    let entries = session
+        .pool
+        .outline(Duration::from_secs(20))
+        .map_err(|error| error.to_string())?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| OutlineItem {
+            label: entry.title,
+            page: entry.page,
+            level: entry.level,
+        })
+        .collect())
 }
 
 /// Closes the current document, if any.
@@ -441,6 +484,23 @@ pub fn bench_resize_window(
 ) -> Result<(), String> {
     if state.options.bench.is_none() {
         return Err("not running as a benchmark".to_owned());
+    }
+    window
+        .set_size(LogicalSize::new(f64::from(width), f64::from(height)))
+        .map_err(|error| error.to_string())
+}
+
+/// Resizes the window, for a test that checks the reader keeps its place when the window changes.
+/// Only a run with `--e2e` has it; the reader's iframe cannot reach commands at all.
+#[tauri::command(async)]
+pub fn e2e_resize_window(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if !state.options.e2e {
+        return Err("not running a test".to_owned());
     }
     window
         .set_size(LogicalSize::new(f64::from(width), f64::from(height)))

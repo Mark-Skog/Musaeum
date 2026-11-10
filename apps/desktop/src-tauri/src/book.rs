@@ -9,7 +9,8 @@
 //! |---------|--------|
 //! | `GET /reader.html` | The reader's page, with a nonce that only its own scripts have |
 //! | `GET /assets/...` | The reader's scripts |
-//! | `GET /book.epub` | The book's bytes |
+//! | `GET /book.epub` | The book's bytes, for a book opened from the command line |
+//! | `GET /pkg/...` | A file of the normalized book, from the cache, for a book of the library |
 //!
 //! The policy below is what stands between a book's scripts and the world, along with the
 //! `sandbox` attribute of the iframes. foliate-js turns each section into a `blob:` document,
@@ -26,6 +27,7 @@ use serde::Serialize;
 use tauri::http::{HeaderValue, Method, Request, Response, StatusCode, header};
 use tauri::{AppHandle, Manager, State, UriSchemeResponder};
 
+use crate::flow::FlowBook;
 use crate::options::BookProtection;
 use crate::protocol::is_allowed_origin;
 use crate::session::AppState;
@@ -39,11 +41,19 @@ const SECTION_SANDBOX: &str = "allow-same-origin";
 /// it to show that the policy holds without the sandbox.
 const SECTION_SANDBOX_WITH_SCRIPTS: &str = "allow-same-origin allow-scripts";
 
+/// What an open book is made of.
+enum BookContent {
+    /// An EPUB file as it is, from the command line: the benchmarks of Phases 0 and 3.
+    Epub(PathBuf),
+    /// A book of the library, normalized, served file by file from the cache.
+    Package(Arc<FlowBook>),
+}
+
 /// An open book.
 pub struct BookSession {
     /// The random part of this book's origin.
     id: String,
-    path: PathBuf,
+    content: BookContent,
     protection: BookProtection,
 }
 
@@ -71,9 +81,14 @@ fn random_token() -> String {
 /// module graph, and a book has no way to learn it: reading it takes a script, and browsers
 /// hide the attribute from CSS.
 fn content_security_policy(nonce: &str) -> String {
+    policy_with(&format!("script-src 'nonce-{nonce}'"))
+}
+
+/// The policy, with `script` as its `script-src`.
+fn policy_with(script: &str) -> String {
     [
         "default-src 'none'".to_owned(),
-        format!("script-src 'nonce-{nonce}'"),
+        script.to_owned(),
         // foliate-js injects <style> elements and books use style attributes.
         "style-src 'unsafe-inline' blob:".to_owned(),
         "img-src blob: data:".to_owned(),
@@ -97,25 +112,43 @@ fn content_security_policy(nonce: &str) -> String {
 }
 
 /// Tauri adds a nonce of its own to the scripts it embeds. This replaces it with `nonce`, on the
-/// script tags of the reader's page, and adds it where there was none.
+/// script tags of the reader's page and on the links that preload its modules, and adds it where
+/// there was none. A preload without the nonce is refused by the policy, and its module is then
+/// fetched a second time, by the import.
 fn with_script_nonce(html: &str, nonce: &str) -> String {
     let mut out = String::with_capacity(html.len() + 128);
     let mut rest = html;
-    while let Some(at) = rest.find("<script") {
+    loop {
+        let (at, name) = match (rest.find("<script"), rest.find("<link")) {
+            (Some(script), Some(link)) if link < script => (link, "<link"),
+            (Some(script), _) => (script, "<script"),
+            (None, Some(link)) => (link, "<link"),
+            (None, None) => break,
+        };
         let (before, tag_and_rest) = rest.split_at(at);
         out.push_str(before);
         let end = tag_and_rest
             .find('>')
             .map_or(tag_and_rest.len(), |at| at + 1);
         let (tag, after) = tag_and_rest.split_at(end);
-        out.push_str("<script nonce=\"");
-        out.push_str(nonce);
-        out.push('"');
-        out.push_str(&strip_nonce_attribute(&tag["<script".len()..]));
+        let attributes = &tag[name.len()..];
+        if name == "<script" || is_module_preload(attributes) {
+            out.push_str(name);
+            out.push_str(" nonce=\"");
+            out.push_str(nonce);
+            out.push('"');
+            out.push_str(&strip_nonce_attribute(attributes));
+        } else {
+            out.push_str(tag);
+        }
         rest = after;
     }
     out.push_str(rest);
     out
+}
+
+fn is_module_preload(attributes: &str) -> bool {
+    attributes.contains("rel=\"modulepreload\"") || attributes.contains("rel=modulepreload")
 }
 
 fn strip_nonce_attribute(attributes: &str) -> String {
@@ -131,6 +164,94 @@ fn strip_nonce_attribute(attributes: &str) -> String {
         &attributes[..start],
         &attributes[value_at + length + 1..]
     )
+}
+
+/// The same policy for the files of a normalized book, which have no script of the reader's and
+/// may never run one: nothing can carry a nonce.
+fn package_policy() -> String {
+    policy_with("script-src 'none'")
+}
+
+/// The media type of a file of a normalized book, by its name, which the normalizer chose.
+fn content_type_of(path: &str) -> &'static str {
+    let extension = path
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "xhtml" | "xht" | "html" | "htm" => "application/xhtml+xml",
+        "opf" => "application/oebps-package+xml",
+        "xml" | "ncx" => "application/xml",
+        "json" => "application/json",
+        "css" => "text/css",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "mp3" => "audio/mpeg",
+        "m4a" | "mp4" => "video/mp4",
+        "ogg" | "oga" => "audio/ogg",
+        "webm" => "video/webm",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Shows a book of the library in the reader, at a new origin. `host_origin` is the page asking,
+/// the only one the reader will talk to.
+pub fn open_package(
+    books: &BookState,
+    host_origin: &str,
+    flow: Arc<FlowBook>,
+    e2e: bool,
+) -> Result<(String, String), String> {
+    if !is_allowed_origin(host_origin) {
+        return Err(format!("{host_origin} cannot open a book"));
+    }
+    let session = Arc::new(BookSession {
+        id: random_token(),
+        content: BookContent::Package(flow),
+        protection: BookProtection::Full,
+    });
+    let origin = format!("http://book.{}.localhost", session.id);
+    let reader_url = format!(
+        "{origin}/reader.html?host={host_origin}&sections={}&package=1{}",
+        SECTION_SANDBOX.replace(' ', "%20"),
+        if e2e { "&e2e=1" } else { "" }
+    );
+    *books
+        .current
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = Some(session);
+    Ok((origin, reader_url))
+}
+
+/// The normalized book open in the reader, if it is this document.
+pub fn open_flow_book(books: &BookState, document: i64) -> Option<Arc<FlowBook>> {
+    let current = books
+        .current
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()?;
+    match &current.content {
+        BookContent::Package(flow) if flow.document_id == document => Some(Arc::clone(flow)),
+        _ => None,
+    }
+}
+
+/// Closes the book in the reader. Its origin answers nothing from now on.
+pub fn close(books: &BookState) {
+    books
+        .current
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
 }
 
 /// What the frontend needs to create the reader's iframe.
@@ -162,7 +283,7 @@ pub fn open_book(
 
     let session = Arc::new(BookSession {
         id: random_token(),
-        path,
+        content: BookContent::Epub(path),
         protection: options.book_protection,
     });
     let origin = format!("http://book.{}.localhost", session.id);
@@ -247,10 +368,13 @@ pub fn handle(app: &AppHandle, request: Request<Vec<u8>>, responder: UriSchemeRe
         return;
     }
 
-    match request.uri().path() {
-        "/book.epub" => serve_book(session.path.clone(), responder),
-        "/reader.html" => serve_reader_page(app, session.protection, responder),
-        path if path.starts_with("/assets/") => serve_script(app, path, responder),
+    match (request.uri().path(), &session.content) {
+        ("/book.epub", BookContent::Epub(path)) => serve_book(path.clone(), responder),
+        ("/reader.html", _) => serve_reader_page(app, session.protection, responder),
+        (path, _) if path.starts_with("/assets/") => serve_script(app, path, responder),
+        (path, BookContent::Package(flow)) if path.starts_with("/pkg/") => {
+            serve_package_file(Arc::clone(flow), &path["/pkg/".len()..], responder);
+        }
         _ => respond(responder, StatusCode::NOT_FOUND),
     }
 }
@@ -276,6 +400,46 @@ fn serve_book(path: PathBuf, responder: UriSchemeResponder) {
 
 fn read_book(path: &Path) -> std::io::Result<Vec<u8>> {
     std::fs::read(path)
+}
+
+/// A file of a normalized book. The path is checked the way the cache checked it when it was
+/// written: relative, a few plain segments, nothing that climbs out.
+fn serve_package_file(flow: Arc<FlowBook>, path: &str, responder: UriSchemeResponder) {
+    let Ok(path) = percent_decoded(path) else {
+        respond(responder, StatusCode::NOT_FOUND);
+        return;
+    };
+    if !musaeum_ingest::protocol::is_safe_path(&path) {
+        respond(responder, StatusCode::NOT_FOUND);
+        return;
+    }
+    thread::spawn(move || match std::fs::read(flow.dir.join(&path)) {
+        Ok(bytes) => respond_with(
+            responder,
+            content_type_of(&path),
+            Some(&package_policy()),
+            bytes,
+        ),
+        Err(_) => respond(responder, StatusCode::NOT_FOUND),
+    });
+}
+
+/// `%XX` in a request's path, as UTF-8. Anything malformed is refused rather than guessed at.
+fn percent_decoded(path: &str) -> Result<String, ()> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let hex = path.get(at + 1..at + 3).ok_or(())?;
+            out.push(u8::from_str_radix(hex, 16).map_err(|_| ())?);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| ())
 }
 
 fn serve_reader_page(app: &AppHandle, protection: BookProtection, responder: UriSchemeResponder) {
@@ -342,6 +506,39 @@ mod tests {
     }
 
     #[test]
+    fn the_files_of_a_book_can_never_run_a_script() {
+        let policy = package_policy();
+        assert!(
+            policy
+                .split("; ")
+                .any(|directive| directive == "script-src 'none'")
+        );
+        assert!(!policy.contains("script-src 'nonce-"));
+        assert!(policy.contains("default-src 'none'"));
+        assert!(policy.contains("connect-src 'self'"));
+    }
+
+    #[test]
+    fn package_paths_are_decoded_strictly() {
+        assert_eq!(
+            percent_decoded("text/0001.xhtml"),
+            Ok("text/0001.xhtml".to_owned())
+        );
+        assert_eq!(
+            percent_decoded("images/a%20b.png"),
+            Ok("images/a b.png".to_owned())
+        );
+        assert_eq!(percent_decoded("a%2"), Err(()));
+        assert_eq!(percent_decoded("a%zz"), Err(()));
+        assert_eq!(percent_decoded("%ff"), Err(()));
+        assert!(!musaeum_ingest::protocol::is_safe_path("../library.db"));
+        assert!(!musaeum_ingest::protocol::is_safe_path("text/../../x"));
+        assert_eq!(content_type_of("text/0001.xhtml"), "application/xhtml+xml");
+        assert_eq!(content_type_of("styles/a.CSS"), "text/css");
+        assert_eq!(content_type_of("noextension"), "application/octet-stream");
+    }
+
+    #[test]
     fn tokens_are_long_and_do_not_repeat() {
         let (a, b) = (random_token(), random_token());
         assert_eq!(a.len(), 32);
@@ -370,5 +567,24 @@ mod tests {
     #[test]
     fn a_page_without_scripts_is_left_alone() {
         assert_eq!(with_script_nonce("<p>hi</p>", "n"), "<p>hi</p>");
+    }
+
+    #[test]
+    fn module_preloads_get_the_nonce_and_other_links_do_not() {
+        let html = concat!(
+            r#"<link rel="stylesheet" href="/s.css">"#,
+            r#"<script type="module" crossorigin src="/assets/reader.js"></script>"#,
+            r#"<link rel="modulepreload" crossorigin href="/assets/metrics.js">"#,
+            r#"<link nonce="tauri" rel="modulepreload" href="/assets/other.js">"#,
+        );
+        assert_eq!(
+            with_script_nonce(html, "n"),
+            concat!(
+                r#"<link rel="stylesheet" href="/s.css">"#,
+                r#"<script nonce="n" type="module" crossorigin src="/assets/reader.js"></script>"#,
+                r#"<link nonce="n" rel="modulepreload" crossorigin href="/assets/metrics.js">"#,
+                r#"<link nonce="n" rel="modulepreload" href="/assets/other.js">"#,
+            )
+        );
     }
 }

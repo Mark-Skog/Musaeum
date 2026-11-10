@@ -1159,7 +1159,9 @@ fn overlapping_roots_are_refused() {
 fn what_is_not_a_book_or_was_left_out_is_not_seen() {
     let fixture = Fixture::new();
     fixture.write("book.pdf", &pdf(1));
-    fixture.write("notes.txt", b"not a book");
+    fixture.write("notes.docx", b"not a book");
+    fixture.write("README.md", b"# not a book");
+    fixture.write("LICENSE.txt", b"not a book");
     fixture.write("book.pdf.tmp", b"not a book");
     fixture.write("~$lock.pdf", b"not a book");
     fixture.write("node_modules/dep/manual.pdf", &pdf(2));

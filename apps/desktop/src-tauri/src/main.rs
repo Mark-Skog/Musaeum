@@ -9,11 +9,16 @@
 
 mod background;
 mod book;
+mod covers;
+mod flow;
+mod links;
 mod memory;
 mod options;
+mod picker;
 mod protocol;
 mod reading;
 mod session;
+mod shelf;
 mod webview2;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -60,6 +65,7 @@ fn main() {
 
     let result = tauri::Builder::default()
         .manage(AppState::new(options))
+        .manage(links::OpenedLinks::default())
         .manage(book::BookState::default())
         .register_asynchronous_uri_scheme_protocol(
             protocol::SCHEME,
@@ -70,22 +76,42 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol(book::SCHEME, |context, request, responder| {
             book::handle(context.app_handle(), request, responder);
         })
+        .register_asynchronous_uri_scheme_protocol(covers::SCHEME, |context, request, responder| {
+            covers::handle(context.app_handle(), request, responder);
+        })
         .invoke_handler(tauri::generate_handler![
             book::open_book,
+            flow::open_flow,
+            flow::save_flow_position,
+            flow::locate_flow,
+            flow::close_book,
+            links::open_in_browser,
+            links::e2e_opened_links,
+            shelf::library_info,
+            shelf::library_choose_root,
+            shelf::library_add_root,
+            shelf::library_choose_existing,
+            shelf::library_browse,
+            shelf::library_folders,
+            shelf::reader_setting,
+            shelf::set_reader_setting,
             session::startup_options,
             session::uptime_ms,
             session::open_delivery_probe,
             session::open_session,
             session::close_session,
+            session::document_outline,
             session::save_reading_state,
             session::pool_stats,
             session::probe_exchange,
             session::bench_mark_phase,
             session::bench_resize_window,
+            session::e2e_resize_window,
             session::bench_finish,
             session::bench_fail,
         ])
         .setup(move |app| {
+            app.state::<AppState>().shelf.set_app(app.handle().clone());
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Musaeum")
                 .inner_size(f64::from(width), f64::from(height))
@@ -102,6 +128,8 @@ fn main() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 // Stop the workers while the WebView2 buffers they map are still alive.
                 handle.state::<AppState>().stop_current_session();
+                // And the indexer and the covers, finishing what they are writing.
+                handle.state::<AppState>().shelf.close();
             }
         }),
         Err(error) => {

@@ -57,9 +57,13 @@ export type ToWorker =
   | { type: 'set-animation'; on: boolean }
   | { type: 'set-spreads'; spreads: SpreadsSetting }
   | { type: 'turn'; step: 1 | -1 }
+  /** Shows a page, as an entry of the table of contents asks. */
+  | { type: 'go-to-page'; page: number }
   | { type: 'zoom'; factor: number }
   /** Asks for an `Inspection`, for a test driving the real window. */
-  | { type: 'inspect' };
+  | { type: 'inspect' }
+  /** Sends the position now if it changed since the last one sent, then `flushed`. */
+  | { type: 'flush' };
 
 export interface ProbeReply {
   type: 'probe-reply';
@@ -125,4 +129,6 @@ export type FromWorker =
   | { type: 'reading-state'; state: ReadingSnapshot }
   | ReaderStatus
   | { type: 'bench-done'; report: Record<string, unknown> }
+  /** Every position up to now has been sent. */
+  | { type: 'flushed' }
   | { type: 'fatal'; message: string };

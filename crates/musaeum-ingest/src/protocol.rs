@@ -14,7 +14,7 @@ use crate::parse::Extracted;
 
 /// Bumped when a message changes, since the host and the worker are built separately. Version 2
 /// adds normalizing a flowing book.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// No honest message comes close to this, and neither side allocates more for one.
 pub const MAX_FRAME: u32 = 1 << 20;
@@ -78,6 +78,9 @@ pub enum Task {
     Extract,
     /// The whole book, normalized: a flowing format only.
     Normalize,
+    /// Only the cover of a flowing book, as the normalizer finds it, in a [`Reply::Normalized`]
+    /// with one file, or none when the book has no cover.
+    Cover,
 }
 
 /// What the host asks.

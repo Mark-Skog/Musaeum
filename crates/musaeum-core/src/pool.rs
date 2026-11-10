@@ -20,6 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
+use musaeum_shm::outline::{self, OUTLINE_PAGE, OutlineEntry};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::MAX_WORKERS;
 use musaeum_shm::tile::{THUMBNAIL_EDGE, page_pixels, thumbnail_scale};
@@ -378,6 +379,16 @@ impl RenderPool {
         let (reply, answer) = mpsc::channel();
         let _ = self.events.send(Event::Text(page, reply));
         answer
+    }
+
+    /// The document's outline, as a table of contents. It travels as the text layer of
+    /// [`OUTLINE_PAGE`], and what comes back is checked against this document's pages.
+    pub fn outline(&self, timeout: Duration) -> Result<Vec<OutlineEntry>, TextError> {
+        let layer = self
+            .request_text(OUTLINE_PAGE)
+            .recv_timeout(timeout)
+            .map_err(|_| TextError::Failed)??;
+        Ok(outline::from_text_layer(&layer, self.pages.len() as u32))
     }
 
     /// Fault injection for tests: kills a worker as if it had crashed.
@@ -921,7 +932,8 @@ impl EventLoop {
             }
             Event::Background(work, sink) => self.on_background(work, sink),
             Event::Text(page, reply) => {
-                if page as usize >= self.pages.len() {
+                // The outline asks for the text of a page no document has; see musaeum_shm::outline.
+                if page != OUTLINE_PAGE && page as usize >= self.pages.len() {
                     let _ = reply.send(Err(TextError::NoSuchPage(page)));
                 } else {
                     let waiters = self.text_waiters.entry(page).or_default();

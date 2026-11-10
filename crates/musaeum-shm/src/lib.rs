@@ -18,6 +18,7 @@
 compile_error!("musaeum-shm only implements shared memory for Windows in Phase 0.");
 
 pub mod content;
+pub mod outline;
 pub mod region;
 pub mod ring;
 pub mod slab;
@@ -26,6 +27,7 @@ pub mod tile;
 pub mod wire;
 
 pub use content::{ContentClass, PageContent};
+pub use outline::{OUTLINE_PAGE, OutlineEntry};
 pub use region::ShmRegion;
 pub use ring::{DeliveryRing, RingConsumer, TileAnnouncement};
 pub use slab::PixelSlab;

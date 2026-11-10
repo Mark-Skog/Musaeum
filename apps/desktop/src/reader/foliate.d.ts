@@ -29,8 +29,10 @@ declare module '*/foliate-js/epub.js' {
     id: string;
     size: number;
     linear?: string;
+    cfi: string;
     load(): Promise<string>;
     unload(): void;
+    resolveHref(href: string): string;
   }
   export interface EpubLoader {
     loadText(name: string): Promise<string | null>;
@@ -41,7 +43,16 @@ declare module '*/foliate-js/epub.js' {
     constructor(loader: EpubLoader);
     init(): Promise<EPUB>;
     sections: EpubSection[];
+    resolveHref(href: string): { index: number; anchor: (doc: Document) => Element | number | null } | null;
+    resolveCFI(cfi: string): { index: number; anchor: (doc: Document) => Range | null };
   }
+}
+
+declare module '*/foliate-js/epubcfi.js' {
+  export function joinIndir(...parts: string[]): string;
+  export function fromRange(range: Range, filter?: unknown): string;
+  export function parse(cfi: string): unknown[] & { parent?: unknown[] };
+  export function toRange(doc: Document, parts: unknown[], filter?: unknown): Range;
 }
 
 declare module '*/foliate-js/paginator.js' {
@@ -51,15 +62,24 @@ declare module '*/foliate-js/paginator.js' {
 
   export class Paginator extends HTMLElement {
     open(book: EPUB): void;
-    goTo(target: { index: number; anchor?: number }): Promise<void>;
+    goTo(target: {
+      index: number;
+      anchor?: number | ((doc: Document) => Range | Element | number);
+    }): Promise<void>;
     next(): Promise<void>;
     prev(): Promise<void>;
+    firstSection(): Promise<void>;
+    lastSection(): Promise<void>;
     setStyles(styles: string): void;
+    render(): void;
+    destroy(): void;
     getContents(): { index: number; doc: Document }[];
     readonly pages: number;
     readonly page: number;
     readonly size: number;
     readonly viewSize: number;
     readonly start: number;
+    readonly atStart: boolean;
+    readonly atEnd: boolean;
   }
 }

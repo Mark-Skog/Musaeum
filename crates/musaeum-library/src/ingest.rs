@@ -90,6 +90,58 @@ pub enum NormalizeOutcome {
     Unavailable(String),
 }
 
+/// What came of asking for a book's cover.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CoverOutcome {
+    /// The image, with what its first bytes say it is.
+    Cover { kind: ImageKind, bytes: Vec<u8> },
+    /// The book names no cover, or names one that is not a picture this program draws.
+    NoCover,
+    /// The worker says the book cannot be read, or it died on the way.
+    Nothing(String),
+    /// No worker could be started.
+    Unavailable(String),
+}
+
+/// The pictures a cover may be, told by their first bytes and never by a name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageKind {
+    Jpeg,
+    Png,
+    Gif,
+    Webp,
+}
+
+impl ImageKind {
+    /// What `bytes` are, if they are one of these.
+    pub fn sniff(bytes: &[u8]) -> Option<Self> {
+        if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            Some(Self::Jpeg)
+        } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some(Self::Png)
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            Some(Self::Gif)
+        } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            Some(Self::Webp)
+        } else {
+            None
+        }
+    }
+
+    /// The usual extension of a file of this kind.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+        }
+    }
+}
+
+/// The largest cover kept.
+const MAX_COVER: usize = 32 << 20;
+
 /// The largest manifest the host parses.
 const MAX_MANIFEST: usize = 64 << 20;
 
@@ -228,6 +280,54 @@ impl IngestClient {
             Err(reason) => match self.discard(&reason) {
                 IngestOutcome::Nothing(reason) => NormalizeOutcome::Nothing(reason),
                 _ => NormalizeOutcome::Nothing("the worker was replaced".to_owned()),
+            },
+        }
+    }
+
+    /// The cover of a flowing book, passed as a handle and never as a path. The worker sends the
+    /// bytes it found; whether they are a picture is decided here, by their first bytes.
+    pub fn cover(&mut self, file: &File, format: Format) -> CoverOutcome {
+        if let Some(reason) = &self.cannot_start {
+            return CoverOutcome::Unavailable(reason.clone());
+        }
+        if self.worker.is_none() {
+            match self.start_worker() {
+                Ok(worker) => self.worker = Some(worker),
+                Err(reason) => {
+                    self.cannot_start = Some(reason.clone());
+                    return CoverOutcome::Unavailable(reason);
+                }
+            }
+        }
+        let timeout = self.config.timeout;
+        let Some(worker) = self.worker.as_mut() else {
+            return CoverOutcome::Unavailable("no worker".to_owned());
+        };
+        match ask(worker, file, format, Task::Cover, timeout) {
+            Ok((Reply::Normalized { .. }, Some(mut files))) => {
+                if files.len() > 1 {
+                    self.discard("it sent more than one cover");
+                    return CoverOutcome::Nothing("the worker was replaced".to_owned());
+                }
+                match files.pop() {
+                    None => CoverOutcome::NoCover,
+                    Some((_, bytes)) if bytes.len() > MAX_COVER => CoverOutcome::NoCover,
+                    Some((_, bytes)) => match ImageKind::sniff(&bytes) {
+                        Some(kind) => CoverOutcome::Cover { kind, bytes },
+                        None => CoverOutcome::NoCover,
+                    },
+                }
+            }
+            Ok((Reply::Rejected { reason }, _)) => {
+                CoverOutcome::Nothing(clean(&reason, MAX_TITLE_CHARS).unwrap_or_default())
+            }
+            Ok(_) => match self.discard("it answered out of turn") {
+                IngestOutcome::Nothing(reason) => CoverOutcome::Nothing(reason),
+                _ => CoverOutcome::Nothing("the worker was replaced".to_owned()),
+            },
+            Err(reason) => match self.discard(&reason) {
+                IngestOutcome::Nothing(reason) => CoverOutcome::Nothing(reason),
+                _ => CoverOutcome::Nothing("the worker was replaced".to_owned()),
             },
         }
     }

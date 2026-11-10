@@ -144,7 +144,7 @@ fn a_file_cannot_be_moved_out_of_the_library_or_into_a_name_it_would_not_see() {
     assert!(matches!(
         fixture
             .library()
-            .move_file(instance, &fixture.path("book.txt")),
+            .move_file(instance, &fixture.path("book.docx")),
         Err(Error::Refused(_))
     ));
     assert!(path.exists());

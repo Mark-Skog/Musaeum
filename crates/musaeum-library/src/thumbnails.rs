@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 use crate::fingerprint::Hash;
 use crate::model::hex;
 
+/// The marker of a file with no cover to draw.
+const NO_COVER: &str = "no-cover";
+
 /// Where a library keeps its thumbnails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbnailStore {
@@ -74,6 +77,19 @@ impl ThumbnailStore {
         fs::rename(&partial, &path).inspect_err(|_| {
             let _ = fs::remove_file(&partial);
         })
+    }
+
+    /// Records that the file with these bytes has no cover that can be drawn, so that nothing
+    /// tries again for the same bytes. Forgotten with the rest of its thumbnails.
+    pub fn mark_without_cover(&self, blake3: &Hash) -> io::Result<()> {
+        let dir = self.document_dir(blake3);
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join(NO_COVER), b"")
+    }
+
+    /// Whether the file with these bytes was found to have no cover.
+    pub fn is_without_cover(&self, blake3: &Hash) -> bool {
+        self.document_dir(blake3).join(NO_COVER).exists()
     }
 
     /// A page's thumbnail, if there is one.

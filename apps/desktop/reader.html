@@ -16,6 +16,38 @@
         width: 100%;
         height: 100%;
       }
+      #book {
+        position: fixed;
+        inset: 0;
+      }
+      #book > foliate-paginator {
+        position: absolute;
+        inset: 0;
+      }
+      .continuous {
+        position: absolute;
+        inset: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        /* The view keeps the reader's place itself, by a character, not by the browser's guess. */
+        overflow-anchor: none;
+        outline: none;
+      }
+      .continuous-column {
+        margin: 0 auto;
+      }
+      .continuous-section {
+        position: relative;
+      }
+      .continuous-frame {
+        display: block;
+        width: 100%;
+        border: 0;
+      }
+      ::view-transition-old(root),
+      ::view-transition-new(root) {
+        animation-duration: 220ms;
+      }
     </style>
   </head>
   <body>

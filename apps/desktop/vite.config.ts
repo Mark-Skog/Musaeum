@@ -14,6 +14,9 @@ export default defineConfig({
   },
   build: {
     target: 'es2023',
+    // The app's interface, React and React Aria, is one chunk of about 600 kB, loaded only by the
+    // app; the reader and the benchmark pages never load it.
+    chunkSizeWarningLimit: 800,
     rollupOptions: {
       input: { main: 'index.html', reader: 'reader.html' },
     },

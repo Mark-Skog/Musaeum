@@ -21,6 +21,11 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "node_modules",
     // Where Office and others keep their lock files.
     "~$*",
+    // The notes that come with software, now that plain text and Markdown are books.
+    "readme.*",
+    "license.*",
+    "licence.*",
+    "changelog.*",
 ];
 
 /// The formats in the plan, by extension.
@@ -31,6 +36,9 @@ const FORMATS: &[(&str, &str)] = &[
     ("azw", "flow"),
     ("azw3", "flow"),
     ("fb2", "flow"),
+    ("txt", "flow"),
+    ("md", "flow"),
+    ("markdown", "flow"),
     ("cbz", "fixed"),
     ("cbr", "fixed"),
     ("djvu", "fixed"),

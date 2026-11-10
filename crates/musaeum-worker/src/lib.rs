@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering, fence};
 use std::time::Instant;
 
 use memmap2::Mmap;
+use musaeum_shm::outline::{self, OUTLINE_PAGE, OutlineEntry};
 use musaeum_shm::slab::SlabError;
 use musaeum_shm::wire::{
     AnalyzeJob, FatalCode, HostMessage, InitParams, PROTOCOL_VERSION, RenderJob, TextJob,
@@ -131,6 +132,11 @@ pub trait Engine {
 
     /// Reads a page's text layer. A page without one has an empty layer.
     fn text_layer(&mut self, page: u32) -> Result<TextLayer, TileFailure>;
+
+    /// The document's outline, in reading order. Formats without one have none.
+    fn outline(&mut self) -> Vec<OutlineEntry> {
+        Vec::new()
+    }
 
     /// Gives back whatever memory can be rebuilt later.
     fn trim(&mut self);
@@ -393,12 +399,16 @@ fn extract_text<E: Engine>(engine: &mut E, slab: &PixelSlab, job: TextJob) -> Wo
         Ok(target) => target,
         Err(_) => return failed(TileFailure::InvalidSlot),
     };
-    if page as usize >= engine.page_sizes().len() {
+    let layer = if page == OUTLINE_PAGE {
+        // The outline travels as the text layer of a page no document has.
+        outline::to_text_layer(&engine.outline())
+    } else if page as usize >= engine.page_sizes().len() {
         return failed(TileFailure::OutOfBounds);
-    }
-    let layer = match engine.text_layer(page) {
-        Ok(layer) => layer,
-        Err(failure) => return failed(failure),
+    } else {
+        match engine.text_layer(page) {
+            Ok(layer) => layer,
+            Err(failure) => return failed(failure),
+        }
     };
     // SAFETY: as for a render, the host gave this worker the slot until the report goes out,
     // and `slot_ptr` checked that the whole tile is mapped.

@@ -12,13 +12,14 @@ use std::ptr;
 use std::time::Instant;
 
 use musaeum_ingest::parse::pdf_catalog::{Direction, PageLayout, catalog_hints};
+use musaeum_shm::outline::{MAX_OUTLINE_DEPTH, MAX_OUTLINE_ENTRIES, OutlineEntry};
 use musaeum_shm::tile::{page_pixels, tile_in_page};
 use musaeum_shm::wire::TileFailure;
 use musaeum_shm::{PageContent, PageGeometry, TILE_SIZE, TILE_STRIDE, TextLayer, TileKey, Word};
 use musaeum_worker::{CancelProbe, Engine, Hints, RenderOutcome};
 use pdfium_render::prelude::{
-    FPDF_BOOL, FPDF_DOCUMENT, FPDF_LIBRARY_CONFIG, FPDF_PAGE, FPDF_PAGEOBJECT, FPDF_TEXTPAGE,
-    FS_MATRIX, FS_RECTF, FS_SIZEF, IFSDK_PAUSE, Pdfium as Binder, PdfiumError,
+    FPDF_BOOKMARK, FPDF_BOOL, FPDF_DOCUMENT, FPDF_LIBRARY_CONFIG, FPDF_PAGE, FPDF_PAGEOBJECT,
+    FPDF_TEXTPAGE, FS_MATRIX, FS_RECTF, FS_SIZEF, IFSDK_PAUSE, Pdfium as Binder, PdfiumError,
     PdfiumLibraryBindings,
 };
 
@@ -667,8 +668,99 @@ impl Engine for Document<'_, '_> {
         layer
     }
 
+    /// The bookmarks, depth first, as a reader's table of contents lists them.
+    fn outline(&mut self) -> Vec<OutlineEntry> {
+        let bindings = &self.pdfium.bindings;
+        let document = self.handle;
+        let mut entries = Vec::new();
+        // SAFETY: every bookmark, action and destination handle comes from this document, which
+        // stays open throughout; PDFium owns them all and none is freed here.
+        let first = unsafe { bindings.FPDFBookmark_GetFirstChild(document, std::ptr::null_mut()) };
+        let mut stack = Vec::new();
+        if !first.is_null() {
+            stack.push((first, 0u16));
+        }
+        let mut visited = 0usize;
+        while let Some((bookmark, level)) = stack.pop() {
+            visited += 1;
+            // A damaged outline can point back at itself; a real one ends long before this.
+            if visited > MAX_OUTLINE_VISITS || entries.len() >= MAX_OUTLINE_ENTRIES {
+                break;
+            }
+            // SAFETY: as above.
+            let next = unsafe { bindings.FPDFBookmark_GetNextSibling(document, bookmark) };
+            if !next.is_null() {
+                stack.push((next, level));
+            }
+            if level < MAX_OUTLINE_DEPTH {
+                // SAFETY: as above.
+                let child = unsafe { bindings.FPDFBookmark_GetFirstChild(document, bookmark) };
+                if !child.is_null() {
+                    stack.push((child, level + 1));
+                }
+            }
+            entries.push(OutlineEntry {
+                level,
+                page: self.bookmark_page(bookmark),
+                title: self.bookmark_title(bookmark),
+            });
+        }
+        entries
+    }
+
     fn trim(&mut self) {
         self.release_pages();
+    }
+}
+
+impl Document<'_, '_> {
+    /// A bookmark's title, which PDFium gives as UTF-16 with a terminator.
+    fn bookmark_title(&self, bookmark: FPDF_BOOKMARK) -> String {
+        let bindings = &self.pdfium.bindings;
+        // SAFETY: with no buffer PDFium only returns the title's length in bytes; the second call
+        // writes at most the buffer's own length.
+        let bytes =
+            unsafe { bindings.FPDFBookmark_GetTitle(bookmark, std::ptr::null_mut(), 0) } as usize;
+        if !(2..=MAX_TITLE_BYTES_UTF16).contains(&bytes) {
+            return String::new();
+        }
+        let mut buffer = vec![0u16; bytes.div_ceil(2)];
+        // SAFETY: as above.
+        let written = unsafe {
+            bindings.FPDFBookmark_GetTitle(
+                bookmark,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * 2) as _,
+            )
+        } as usize;
+        let units = (written.min(buffer.len() * 2) / 2).saturating_sub(1);
+        String::from_utf16_lossy(&buffer[..units])
+    }
+
+    /// The page a bookmark leads to, by its destination or by a go-to action.
+    fn bookmark_page(&self, bookmark: FPDF_BOOKMARK) -> Option<u32> {
+        let bindings = &self.pdfium.bindings;
+        let document = self.handle;
+        // SAFETY: handles of this open document, owned by PDFium.
+        let mut destination = unsafe { bindings.FPDFBookmark_GetDest(document, bookmark) };
+        if destination.is_null() {
+            // SAFETY: as above.
+            let action = unsafe { bindings.FPDFBookmark_GetAction(bookmark) };
+            // SAFETY: as above; the action is checked to be a go-to before its destination is read.
+            if !action.is_null() && unsafe { bindings.FPDFAction_GetType(action) } == PDFACTION_GOTO
+            {
+                // SAFETY: a go-to action of this open document.
+                destination = unsafe { bindings.FPDFAction_GetDest(document, action) };
+            }
+        }
+        if destination.is_null() {
+            return None;
+        }
+        // SAFETY: as above.
+        let index = unsafe { bindings.FPDFDest_GetDestPageIndex(document, destination) };
+        u32::try_from(index)
+            .ok()
+            .filter(|page| (*page as usize) < self.sizes.len())
     }
 }
 
@@ -684,6 +776,13 @@ impl Drop for Document<'_, '_> {
         }
     }
 }
+
+/// `PDFACTION_GOTO` of `fpdf_doc.h`: an action that goes to a place in the same document.
+const PDFACTION_GOTO: u32 = 1;
+/// Bookmarks looked at before the outline is taken as damaged and cut.
+const MAX_OUTLINE_VISITS: usize = 100_000;
+/// The longest title read, in bytes of UTF-16.
+const MAX_TITLE_BYTES_UTF16: usize = 8 << 10;
 
 const IDENTITY: FS_MATRIX = FS_MATRIX {
     a: 1.0,

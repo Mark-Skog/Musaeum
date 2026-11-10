@@ -2151,8 +2151,11 @@ dependencies = [
 name = "musaeum-desktop"
 version = "0.0.1"
 dependencies = [
+ "blake3",
  "musaeum-core",
+ "musaeum-flow",
  "musaeum-fs",
+ "musaeum-ingest",
  "musaeum-library",
  "musaeum-sandbox",
  "musaeum-shm",

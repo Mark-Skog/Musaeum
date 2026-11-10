@@ -7,32 +7,11 @@ use std::path::Path;
 
 use musaeum_core::{Direction, DocumentHints, Orientation, PageLayout};
 use musaeum_library::{
-    DocumentGeometry, Library, LibraryOptions, LibraryPaths, OpenedFile, PageOrientation,
-    PageRecord, ReadingMode, ReadingState, Spreads,
+    DocumentGeometry, Library, OpenedFile, PageOrientation, PageRecord, ReadingMode, ReadingState,
+    Spreads,
 };
 use musaeum_shm::PageGeometry;
 use serde::{Deserialize, Serialize};
-
-/// Opens the library named on the command line, or the usual one if there is one already.
-pub fn open_library(directory: Option<&Path>) -> Option<Library> {
-    let paths = match directory {
-        Some(directory) => LibraryPaths::in_directory(directory),
-        None => {
-            let paths = LibraryPaths::default_location().ok()?;
-            if !paths.library_db().exists() {
-                return None;
-            }
-            paths
-        }
-    };
-    match Library::open(paths, LibraryOptions::default()) {
-        Ok(library) => Some(library),
-        Err(error) => {
-            eprintln!("reading without a library, so nothing will be remembered: {error}");
-            None
-        }
-    }
-}
 
 /// The saved position, as the page sends and receives it.
 #[derive(Clone, Debug, Deserialize, Serialize)]

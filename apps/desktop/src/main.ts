@@ -1,78 +1,23 @@
 /**
- * The main thread. Its job in the tile pipeline is deliberately small: pick a delivery path,
- * start things, pass input along, and on Path B copy tiles from the WebView2 buffer into the
- * worker's ring.
+ * The main page. With no document on the command line, it is the app: the library, and the
+ * reader a book opens in. With one, it is the page of Phases 0 to 2, which opens that document
+ * right away for the benchmarks and the tests that drive the window: those keep measuring exactly
+ * what they measured before.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 
-import { Samples } from './bench/metrics';
 import { runBook } from './book-host';
-import type { FromWorker, Inspection, ReaderStatus, ToWorker } from './compositor/messages';
-import { type DeliveryEvidence, type DeliveryPlan, planDelivery } from './delivery-select';
-import { mainThreadSeesHostWrites, probeSharedBuffer } from './probe';
-import {
-  type BenchOptions,
-  type DeliveryPath,
-  PROBE_MAGIC,
-  RING_MAGIC,
-  type SessionInfo,
-  SLAB_MAGIC,
-  type StartupOptions,
-  TILE_BYTES,
-} from './protocol';
-import { RingPump } from './ring-pump';
-import { createSabRing, SabRingProducer } from './sab-ring';
-import { SharedBufferInbox, type WebviewApi } from './shared-buffer-inbox';
+import type { ReaderStatus, ToWorker } from './compositor/messages';
+import { FixedReader } from './fixed/fixed-reader';
+import type { BenchOptions, StartupOptions } from './protocol';
 
-/** A power of two, in tiles. Holds about two screens' worth of tiles in transit. */
-const SAB_RING_CAPACITY = 32;
-const BUFFER_WAIT_MS = 10_000;
 /** How often the main-thread stress test blocks the thread. */
 const STRESS_PERIOD_MS = 200;
 /** How long the memory scenario holds each resting state. */
 const MEMORY_SETTLE_MS = 15_000;
 const MEMORY_READING_MS = 30_000;
 const MEMORY_SCROLL_EVERY_MS = 1000;
-
-declare global {
-  interface Window {
-    chrome?: { webview?: WebviewApi };
-  }
-}
-
-interface SharedBuffers {
-  slab: ArrayBuffer;
-  ring: ArrayBuffer;
-}
-
-interface OpenedSession {
-  session: SessionInfo;
-  /** The WebView2 buffers of Paths B and C. Null on Path A. */
-  buffers: SharedBuffers | null;
-}
-
-/** What `open_session` rejects with. */
-interface OpenSessionError {
-  deliveryFailed: boolean;
-  message: string;
-}
-
-/** A delivery path failed to open, and the next one may still work. */
-class DeliveryPathFailure extends Error {}
-
-/** Keys the reader uses, which the page must not also act on. */
-const READER_KEYS = new Set([
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-  'PageUp',
-  'PageDown',
-  'Home',
-  'End',
-  ' ',
-]);
 
 /**
  * The reading bar: the mode, the page turn, facing pages and the zoom. It only sends what was
@@ -113,175 +58,6 @@ function connectReadingBar(send: (message: ToWorker) => void): (status: ReaderSt
     zoom.value = `${Math.round(status.zoom * 100)}%`;
     page.value = `${status.page + 1} / ${status.pageCount}`;
   };
-}
-
-/**
- * Sends what the pointer and the keyboard do to the compositor, in device pixels. `status` gives
- * what the reading bar last showed, which the shortcuts that act like its controls start from.
- */
-function forwardInput(
-  canvas: HTMLCanvasElement,
-  send: (message: ToWorker) => void,
-  status: () => ReaderStatus | null,
-): void {
-  const at = (event: MouseEvent): { x: number; y: number } => {
-    const box = canvas.getBoundingClientRect();
-    return {
-      x: (event.clientX - box.left) * devicePixelRatio,
-      y: (event.clientY - box.top) * devicePixelRatio,
-    };
-  };
-  canvas.addEventListener(
-    'wheel',
-    (event) => {
-      event.preventDefault();
-      const legacy = (event as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
-      send({
-        type: 'wheel',
-        deltaX: event.deltaX,
-        deltaY: event.deltaY,
-        deltaMode: event.deltaMode,
-        wheelDeltaY: legacy,
-        ctrlKey: event.ctrlKey,
-        ...at(event),
-        timeMs: event.timeStamp,
-      });
-    },
-    { passive: false },
-  );
-  canvas.addEventListener('pointerdown', (event) => {
-    canvas.setPointerCapture(event.pointerId);
-    send({ type: 'pointer', phase: 'down', ...at(event) });
-  });
-  canvas.addEventListener('pointermove', (event) => {
-    if (canvas.hasPointerCapture(event.pointerId)) {
-      send({ type: 'pointer', phase: 'move', ...at(event) });
-    }
-  });
-  const end = (event: PointerEvent): void => {
-    if (canvas.hasPointerCapture(event.pointerId)) {
-      canvas.releasePointerCapture(event.pointerId);
-    }
-    send({ type: 'pointer', phase: 'up', ...at(event) });
-  };
-  canvas.addEventListener('pointerup', end);
-  canvas.addEventListener('pointercancel', end);
-  window.addEventListener('keydown', (event) => {
-    const target = event.target as HTMLElement | null;
-    const typing = target !== null && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName);
-    if (typing && target.id !== 'page-turn') {
-      return;
-    }
-    const plain = !event.ctrlKey && !event.altKey && !event.metaKey;
-    const shown = status();
-    // The reading bar's controls, from the keyboard: C switches between paginated and continuous,
-    // A turns the page-turn animation on or off, which only paginated reading has.
-    if (plain && shown !== null && (event.key === 'c' || event.key === 'C')) {
-      event.preventDefault();
-      send({ type: 'set-mode', mode: shown.mode === 'paginated' ? 'continuous' : 'paginated' });
-      return;
-    }
-    if (plain && shown !== null && (event.key === 'a' || event.key === 'A')) {
-      event.preventDefault();
-      if (shown.mode === 'paginated') {
-        send({ type: 'set-animation', on: !shown.animating });
-      }
-      return;
-    }
-    const zoomKey = event.ctrlKey && ['=', '+', '-', '0'].includes(event.key);
-    if (zoomKey || (plain && READER_KEYS.has(event.key))) {
-      event.preventDefault();
-      send({ type: 'key', key: event.key, ctrl: event.ctrlKey, shift: event.shiftKey });
-    }
-  });
-}
-
-/** Tries everything the choice of path depends on, on this runtime, right now. */
-async function gatherDeliveryEvidence(
-  worker: Worker,
-  inbox: SharedBufferInbox | null,
-  options: StartupOptions,
-): Promise<DeliveryEvidence> {
-  const faults = options.deliveryFaults;
-  const evidence: DeliveryEvidence = {
-    hasWebviewApi: inbox !== null,
-    hostBufferError: null,
-    mainThreadSeesHostWrites: false,
-    crossOriginIsolated: crossOriginIsolated && !faults.includes('not-isolated'),
-    hasAtomicsWaitAsync: typeof Atomics.waitAsync === 'function',
-    workerProbes: [],
-  };
-  // Path A needs none of this, so asking for it leaves the shared buffers alone.
-  if (inbox === null || options.delivery === 'a') {
-    return evidence;
-  }
-  try {
-    await invoke('open_delivery_probe');
-    const readOnly = await inbox.next(PROBE_MAGIC, BUFFER_WAIT_MS);
-    const readWrite = await inbox.next(PROBE_MAGIC, BUFFER_WAIT_MS);
-    evidence.mainThreadSeesHostWrites = await mainThreadSeesHostWrites(readOnly);
-    evidence.workerProbes = [
-      await probeSharedBuffer(worker, 'read-only', readOnly, 0, false, faults),
-      await probeSharedBuffer(worker, 'read-write', readWrite, 1, true, faults),
-    ];
-  } catch (error) {
-    evidence.hostBufferError = error instanceof Error ? error.message : String(error);
-  }
-  return evidence;
-}
-
-async function openOnPath(
-  document: string,
-  path: DeliveryPath,
-  workers: number,
-  inbox: SharedBufferInbox | null,
-): Promise<OpenedSession> {
-  let session: SessionInfo;
-  try {
-    session = await invoke<SessionInfo>('open_session', {
-      args: { document, delivery: path, workers },
-    });
-  } catch (error) {
-    const failure = error as OpenSessionError;
-    throw failure.deliveryFailed
-      ? new DeliveryPathFailure(failure.message)
-      : new Error(failure.message);
-  }
-  if (path === 'a') {
-    return { session, buffers: null };
-  }
-  if (inbox === null) {
-    throw new DeliveryPathFailure('chrome.webview is missing');
-  }
-  try {
-    const [ring, slab] = await Promise.all([
-      inbox.next(RING_MAGIC, BUFFER_WAIT_MS),
-      inbox.next(SLAB_MAGIC, BUFFER_WAIT_MS),
-    ]);
-    return { session, buffers: { ring, slab } };
-  } catch (error) {
-    throw new DeliveryPathFailure(error instanceof Error ? error.message : String(error));
-  }
-}
-
-/** Walks down the plan until a path opens, recording every path that failed on the way. */
-async function openFirstWorkingPath(
-  document: string,
-  plan: DeliveryPlan,
-  workers: number,
-  inbox: SharedBufferInbox | null,
-): Promise<OpenedSession> {
-  for (const path of plan.candidates) {
-    try {
-      return await openOnPath(document, path, workers, inbox);
-    } catch (error) {
-      if (!(error instanceof DeliveryPathFailure)) {
-        throw error;
-      }
-      plan.rejected.push({ path, reason: error.message });
-    }
-  }
-  throw new Error(`no delivery path can be used: ${JSON.stringify(plan.rejected)}`);
 }
 
 /** Blocks the main thread periodically, the way a heavy UI update would. */
@@ -337,7 +113,8 @@ async function runMemoryScenario(
   await invoke('bench_finish', { frontend: JSON.stringify(extra()) });
 }
 
-async function run(options: StartupOptions): Promise<void> {
+/** The page of Phases 0 to 2: one document, opened at start. */
+async function runDocument(options: StartupOptions): Promise<void> {
   const hud = document.getElementById('hud') as HTMLPreElement;
   const canvas = document.getElementById('surface') as HTMLCanvasElement;
   const { bench } = options;
@@ -348,183 +125,66 @@ async function run(options: StartupOptions): Promise<void> {
     return;
   }
   if (options.document === null) {
-    hud.textContent =
-      'Abra um documento com: musaeum-desktop --document CAMINHO (PDF, CBZ, CBR, DjVu) ' +
-      'ou --epub CAMINHO';
+    hud.textContent = 'Nada a medir.';
     if (measuringMemory) {
       await runMemoryScenario(null, () => ({}));
     }
     return;
   }
 
-  const worker = new Worker(new URL('./compositor/worker.ts', import.meta.url), { type: 'module' });
-  const send = (message: ToWorker, transfer: Transferable[] = []): void => {
-    worker.postMessage(message, transfer);
-  };
-
-  const copySamples = new Samples(1 << 16);
-  const mainFrameIntervals = new Samples(1 << 16);
-  let pump: RingPump | null = null;
-  let finished = false;
-  let report: Record<string, unknown> = {};
   const nowEpochMs = (): number => performance.timeOrigin + performance.now();
   const openRequestedAt = nowEpochMs();
   const uptimeWhenOpening = await invoke<number>('uptime_ms');
   let opening: Record<string, number> = {};
-  let documentId: number | null = null;
   let showStatus: ((status: ReaderStatus) => void) | null = null;
-  let lastStatus: ReaderStatus | null = null;
-  const savedStates: unknown[] = [];
-  const inspections: ((inspection: Inspection) => void)[] = [];
-  // The compositor drops what it is sent before it is ready, so the hooks for tests wait for it.
-  let compositorReady = false;
   let exposeTestHooks: (() => void) | null = null;
+  let compositorReady = false;
+  let reader: FixedReader | null = null;
 
-  worker.addEventListener('message', (event: MessageEvent<FromWorker>) => {
-    const message = event.data;
-    switch (message.type) {
-      case 'hud':
-        hud.textContent = message.text;
-        break;
-      case 'status':
-        lastStatus = message;
-        showStatus?.(message);
-        break;
-      case 'inspection':
-        inspections.shift()?.(message);
-        break;
-      case 'reading-state':
-        savedStates.push(message.state);
-        if (documentId !== null) {
-          const reading = { document: documentId, reading: message.state };
-          invoke('save_reading_state', reading).catch((error) =>
-            console.warn('saving the reading position failed', error),
-          );
-        }
-        break;
-      case 'ready':
-        console.info(`GPU: ${message.gpu}; clock round trip ${message.clockRttMs.toFixed(2)} ms`);
-        compositorReady = true;
-        exposeTestHooks?.();
-        break;
-      case 'bench-done':
-        finished = true;
-        void invoke('bench_finish', {
-          frontend: JSON.stringify({
-            ...message.report,
-            ...report,
-            ...opening,
-            userAgent: navigator.userAgent,
-            devicePixelRatio,
-            hardwareConcurrency: navigator.hardwareConcurrency,
-            crossOriginIsolated,
-            mainThreadCopyMs: copySamples.summary(),
-            mainThreadFrameIntervalMs: mainFrameIntervals.summary(),
-            badSlots: pump?.badSlots ?? 0,
-          }),
-        });
-        break;
-      case 'fatal':
-        finished = true;
-        void failBench(bench, `compositor: ${message.message}`);
-        break;
-      case 'first-sharp':
-        opening = {
-          // From asking for the document, which is what a reader who is already in the app waits.
-          openToFirstSharpMs: message.atEpochMs - openRequestedAt,
-          // From the program starting, which is what someone opening a file from outside waits.
-          coldStartToFirstSharpMs: uptimeWhenOpening + (message.atEpochMs - openRequestedAt),
-        };
-        break;
-      case 'probe-reply':
-        break;
-    }
-  });
-  worker.addEventListener('error', (event) => {
-    finished = true;
-    void failBench(bench, `compositor failed to load: ${event.message}`);
-  });
-
-  // Listening starts before the host is asked to post anything.
-  const webview = window.chrome?.webview;
-  const inbox = webview !== undefined ? new SharedBufferInbox(webview) : null;
-
-  const selectionStarted = performance.now();
-  const evidence = await gatherDeliveryEvidence(worker, inbox, options);
-  const plan = planDelivery(options.delivery, evidence);
-  const { session, buffers } = await openFirstWorkingPath(
-    options.document,
-    plan,
-    options.workers,
-    inbox,
-  );
-  for (const { path, reason } of plan.rejected) {
-    console.warn(`delivery path ${path} is not available: ${reason}`);
-  }
-  documentId = session.documentId;
-  report = {
-    session,
-    sharedBufferProbes: evidence.workerProbes,
-    deliverySelection: {
-      requested: options.delivery,
-      path: session.delivery,
-      rejected: plan.rejected,
-      evidence,
-      elapsedMs: performance.now() - selectionStarted,
+  reader = await FixedReader.open({
+    options,
+    canvas,
+    document: options.document,
+    shortcuts: true,
+    bench,
+    onStatus: (status) => showStatus?.(status),
+    onHud: (text) => {
+      hud.textContent = text;
     },
-  };
-
-  const ring = session.delivery === 'b' ? createSabRing(SAB_RING_CAPACITY) : null;
-  if (buffers !== null && ring !== null) {
-    pump = new RingPump(buffers.slab, buffers.ring, new SabRingProducer(ring), (ms) =>
-      copySamples.add(ms),
-    );
-  }
-
-  const devicePixels = (element: HTMLElement): { width: number; height: number } => ({
-    width: Math.max(1, Math.round(element.clientWidth * devicePixelRatio)),
-    height: Math.max(1, Math.round(element.clientHeight * devicePixelRatio)),
-  });
-
-  const size = devicePixels(canvas);
-  const offscreen = canvas.transferControlToOffscreen();
-  const direct = session.delivery === 'c' ? buffers : null;
-  const tileBudgetBytes =
-    options.tileBudgetMb !== null
-      ? options.tileBudgetMb * 1024 * 1024
-      : options.gpuLayers !== null
-        ? options.gpuLayers * TILE_BYTES
-        : null;
-  send(
-    {
-      type: 'init',
-      canvas: offscreen,
-      width: size.width,
-      height: size.height,
-      session,
-      ring,
-      direct: direct !== null ? { slab: direct.slab, ring: direct.ring } : null,
-      // The compositor plays scripted scenarios, and the memory scenario is not one of those.
-      bench: measuringMemory ? null : bench,
-      devicePixelRatio,
-      comfortableScale: bench?.zoom ?? 1.5 * devicePixelRatio,
-      prefersReducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
-      screenWidth: Math.round(screen.width * devicePixelRatio),
-      screenHeight: Math.round(screen.height * devicePixelRatio),
-      tileBudgetBytes,
+    onFatal: (message) => void failBench(bench, message),
+    onFirstSharp: (atEpochMs) => {
+      opening = {
+        // From asking for the document, which is what a reader who is already in the app waits.
+        openToFirstSharpMs: atEpochMs - openRequestedAt,
+        // From the program starting, which is what someone opening a file from outside waits.
+        coldStartToFirstSharpMs: uptimeWhenOpening + (atEpochMs - openRequestedAt),
+      };
     },
-    direct !== null ? [offscreen, direct.slab, direct.ring] : [offscreen],
-  );
+    onReady: () => {
+      compositorReady = true;
+      exposeTestHooks?.();
+    },
+    onBenchDone: (report) => {
+      void invoke('bench_finish', {
+        frontend: JSON.stringify({
+          ...report,
+          ...reader?.report,
+          ...opening,
+          userAgent: navigator.userAgent,
+          devicePixelRatio,
+          hardwareConcurrency: navigator.hardwareConcurrency,
+          crossOriginIsolated,
+          mainThreadCopyMs: reader?.copySamples.summary(),
+          mainThreadFrameIntervalMs: reader?.mainFrameIntervals.summary(),
+          badSlots: reader?.badSlots() ?? 0,
+        }),
+      });
+    },
+  });
+  const opened = reader;
   if (bench === null) {
-    showStatus = connectReadingBar(send);
+    showStatus = connectReadingBar((message) => opened.send(message));
   }
-
-  new ResizeObserver(() => {
-    const { width, height } = devicePixels(canvas);
-    send({ type: 'resize', width, height });
-  }).observe(canvas);
-
-  forwardInput(canvas, send, () => lastStatus);
 
   if (options.e2e) {
     // For tests that drive this window from outside, through the WebView's debugging protocol:
@@ -533,14 +193,10 @@ async function run(options: StartupOptions): Promise<void> {
     // would be dropped, and the test would wait for its answer forever.
     exposeTestHooks = () => {
       (window as unknown as { musaeumE2E: unknown }).musaeumE2E = {
-        session,
-        status: () => lastStatus,
-        saved: () => savedStates.slice(),
-        inspect: () =>
-          new Promise<Inspection>((resolve) => {
-            inspections.push(resolve);
-            send({ type: 'inspect' });
-          }),
+        session: opened.session,
+        status: () => opened.status(),
+        saved: () => opened.saved(),
+        inspect: () => opened.inspect(),
         devicePixelRatio,
         canvas: () => canvas.getBoundingClientRect().toJSON(),
       };
@@ -556,7 +212,7 @@ async function run(options: StartupOptions): Promise<void> {
   if (measuringMemory) {
     // A notch of a wheel, as the reader's own input would arrive.
     const scroll = (deltaPx: number): void =>
-      send({
+      opened.send({
         type: 'wheel',
         deltaX: 0,
         deltaY: deltaPx / devicePixelRatio,
@@ -566,26 +222,9 @@ async function run(options: StartupOptions): Promise<void> {
         y: 0,
         timeMs: performance.now(),
       });
-    void runMemoryScenario(scroll, () => report).catch((error) =>
+    void runMemoryScenario(scroll, () => opened.report).catch((error) =>
       failBench(bench, String(error)),
     );
-  }
-
-  let lastFrame = 0;
-  const onAnimationFrame = (now: number): void => {
-    if (lastFrame > 0) {
-      mainFrameIntervals.add(now - lastFrame);
-    }
-    lastFrame = now;
-    pump?.poll();
-    if (!finished) {
-      requestAnimationFrame(onAnimationFrame);
-    }
-  };
-  // Only Path B needs the main thread for tiles, but measuring its responsiveness on both
-  // paths is what shows whether the stress test really happened.
-  if (pump !== null || (bench !== null && !measuringMemory)) {
-    requestAnimationFrame(onAnimationFrame);
   }
 }
 
@@ -593,7 +232,17 @@ async function main(): Promise<void> {
   let options: StartupOptions | null = null;
   try {
     options = await invoke<StartupOptions>('startup_options');
-    await run(options);
+    const single = options.bench !== null || options.epub !== null || options.document !== null;
+    if (single) {
+      document.getElementById('app')?.remove();
+      await runDocument(options);
+      return;
+    }
+    for (const id of ['surface', 'reading-bar', 'hud']) {
+      document.getElementById(id)?.remove();
+    }
+    const { mountApp } = await import('./app/main');
+    mountApp(options);
   } catch (error) {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
     await failBench(options?.bench ?? null, message);

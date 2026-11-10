@@ -13,8 +13,9 @@ use crate::tile::{PageGeometry, TileKey};
 
 /// Bumped on any change to this file or to the shared-memory layouts. Version 2 renders tiles at
 /// any scale instead of powers of two, and adds the catalog's hints. Version 3 adds the jobs that
-/// classify a page and read its text layer.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// classify a page and read its text layer. Version 4 reads the document's outline as the text layer
+/// of [`crate::OUTLINE_PAGE`].
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Length of every message.
 pub const MESSAGE_LEN: usize = 48;
 

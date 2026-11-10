@@ -1,12 +1,20 @@
 /**
- * The reader, running in its own iframe at its own origin. It has the book's bytes and the
- * means to lay them out, and it has no way to reach the app's IPC: the only thing it can do is
- * send the main page the few messages in `messages.ts`.
+ * The reader, running in its own iframe at its own origin. It has the book's files and the means
+ * to lay them out, and it has no way to reach the app's IPC: the only thing it can do is send the
+ * main page the few messages in `messages.ts`.
+ *
+ * It opens a book two ways. A book of the library comes normalized, file by file, from `pkg/`
+ * (`?package=1`): that is the app's reader. An EPUB named on the command line comes as one file,
+ * `book.epub`, for the benchmarks of Phases 0 and 3, which measure the engine on the raw book.
  */
 
+import { EPUB } from '../../../../vendor/foliate-js/epub.js';
+import { sectionFrame } from '../../../../vendor/foliate-js/paginator.js';
 import { type FluidEngine, openEpub } from './foliate-adapter';
+import { FlowEngine, type FlowBook } from './flow-engine';
 import { pickSections, runLayoutBench } from './layout-bench';
-import type { FromReader, ReaderScenario, ToReader } from './messages';
+import { type FromReader, isToReader, type ReaderScenario, type ToReader } from './messages';
+import { packageLoader } from './package-loader';
 import { scanSections } from './security-scan';
 import type { Typography } from './typography';
 
@@ -19,6 +27,8 @@ const PAGE_TURN_MS = 400;
 const parameters = new URLSearchParams(location.search);
 const hostOrigin = parameters.get('host') ?? '';
 const sectionSandbox = parameters.get('sections') ?? 'allow-same-origin';
+const isPackage = parameters.get('package') === '1';
+const e2e = parameters.get('e2e') === '1';
 
 function send(message: FromReader): void {
   parent.postMessage(message, hostOrigin);
@@ -95,7 +105,8 @@ async function runScenario(engine: FluidEngine, scenario: ReaderScenario): Promi
   }
 }
 
-async function main(): Promise<void> {
+/** The benchmarks' reader: one EPUB file, laid out by foliate-js as it is. */
+async function openRawBook(): Promise<void> {
   const started = performance.now();
   const response = await fetch('book.epub', { cache: 'no-store', credentials: 'omit' });
   if (!response.ok) {
@@ -121,6 +132,88 @@ async function main(): Promise<void> {
   send({ type: 'ready', sections: engine.sectionCount, openMs });
 }
 
+/** The app's reader: a normalized book of the library. */
+async function openPackage(): Promise<void> {
+  const started = performance.now();
+  sectionFrame.sandbox = sectionSandbox;
+  const book = (await new EPUB(await packageLoader()).init()) as unknown as FlowBook;
+  const container = document.createElement('div');
+  container.id = 'book';
+  document.body.append(container);
+  let engine: FlowEngine | null = null;
+
+  window.addEventListener('message', (event: MessageEvent<unknown>) => {
+    // A section shares this origin, so only the page above is believed.
+    if (event.source !== parent || !isToReader(event.data)) {
+      return;
+    }
+    const message = event.data;
+    switch (message.type) {
+      case 'open': {
+        if (engine !== null) {
+          return;
+        }
+        engine = new FlowEngine(
+          book,
+          container,
+          message.sections,
+          message.totalText,
+          {
+            mode: message.mode,
+            animated: message.animated,
+            style: message.style,
+            sandbox: sectionSandbox,
+            reducedMotion: message.reducedMotion,
+          },
+          send,
+        );
+        engine
+          .open(message.position)
+          .then(() => send({ type: 'opened', openMs: performance.now() - started }))
+          .catch(fail);
+        return;
+      }
+      case 'set-mode':
+        void engine?.setMode(message.mode).catch(fail);
+        return;
+      case 'set-animation':
+        engine?.setAnimated(message.animated);
+        return;
+      case 'set-style':
+        void engine?.setStyle(message.style).catch(fail);
+        return;
+      case 'go-to':
+        void engine?.goTo(message.target).catch(fail);
+        return;
+      case 'turn':
+        void engine?.turn(message.step).catch(fail);
+        return;
+      case 'key':
+        engine?.key(message.key, message.shift);
+        return;
+      default:
+        return;
+    }
+  });
+  window.addEventListener('keydown', (event) => engine?.onKey(event));
+
+  if (e2e) {
+    // For tests that drive the real window from outside: what the reader holds, exactly.
+    (window as unknown as { musaeumReaderE2E: unknown }).musaeumReaderE2E = {
+      inspect: () => engine?.inspect() ?? null,
+      anchor: () => engine?.currentAnchor() ?? null,
+      idle: () => engine?.idle() ?? Promise.resolve(),
+      goToFraction: (fraction: number) => engine?.goTo({ fraction }) ?? Promise.resolve(),
+      goToSection: (index: number) => engine?.goToSection(index) ?? Promise.resolve(),
+      cuts: () => engine?.cuts() ?? [],
+      seams: () => engine?.seams() ?? [],
+      plan: (index: number) => engine?.plan(index) ?? null,
+      clickLink: (href: string) => engine?.clickLink(href) ?? false,
+    };
+  }
+  send({ type: 'ready', sections: book.sections.length, openMs: performance.now() - started });
+}
+
 function fail(error: unknown): void {
   send({
     type: 'failed',
@@ -128,4 +221,4 @@ function fail(error: unknown): void {
   });
 }
 
-main().catch(fail);
+(isPackage ? openPackage() : openRawBook()).catch(fail);

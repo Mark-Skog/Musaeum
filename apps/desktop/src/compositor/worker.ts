@@ -245,11 +245,25 @@ class Compositor {
       case 'turn':
         reader.turn(message.step);
         break;
+      case 'go-to-page':
+        if (Number.isSafeInteger(message.page) && message.page >= 0 && message.page < reader.pageCount) {
+          reader.goToPage(message.page);
+        }
+        break;
       case 'zoom':
         reader.setZoom(reader.zoomFactor * message.factor, now);
         break;
       case 'inspect':
         post(this.inspect());
+        return;
+      case 'flush':
+        // The document is about to close: the position waiting out its pause is sent now.
+        if (this.player === null && this.pendingSnapshot !== null) {
+          this.saved = this.pendingSnapshot;
+          this.pendingSnapshot = null;
+          post({ type: 'reading-state', state: this.saved });
+        }
+        post({ type: 'flushed' });
         return;
       default:
         return;

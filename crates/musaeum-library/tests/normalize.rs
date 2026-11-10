@@ -8,7 +8,10 @@ use common::{TempDir, ingest_config};
 use gen_fixtures::flow;
 use musaeum_flow::package::MANIFEST_PATH;
 use musaeum_ingest::protocol::Format;
-use musaeum_library::{FlowStore, IngestClient, IngestConfig, NormalizeOutcome, check_normalized};
+use musaeum_library::{
+    CoverOutcome, FlowStore, ImageKind, IngestClient, IngestConfig, NormalizeOutcome,
+    check_normalized,
+};
 
 fn client() -> IngestClient {
     IngestClient::new(IngestConfig {
@@ -255,4 +258,39 @@ fn a_package_that_does_not_hold_together_is_refused() {
         ),
     ];
     assert!(check_normalized(broken).is_err());
+}
+
+#[test]
+fn a_cover_comes_back_alone_and_is_judged_by_its_bytes() {
+    let dir = TempDir::new();
+    let short = flow::book(false);
+    let mut client = client();
+    let cases: Vec<(&str, Format, Vec<u8>, bool)> = vec![
+        ("book.epub", Format::Epub, flow::epub3(&short), true),
+        ("book.azw3", Format::Azw3, flow::kf8(&short), true),
+        ("book.fb2", Format::Fb2, flow::fb2(&short, "utf-8"), true),
+        ("book.txt", Format::Txt, flow::txt(&short, "utf-8"), false),
+    ];
+    for (name, format, bytes, has_cover) in cases {
+        let path = dir.0.join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        let file = File::open(&path).unwrap();
+        match client.cover(&file, format) {
+            CoverOutcome::Cover { kind, bytes } => {
+                assert!(has_cover, "{name} has no cover, yet one came back");
+                assert_eq!(ImageKind::sniff(&bytes), Some(kind), "{name}");
+            }
+            CoverOutcome::NoCover => assert!(!has_cover, "{name} lost its cover"),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    assert_eq!(client.restarts(), 0);
+    assert_eq!(
+        ImageKind::sniff(b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+        None
+    );
+    assert_eq!(
+        ImageKind::sniff(b"RIFF\0\0\0\0WEBPVP8 "),
+        Some(ImageKind::Webp)
+    );
 }

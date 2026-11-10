@@ -268,6 +268,71 @@ fn check(state: &ReadingState) -> Result<()> {
     Ok(())
 }
 
+/// The longest Locator a reading state keeps, as JSON.
+const MAX_LOCATOR: usize = 16 << 10;
+/// The longest name and value of a setting.
+const MAX_PREFERENCE_KEY: usize = 64;
+const MAX_PREFERENCE_VALUE: usize = 64 << 10;
+
+/// Where a reader is in a flowing book, and how they read it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FlowReadingState {
+    /// The revision the position was taken on.
+    pub revision_id: Option<RevisionId>,
+    /// The Locator, as JSON: a canonical CFI, the text around it and the progressions.
+    pub locator: String,
+    /// How far through the book, from 0 to 1.
+    pub progress: f64,
+    /// Paginated or continuous.
+    pub mode: ReadingMode,
+    /// Whether paginated reading animates turning a page.
+    pub page_turn_animation: bool,
+    /// When it was saved, in milliseconds since the Unix epoch. Ignored when saving.
+    pub updated_at: i64,
+}
+
+fn check_flow(state: &FlowReadingState) -> Result<()> {
+    if !(state.progress.is_finite() && (0.0..=1.0).contains(&state.progress)) {
+        return Err(Error::Refused("progress goes from 0 to 1".to_owned()));
+    }
+    if state.locator.len() > MAX_LOCATOR {
+        return Err(Error::Refused(
+            "that Locator is too large to keep".to_owned(),
+        ));
+    }
+    match serde_json::from_str::<serde_json::Value>(&state.locator) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        _ => Err(Error::Refused("a Locator is a JSON object".to_owned())),
+    }
+}
+
+/// The document has to exist, and the revision, if there is one, has to be one of its own.
+fn check_owner(
+    transaction: &rusqlite::Transaction<'_>,
+    document: DocumentId,
+    revision: Option<RevisionId>,
+) -> Result<()> {
+    let known: Option<i64> = transaction
+        .prepare_cached("SELECT 1 FROM document WHERE id = ?1")?
+        .query_row([document], |row| row.get(0))
+        .optional()?;
+    if known.is_none() {
+        return Err(Error::NotFound(format!("there is no document {document}")));
+    }
+    if let Some(revision) = revision {
+        let owner: Option<DocumentId> = transaction
+            .prepare_cached("SELECT document_id FROM revision WHERE id = ?1")?
+            .query_row([revision], |row| row.get(0))
+            .optional()?;
+        if owner != Some(document) {
+            return Err(Error::Refused(format!(
+                "revision {revision} is not one of document {document}'s"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Which document a file being opened is, and its exact bytes, when the library knows them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenedFile {
@@ -331,24 +396,7 @@ impl Library {
         check(state)?;
         let state = state.clone();
         self.database().write(move |transaction| {
-            let known: Option<i64> = transaction
-                .prepare_cached("SELECT 1 FROM document WHERE id = ?1")?
-                .query_row([document], |row| row.get(0))
-                .optional()?;
-            if known.is_none() {
-                return Err(Error::NotFound(format!("there is no document {document}")));
-            }
-            if let Some(revision) = state.revision_id {
-                let owner: Option<DocumentId> = transaction
-                    .prepare_cached("SELECT document_id FROM revision WHERE id = ?1")?
-                    .query_row([revision], |row| row.get(0))
-                    .optional()?;
-                if owner != Some(document) {
-                    return Err(Error::Refused(format!(
-                        "revision {revision} is not one of document {document}'s"
-                    )));
-                }
-            }
+            check_owner(transaction, document, state.revision_id)?;
             transaction
                 .prepare_cached(
                     "INSERT INTO reading_state (document_id, revision_id, page, u, v, progress, mode,
@@ -373,6 +421,95 @@ impl Library {
                     state.spreads,
                     now_ms(),
                 ])?;
+            Ok(())
+        })
+    }
+
+    /// Where the reader left this flowing book, if they ever opened it.
+    pub fn flow_reading_state(&self, document: DocumentId) -> Result<Option<FlowReadingState>> {
+        self.database().read(|connection| {
+            Ok(connection
+                .prepare_cached(
+                    "SELECT revision_id, locator, progress, mode, page_turn_animation, updated_at
+                     FROM reading_state WHERE document_id = ?1 AND locator IS NOT NULL",
+                )?
+                .query_row([document], |row| {
+                    Ok(FlowReadingState {
+                        revision_id: row.get(0)?,
+                        locator: row.get(1)?,
+                        progress: row.get(2)?,
+                        mode: row.get(3)?,
+                        page_turn_animation: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                })
+                .optional()?)
+        })
+    }
+
+    /// Remembers where the reader is in a flowing book. The Locator is kept as the reader gave it,
+    /// once it is known to be a JSON object of reasonable size.
+    pub fn save_flow_reading_state(
+        &self,
+        document: DocumentId,
+        state: &FlowReadingState,
+    ) -> Result<()> {
+        check_flow(state)?;
+        let state = state.clone();
+        self.database().write(move |transaction| {
+            check_owner(transaction, document, state.revision_id)?;
+            transaction
+                .prepare_cached(
+                    "INSERT INTO reading_state (document_id, revision_id, page, u, v, progress, mode,
+                                                page_turn_animation, zoom, spreads, updated_at, locator)
+                     VALUES (?1, ?2, 0, 0, 0, ?3, ?4, ?5, 1, 'auto', ?6, ?7)
+                     ON CONFLICT (document_id) DO UPDATE SET
+                         revision_id = excluded.revision_id, progress = excluded.progress,
+                         mode = excluded.mode, page_turn_animation = excluded.page_turn_animation,
+                         updated_at = excluded.updated_at, locator = excluded.locator",
+                )?
+                .execute(params![
+                    document,
+                    state.revision_id,
+                    state.progress,
+                    state.mode,
+                    state.page_turn_animation,
+                    now_ms(),
+                    state.locator,
+                ])?;
+            Ok(())
+        })
+    }
+
+    /// A setting of the reader's, as the JSON it was saved as.
+    pub fn preference(&self, key: &str) -> Result<Option<String>> {
+        self.database().read(|connection| {
+            Ok(connection
+                .prepare_cached("SELECT value FROM preference WHERE key = ?1")?
+                .query_row([key], |row| row.get(0))
+                .optional()?)
+        })
+    }
+
+    /// Keeps a setting of the reader's. The value has to be JSON.
+    pub fn set_preference(&self, key: &str, value: &str) -> Result<()> {
+        if key.is_empty() || key.len() > MAX_PREFERENCE_KEY || value.len() > MAX_PREFERENCE_VALUE {
+            return Err(Error::Refused(
+                "that setting is too large to keep".to_owned(),
+            ));
+        }
+        if serde_json::from_str::<serde_json::Value>(value).is_err() {
+            return Err(Error::Refused("a setting is kept as JSON".to_owned()));
+        }
+        let (key, value) = (key.to_owned(), value.to_owned());
+        self.database().write(move |transaction| {
+            transaction
+                .prepare_cached(
+                    "INSERT INTO preference (key, value, updated_at) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value,
+                         updated_at = excluded.updated_at",
+                )?
+                .execute(params![key, value, now_ms()])?;
             Ok(())
         })
     }

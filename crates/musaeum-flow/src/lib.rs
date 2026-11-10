@@ -24,7 +24,7 @@ pub mod source;
 pub mod split;
 pub mod url;
 pub mod xml;
-mod zipwrite;
+pub mod zipwrite;
 
 /// The version of everything that decides the normalized form. A CFI or a text offset is only
 /// exact for the version that produced it, so every Locator carries it, and a new version means
