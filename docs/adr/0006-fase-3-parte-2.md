@@ -362,4 +362,10 @@ O projeto auditou a Parte 2 e o marco Alpha e os aprovou. As duas decisões que 
    abre o endereço no navegador padrão, e só com o clique nele.
 
 Depois da aprovação, D12 foi aplicada como descrito na seção 4, com os testes do validador de endereços em
-`links.rs` e a conferência do diálogo no teste na janela (`tools/e2e-alpha.mjs`).
+`links.rs` e a conferência do diálogo no teste na janela (`tools/e2e-alpha.mjs`). Na janela, em 2026-11-10,
+com o build do commit da Parte 2, o diálogo mostrou `https://example.org/`, nada foi pedido ao navegador
+antes do botão, e o botão pediu exatamente esse endereço (com `--e2e` o app o anota, sem abrir o
+navegador); o resto da passada das fixtures continuou verde, com 135 de 135 âncoras e 18 de 18
+reaberturas. A primeira dessas passadas não chegou a clicar no link: ele só existia em seções que não
+estavam carregadas naquele ponto do teste, e o teste pulava a conferência em silêncio. Agora ele procura o
+link seção por seção, e falha se não o achar no EPUB 3.

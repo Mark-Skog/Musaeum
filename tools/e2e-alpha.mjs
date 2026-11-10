@@ -323,8 +323,19 @@ async function flowGate(app_, book) {
   // Where the normalizer cut a document, the parts meet as two paragraphs do inside one.
   result.seam = await checkSeam(reader, book.path);
   // A link out of the book (D12): the dialog shows the address, and the browser is asked to open it
-  // only by the dialog's button. Under --e2e the app records the address instead of opening it.
-  if (await reader.evaluate("window.musaeumReaderE2E.clickLink('https://example.org/')")) {
+  // only by the dialog's button. Under --e2e the app records the address instead of opening it. The
+  // EPUB 3 fixture has a web link in every chapter; the section on the screen may not be one of them.
+  let linked = false;
+  const sectionCount = (await appState(main)).flow?.sections ?? 0;
+  for (let section = 0; section < Math.min(sectionCount, 16) && !linked; section++) {
+    await reader.evaluate(`window.musaeumReaderE2E.goToSection(${section})`);
+    await settle(reader);
+    linked = await reader.evaluate("window.musaeumReaderE2E.clickLink('https://example.org/')");
+  }
+  if (!linked) {
+    check(basename(book.path) !== 'flow.epub', `${book.path}: no web link to click in any of the first sections`);
+  }
+  if (linked) {
     const before = (await main.evaluate('window.musaeumApp.openedLinks()')).length;
     await waitFor(main, "document.querySelector('.link-target') !== null", { timeoutMs: 5000, what: 'the link dialog' });
     const shown = await main.evaluate("document.querySelector('.link-target').textContent");
