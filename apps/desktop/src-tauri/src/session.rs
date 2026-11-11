@@ -48,6 +48,8 @@ pub struct Session {
     pub geometry: Vec<u8>,
     /// The library's document and revision, if the file is in the library.
     pub document: Option<(i64, i64)>,
+    /// What kind of document it is.
+    pub format: FixedFormat,
 }
 
 /// State shared by commands and the tile protocol.
@@ -329,6 +331,7 @@ pub fn open_session(
         id: state.next_id.fetch_add(1, Ordering::Relaxed),
         geometry: geometry_bytes(pool.pages()),
         document: known.file.map(|file| (file.document, file.revision)),
+        format,
         pool,
     });
     let info = SessionInfo {

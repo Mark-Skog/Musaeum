@@ -45,6 +45,10 @@ pub(crate) const LIBRARY_MIGRATIONS: &[Migration] = &[
         version: 3,
         sql: include_str!("../../migrations/library/0003_flow_reading.sql"),
     },
+    Migration {
+        version: 4,
+        sql: include_str!("../../migrations/library/0004_annotations.sql"),
+    },
 ];
 
 /// The migrations of `cache.db`, in order.

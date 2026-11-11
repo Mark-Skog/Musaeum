@@ -49,6 +49,12 @@ pub enum Error {
     WriterStopped,
 }
 
+impl From<serde_json::Error> for Error {
+    fn from(error: serde_json::Error) -> Self {
+        Error::Refused(error.to_string())
+    }
+}
+
 /// For `map_err`: names what was being done when the file system failed.
 pub(crate) fn io_error(context: impl Into<String>) -> impl FnOnce(io::Error) -> Error {
     let context = context.into();

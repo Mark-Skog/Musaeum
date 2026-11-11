@@ -14,8 +14,9 @@ use crate::tile::{PageGeometry, TileKey};
 /// Bumped on any change to this file or to the shared-memory layouts. Version 2 renders tiles at
 /// any scale instead of powers of two, and adds the catalog's hints. Version 3 adds the jobs that
 /// classify a page and read its text layer. Version 4 reads the document's outline as the text layer
-/// of [`crate::OUTLINE_PAGE`].
-pub const PROTOCOL_VERSION: u32 = 4;
+/// of [`crate::OUTLINE_PAGE`]. Version 5 reads a page's characters and their quads, in the layout of
+/// [`crate::chars`], for selecting text and anchoring annotations.
+pub const PROTOCOL_VERSION: u32 = 5;
 /// Length of every message.
 pub const MESSAGE_LEN: usize = 48;
 
@@ -81,6 +82,9 @@ pub enum HostMessage {
     Analyze(AnalyzeJob),
     /// Reads a page's text layer into a slot.
     ExtractText(TextJob),
+    /// Reads a page's characters and their quads into a slot, in the layout of [`crate::chars`].
+    /// The answer is a `TextDone`, as for a text layer.
+    ExtractChars(TextJob),
     /// Exits cleanly.
     Shutdown,
     /// Nothing has been asked of the worker for a while: it should give memory back.
@@ -300,6 +304,7 @@ const TAG_TRIM: u32 = 4;
 const TAG_SEND_GEOMETRY: u32 = 5;
 const TAG_ANALYZE: u32 = 6;
 const TAG_EXTRACT_TEXT: u32 = 7;
+const TAG_EXTRACT_CHARS: u32 = 8;
 const TAG_READY: u32 = 10;
 const TAG_GEOMETRY: u32 = 11;
 const TAG_GEOMETRY_END: u32 = 12;
@@ -430,6 +435,13 @@ impl HostMessage {
                     .u32(job.page)
                     .frame
             }
+            Self::ExtractChars(job) => {
+                Encoder::new(TAG_EXTRACT_CHARS)
+                    .u32(job.slot)
+                    .u64(job.job_seq)
+                    .u32(job.page)
+                    .frame
+            }
             Self::Shutdown => Encoder::new(TAG_SHUTDOWN).frame,
             Self::Trim => Encoder::new(TAG_TRIM).frame,
             Self::SendGeometry => Encoder::new(TAG_SEND_GEOMETRY).frame,
@@ -474,6 +486,14 @@ impl HostMessage {
             TAG_EXTRACT_TEXT => {
                 let slot = d.u32();
                 Ok(Self::ExtractText(TextJob {
+                    slot,
+                    job_seq: d.u64(),
+                    page: d.u32(),
+                }))
+            }
+            TAG_EXTRACT_CHARS => {
+                let slot = d.u32();
+                Ok(Self::ExtractChars(TextJob {
                     slot,
                     job_seq: d.u64(),
                     page: d.u32(),
@@ -772,6 +792,11 @@ mod tests {
                 job_seq: 78,
                 slot: 3,
                 page: 12,
+            }),
+            HostMessage::ExtractChars(TextJob {
+                job_seq: 79,
+                slot: 4,
+                page: 13,
             }),
             HostMessage::Shutdown,
             HostMessage::Trim,

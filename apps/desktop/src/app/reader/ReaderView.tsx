@@ -6,7 +6,7 @@
  * kept once more on the way out.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Button,
   Dialog,
@@ -37,9 +37,28 @@ import {
 } from '../../reader/typography';
 import { invoke } from '@tauri-apps/api/core';
 
-import { api, isWebAddress, type BookRow, type FlowPosition, type NavPoint } from '../api';
+import {
+  api,
+  isWebAddress,
+  type AnnotationKind,
+  type BookRow,
+  type FixedAnnotationView,
+  type FlowAnnotationView,
+  type FlowPosition,
+  type NavPoint,
+} from '../api';
 import { formatName } from '../library/LibraryView';
 import { FlowReader, type Relocation } from './flow-reader';
+import { Inspector, NoteEditor, type ScreenRect, SelectionToolbar, UndoToast } from './annotations/AnnotationUi';
+import { AnnotationStore, draft, type Entry } from './annotations/store';
+
+/** What the reader has selected now, in either kind of book, with its box on the screen. */
+export type ReaderSelection =
+  | { kind: 'fixed'; spans: { page: number; start: number; end: number }[]; text: string; rect: ScreenRect | null }
+  | { kind: 'flow'; start: string; end: string; text: string; rect: ScreenRect | null };
+
+const fixedEntry = (view: FixedAnnotationView): Entry => ({ annotation: view.annotation, marks: view.marks, ranges: [], pending: false });
+const flowEntry = (view: FlowAnnotationView): Entry => ({ annotation: view.annotation, marks: [], ranges: view.ranges, pending: false });
 
 const NAVIGATION = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 const STYLE_SETTING = 'typography';
@@ -61,6 +80,9 @@ export interface ReaderProbe {
   flow: FlowReader | null;
   /** A fixed-layout document's table of contents, once read. */
   outline: OutlineItem[] | null;
+  /** The annotations shown, and what is selected. */
+  annotations: Entry[];
+  selection: ReaderSelection | null;
 }
 
 function lineHeightLabel(value: number): string {
@@ -210,6 +232,24 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const store = useMemo(
+    () =>
+      new AnnotationStore(
+        { edit: api.editAnnotation, remove: api.deleteAnnotation, restore: api.restoreAnnotation },
+        (message) => setNotice(message),
+      ),
+    // One store per book opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [book.documentId],
+  );
+  const entries = useSyncExternalStore(store.subscribe, store.list);
+  const [selection, setSelection] = useState<ReaderSelection | null>(null);
+  const [activeMark, setActiveMark] = useState<{ uuid: string; rect: ScreenRect } | null>(null);
+  const [editing, setEditing] = useState<Entry | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [undo, setUndo] = useState<Entry | null>(null);
+  const lastColor = useRef('yellow');
   const closing = useRef(false);
   const kind = book.layout;
 
@@ -223,9 +263,11 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
         fixed: fixed.current,
         flow: flow.current,
         outline,
+        annotations: entries,
+        selection,
       };
     }
-  }, [probe, kind, book.documentId, ready, error, outline]);
+  }, [probe, kind, book.documentId, ready, error, outline, entries, selection]);
   useEffect(updateProbe, [updateProbe]);
 
   // The typography chosen before, for every flowing book.
@@ -261,6 +303,17 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
         bench: null,
         onStatus: setStatus,
         onFatal: (message) => setError(message),
+        onSelection: (chosen) => {
+          const box = canvas.getBoundingClientRect();
+          const rect = chosen.rect === null ? null : { ...chosen.rect, x: chosen.rect.x + box.left, y: chosen.rect.y + box.top };
+          setActiveMark(null);
+          setSelection(chosen.spans.length === 0 ? null : { kind: 'fixed', spans: chosen.spans, text: chosen.text, rect });
+        },
+        onMarkClick: (id, rect) => {
+          const box = canvas.getBoundingClientRect();
+          setSelection(null);
+          setActiveMark({ uuid: id, rect: { ...rect, x: rect.x + box.left, y: rect.y + box.top } });
+        },
       })
         .then(async (reader) => {
           if (cancelled) {
@@ -271,6 +324,14 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
           await reader.ready();
           const session = reader.session;
           if (session !== null) {
+            api
+              .fixedAnnotations(session.id)
+              .then((views) => {
+                if (!cancelled) {
+                  store.load(views.map(fixedEntry));
+                }
+              })
+              .catch((reason: unknown) => setNotice(`As anotações não puderam ser lidas: ${String(reason)}`));
             invoke<OutlineItem[]>('document_outline', { session: session.id })
               .then((items) => {
                 if (!cancelled) {
@@ -297,6 +358,18 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
       link: setLink,
       layout: () => {},
       error: (message) => setError(message),
+      selection: (chosen) => {
+        setActiveMark(null);
+        setSelection(
+          chosen.start === null || chosen.end === null
+            ? null
+            : { kind: 'flow', start: chosen.start, end: chosen.end, text: chosen.text, rect: chosen.rect },
+        );
+      },
+      markClick: (id, rect) => {
+        setSelection(null);
+        setActiveMark({ uuid: id, rect });
+      },
     })
       .then(async (reader) => {
         if (cancelled) {
@@ -309,6 +382,14 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
         setToc(reader.info.toc);
         setReady(true);
         reader.focus();
+        api
+          .flowAnnotations(book.documentId)
+          .then((views) => {
+            if (!cancelled) {
+              store.load(views.map(flowEntry));
+            }
+          })
+          .catch((reason: unknown) => setNotice(`As anotações não puderam ser lidas: ${String(reason)}`));
       })
       .catch((reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason)));
     return () => {
@@ -322,6 +403,100 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
   }, [book.documentId, book.path, kind, options, style === null]);
 
   useEffect(updateProbe, [ready, error, updateProbe]);
+
+  // The reader draws what the store has, every time it changes.
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+    fixed.current?.setMarks(
+      entries.flatMap((entry) =>
+        entry.marks.map((mark) => ({
+          id: entry.annotation.uuid,
+          color: entry.annotation.color,
+          kind: entry.annotation.kind,
+          note: entry.annotation.note.trim() !== '',
+          page: mark.page,
+          quads: mark.quads,
+        })),
+      ),
+    );
+    flow.current?.setMarks(
+      entries
+        .filter((entry) => entry.ranges.length > 0)
+        .map((entry) => ({
+          id: entry.annotation.uuid,
+          color: entry.annotation.color,
+          kind: entry.annotation.kind,
+          note: entry.annotation.note.trim() !== '',
+          ranges: entry.ranges,
+        })),
+    );
+  }, [entries, ready]);
+
+  const clearSelection = useCallback(() => {
+    setSelection(null);
+    setActiveMark(null);
+    fixed.current?.clearSelection();
+    flow.current?.clearSelection();
+  }, []);
+
+  /** Makes an annotation of the selection: shown at once, written by the library. */
+  const annotate = useCallback(
+    async (chosen: ReaderSelection, kind: AnnotationKind, color: string, note = ''): Promise<Entry | null> => {
+      lastColor.current = color;
+      const quote = chosen.text.replace(/\s+/g, ' ').trim();
+      const mark = { kind, color, note };
+      if (chosen.kind === 'fixed') {
+        const session = fixed.current?.session;
+        if (session === null || session === undefined) {
+          return null;
+        }
+        const shown: Entry = { annotation: draft(book.documentId, kind, color, note, quote, null), marks: [], ranges: [], pending: true };
+        const written = await store.create(shown, async () => fixedEntry(await api.createFixedAnnotation(session.id, chosen.spans, mark)));
+        fixed.current?.clearSelection();
+        return written;
+      }
+      const shown: Entry = {
+        annotation: draft(book.documentId, kind, color, note, quote, relocation?.progress ?? null),
+        marks: [],
+        ranges: [{ start: chosen.start, end: chosen.end }],
+        pending: true,
+      };
+      flow.current?.clearSelection();
+      return store.create(shown, async () => flowEntry(await api.createFlowAnnotation(book.documentId, chosen.start, chosen.end, mark)));
+    },
+    [book.documentId, relocation, store],
+  );
+
+  const copyText = useCallback((text: string) => {
+    void navigator.clipboard.writeText(text).catch(() => setNotice('O texto não pôde ser copiado.'));
+  }, []);
+
+  const removeEntry = useCallback(
+    async (uuid: string) => {
+      const removed = await store.remove(uuid);
+      if (removed !== null) {
+        setUndo(removed);
+      }
+    },
+    [store],
+  );
+
+  const jump = useCallback((target: Entry) => {
+    const mark = target.marks[0];
+    if (mark !== undefined) {
+      const quad = mark.quads[0];
+      fixed.current?.send(
+        quad === undefined
+          ? { type: 'go-to-page', page: mark.page }
+          : { type: 'go-to-point', page: mark.page, u: Math.min(quad[0], quad[6]), v: Math.min(quad[1], quad[3]) },
+      );
+    } else if (target.ranges.length > 0) {
+      flow.current?.goTo({ cfi: target.ranges[0].start });
+      flow.current?.focus();
+    }
+  }, []);
 
   const mode: FlowMode = kind === 'fixed' ? (status?.mode ?? 'paginated') : flowMode;
   const animated = kind === 'fixed' ? (status?.animationPreference ?? true) : flowAnimated;
@@ -416,6 +591,15 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
         void back();
         return;
       }
+      if (event.ctrlKey && (event.key === 'c' || event.key === 'C') && selection?.kind === 'fixed') {
+        event.preventDefault();
+        copyText(selection.text);
+        return;
+      }
+      if (event.key === 'Escape' && (selection !== null || activeMark !== null)) {
+        clearSelection();
+        return;
+      }
       if (event.ctrlKey || event.altKey || event.metaKey) {
         return;
       }
@@ -443,7 +627,7 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [kind, shortcut, back]);
+  }, [kind, shortcut, back, selection, activeMark, clearSelection, copyText]);
 
   const sectionOf = useMemo(() => {
     const info = flow.current?.info;
@@ -551,6 +735,14 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
             </ToggleButtonGroup>
           </>
         ) : null}
+        <Button
+          id="annotations-toggle"
+          className="button"
+          aria-expanded={panelOpen}
+          onPress={() => setPanelOpen((open) => !open)}
+        >
+          Anotações{entries.length > 0 ? ` (${entries.length})` : ''}
+        </Button>
         <div className="reader-position" aria-live="polite">
           <Button className="button" aria-label="Anterior" onPress={() => turn(-1)}>
             ‹
@@ -617,6 +809,18 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
           </nav>
         ) : null}
         <div ref={surface} className="reader-surface" />
+        {panelOpen ? (
+          <Inspector
+            documentId={book.documentId}
+            entries={entries}
+            pageCount={status?.pageCount ?? null}
+            onJump={jump}
+            onEdit={(target) => setEditing(target)}
+            onRemove={(target) => void removeEntry(target.annotation.uuid)}
+            onClose={() => setPanelOpen(false)}
+            onLink={setLink}
+          />
+        ) : null}
         {!ready && error === null ? <div className="reader-loading">Abrindo…</div> : null}
         {error !== null ? (
           <div className="reader-error" role="alert">
@@ -637,7 +841,7 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
         <Modal className="modal">
           <Dialog aria-label="Link externo">
             <Heading slot="title">Link para fora do livro</Heading>
-            <p>O livro aponta para:</p>
+            <p>Este link aponta para:</p>
             <p className="link-target">{link}</p>
             <p>
               {link !== null && isWebAddress(link)
@@ -684,6 +888,92 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
           </Dialog>
         </Modal>
       </ModalOverlay>
+      {selection !== null && selection.rect !== null && activeMark === null ? (
+        <SelectionToolbar
+          rect={selection.rect}
+          current={null}
+          onColor={(color) => {
+            const chosen = selection;
+            setSelection(null);
+            void annotate(chosen, 'highlight', color);
+          }}
+          onUnderline={() => {
+            const chosen = selection;
+            setSelection(null);
+            void annotate(chosen, 'underline', lastColor.current);
+          }}
+          onNote={() => {
+            const chosen = selection;
+            setSelection(null);
+            void annotate(chosen, 'note', lastColor.current).then((written) => {
+              if (written !== null) {
+                setEditing(written);
+              }
+            });
+          }}
+          onCopy={() => copyText(selection.text)}
+          onClose={clearSelection}
+        />
+      ) : null}
+      {activeMark !== null && store.get(activeMark.uuid) !== undefined
+        ? (() => {
+            const target = store.get(activeMark.uuid) as Entry;
+            const { uuid, color, kind: markKind } = target.annotation;
+            return (
+              <SelectionToolbar
+                rect={activeMark.rect}
+                current={{ color, kind: markKind }}
+                onColor={(next) => {
+                  lastColor.current = next;
+                  void store.edit(uuid, { color: next });
+                }}
+                onUnderline={() => void store.edit(uuid, { kind: markKind === 'underline' ? 'highlight' : 'underline' })}
+                onNote={() => {
+                  setActiveMark(null);
+                  setEditing(target);
+                }}
+                onCopy={() => copyText(target.annotation.quote ?? '')}
+                onRemove={() => {
+                  setActiveMark(null);
+                  void removeEntry(uuid);
+                }}
+                onClose={() => setActiveMark(null)}
+              />
+            );
+          })()
+        : null}
+      {editing !== null ? (
+        <NoteEditor
+          quote={editing.annotation.quote}
+          note={store.get(editing.annotation.uuid)?.annotation.note ?? editing.annotation.note}
+          onCancel={() => setEditing(null)}
+          onSave={(note) => {
+            const uuid = editing.annotation.uuid;
+            setEditing(null);
+            void store.edit(uuid, { note });
+          }}
+          onLink={setLink}
+        />
+      ) : null}
+      {undo !== null ? (
+        <UndoToast
+          text="Anotação removida."
+          onUndo={() => {
+            const removed = undo;
+            setUndo(null);
+            void store.restore(removed);
+          }}
+          onDone={() => setUndo(null)}
+        />
+      ) : null}
+      {notice !== null ? (
+        <div className="toast warning" role="alert">
+          <span>{notice}</span>
+          <Button className="button" onPress={() => setNotice(null)}>
+            Fechar
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

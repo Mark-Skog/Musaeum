@@ -732,3 +732,300 @@ body.app-mode {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* --- Annotations: the bar over a selection, the note editor, the inspector --- */
+
+.selection-toolbar {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  width: 320px;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.toolbar-gap {
+  flex: 1;
+}
+
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgb(0 0 0 / 12%);
+  padding: 0;
+  cursor: pointer;
+}
+
+.swatch.small {
+  width: 20px;
+  height: 20px;
+}
+
+.swatch.current,
+.swatch[data-selected] {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--surface) inset;
+}
+
+.button.tool {
+  min-width: 32px;
+  padding: 4px 8px;
+  font-size: 15px;
+}
+
+.button.tool.current {
+  background: var(--surface-2);
+}
+
+.button.tool.danger {
+  color: var(--danger);
+}
+
+.annotation-panel {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: min(380px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 8px 10px 0;
+  box-sizing: border-box;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel-head .count {
+  color: var(--muted);
+  font-weight: normal;
+  margin-left: 4px;
+}
+
+.panel-search {
+  width: 100%;
+}
+
+.panel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-colors {
+  display: flex;
+  gap: 4px;
+}
+
+.segmented.small .segment {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.annotation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 24px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.annotation-item {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 2px;
+}
+
+.annotation-jump {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 4px;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.annotation-jump[data-hovered] {
+  background: var(--surface-2);
+}
+
+.annotation-jump[data-disabled] {
+  cursor: default;
+}
+
+.annotation-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  border-radius: 3px;
+  border: 2px solid;
+}
+
+.annotation-swatch.underline {
+  height: 3px;
+  margin-top: 10px;
+  border-width: 2px 0 0;
+  border-radius: 0;
+}
+
+.annotation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.annotation-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.annotation-quote {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.annotation-state {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.annotation-item.approximate .annotation-state {
+  color: var(--muted);
+}
+
+.annotation-note {
+  margin: 4px 0 0 26px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--line);
+  font-size: 13px;
+}
+
+.annotation-actions {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 0 26px;
+}
+
+.button.small {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre {
+  margin: 0 0 6px;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 4px 0;
+  font-size: 1em;
+}
+
+.markdown code {
+  font-family: ui-monospace, Consolas, monospace;
+  background: var(--surface-2);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.markdown blockquote {
+  border-left: 3px solid var(--line);
+  padding-left: 8px;
+  color: var(--muted);
+}
+
+.note-link-target {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.note-modal {
+  width: min(560px, 92vw);
+}
+
+.note-quote {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--line);
+  font-family: Georgia, 'Times New Roman', serif;
+  color: var(--muted);
+  max-height: 120px;
+  overflow: auto;
+}
+
+.note-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: 14px/1.5 ui-monospace, Consolas, monospace;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+}
+
+.note-preview {
+  min-height: 140px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.toast {
+  position: fixed;
+  z-index: 30;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.toast.warning {
+  border-color: var(--danger);
+}

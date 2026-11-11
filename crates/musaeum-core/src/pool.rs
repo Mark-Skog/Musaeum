@@ -29,8 +29,8 @@ use musaeum_shm::wire::{
     WorkerMessage, read_frame, write_frame,
 };
 use musaeum_shm::{
-    DeliveryRing, PageContent, PageGeometry, PixelSlab, TILE_BYTES, TILE_SIZE, TextLayer,
-    TileAnnouncement, TileKey,
+    CharLayer, DeliveryRing, PageContent, PageGeometry, PixelSlab, TILE_BYTES, TILE_SIZE,
+    TextLayer, TileAnnouncement, TileKey,
 };
 use thiserror::Error;
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
@@ -120,6 +120,18 @@ pub enum TextError {
 
 /// Answers a request for a page's text layer.
 pub type TextReply = Sender<Result<TextLayer, TextError>>;
+
+/// Answers a request for a page's characters.
+pub type CharsReply = Sender<Result<CharLayer, TextError>>;
+
+/// Marks a text job that asks for a page's characters instead of its words. Pages stop far below
+/// it ([`MAX_PAGES`]), and the outline's page, which has every bit set, is told apart first.
+const CHARS_BIT: u32 = 1 << 30;
+
+/// The page a character job is for, if it is one.
+fn chars_page(key: u32) -> Option<u32> {
+    (key != OUTLINE_PAGE && key & CHARS_BIT != 0).then_some(key & !CHARS_BIT)
+}
 
 /// How to start a pool.
 #[derive(Clone, Debug)]
@@ -222,6 +234,7 @@ enum Event {
     },
     Background(BackgroundWork, BackgroundSink),
     Text(u32, TextReply),
+    Chars(u32, CharsReply),
     Stats(Sender<PoolStats>),
     Pids(Sender<Vec<Option<u32>>>),
     KillWorker(usize),
@@ -303,6 +316,7 @@ impl RenderPool {
             trimmed: false,
             background: None,
             text_waiters: HashMap::new(),
+            chars_waiters: HashMap::new(),
         };
         let thread = thread::Builder::new()
             .name("render-pool".into())
@@ -378,6 +392,13 @@ impl RenderPool {
     pub fn request_text(&self, page: u32) -> Receiver<Result<TextLayer, TextError>> {
         let (reply, answer) = mpsc::channel();
         let _ = self.events.send(Event::Text(page, reply));
+        answer
+    }
+
+    /// Asks for a page's characters and their quads, ahead of every tile, as for a text layer.
+    pub fn request_chars(&self, page: u32) -> Receiver<Result<CharLayer, TextError>> {
+        let (reply, answer) = mpsc::channel();
+        let _ = self.events.send(Event::Chars(page, reply));
         answer
     }
 
@@ -837,6 +858,7 @@ struct EventLoop {
     background: Option<(BackgroundSink, bool)>,
     /// Who is waiting for each page's text layer.
     text_waiters: HashMap<u32, Vec<TextReply>>,
+    chars_waiters: HashMap<u32, Vec<CharsReply>>,
 }
 
 impl EventLoop {
@@ -904,7 +926,11 @@ impl EventLoop {
         // Only work counts. A poll of the statistics is not a reason to keep memory.
         if matches!(
             event,
-            Event::Demand(_) | Event::Worker { .. } | Event::Background(..) | Event::Text(..)
+            Event::Demand(_)
+                | Event::Worker { .. }
+                | Event::Background(..)
+                | Event::Text(..)
+                | Event::Chars(..)
         ) {
             self.trimmed = false;
         }
@@ -939,6 +965,17 @@ impl EventLoop {
                     let waiters = self.text_waiters.entry(page).or_default();
                     if waiters.is_empty() {
                         self.scheduler.request_text(page);
+                    }
+                    waiters.push(reply);
+                }
+            }
+            Event::Chars(page, reply) => {
+                if page as usize >= self.pages.len() {
+                    let _ = reply.send(Err(TextError::NoSuchPage(page)));
+                } else {
+                    let waiters = self.chars_waiters.entry(page).or_default();
+                    if waiters.is_empty() {
+                        self.scheduler.request_text(page | CHARS_BIT);
                     }
                     waiters.push(reply);
                 }
@@ -1189,6 +1226,16 @@ impl EventLoop {
                         });
                     }
                 }
+                SideResult::Text { slot, page, len } if chars_page(page).is_some() => {
+                    let bytes = self.slab.copy_slot_prefix(slot, len as usize);
+                    self.release_side_slot(slot);
+                    let answer = match bytes {
+                        Ok(bytes) => CharLayer::decode(&bytes)
+                            .map_err(|error| TextError::Malformed(error.to_string())),
+                        Err(_) => Err(TextError::Failed),
+                    };
+                    self.answer_chars(page & !CHARS_BIT, &answer);
+                }
                 SideResult::Text { slot, page, len } => {
                     let bytes = self.slab.copy_slot_prefix(slot, len as usize);
                     self.release_side_slot(slot);
@@ -1211,7 +1258,10 @@ impl EventLoop {
                         page,
                         thumbnail: false,
                     }),
-                    Work::Text(page) => self.answer_text(page, &Err(TextError::Failed)),
+                    Work::Text(page) => match chars_page(page) {
+                        Some(page) => self.answer_chars(page, &Err(TextError::Failed)),
+                        None => self.answer_text(page, &Err(TextError::Failed)),
+                    },
                     Work::Tile(_) => {}
                 },
             }
@@ -1239,6 +1289,12 @@ impl EventLoop {
 
     fn answer_text(&mut self, page: u32, answer: &Result<TextLayer, TextError>) {
         for reply in self.text_waiters.remove(&page).unwrap_or_default() {
+            let _ = reply.send(answer.clone());
+        }
+    }
+
+    fn answer_chars(&mut self, page: u32, answer: &Result<CharLayer, TextError>) {
+        for reply in self.chars_waiters.remove(&page).unwrap_or_default() {
             let _ = reply.send(answer.clone());
         }
     }
@@ -1344,11 +1400,18 @@ impl EventLoop {
                     job_seq: order.job_seq,
                     page,
                 }),
-                Work::Text(page) => HostMessage::ExtractText(TextJob {
-                    job_seq: order.job_seq,
-                    slot: order.slot,
-                    page,
-                }),
+                Work::Text(key) => match chars_page(key) {
+                    Some(page) => HostMessage::ExtractChars(TextJob {
+                        job_seq: order.job_seq,
+                        slot: order.slot,
+                        page,
+                    }),
+                    None => HostMessage::ExtractText(TextJob {
+                        job_seq: order.job_seq,
+                        slot: order.slot,
+                        page: key,
+                    }),
+                },
             };
             if write_frame(&mut process.stdin, &job.encode())
                 .and_then(|()| process.stdin.flush())

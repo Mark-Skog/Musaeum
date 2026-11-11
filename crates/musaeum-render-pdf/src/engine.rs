@@ -12,10 +12,13 @@ use std::ptr;
 use std::time::Instant;
 
 use musaeum_ingest::parse::pdf_catalog::{Direction, PageLayout, catalog_hints};
+use musaeum_shm::chars::{GENERATED, LINE_END, box_quad};
 use musaeum_shm::outline::{MAX_OUTLINE_DEPTH, MAX_OUTLINE_ENTRIES, OutlineEntry};
 use musaeum_shm::tile::{page_pixels, tile_in_page};
 use musaeum_shm::wire::TileFailure;
-use musaeum_shm::{PageContent, PageGeometry, TILE_SIZE, TILE_STRIDE, TextLayer, TileKey, Word};
+use musaeum_shm::{
+    CharLayer, Glyph, PageContent, PageGeometry, TILE_SIZE, TILE_STRIDE, TextLayer, TileKey, Word,
+};
 use musaeum_worker::{CancelProbe, Engine, Hints, RenderOutcome};
 use pdfium_render::prelude::{
     FPDF_BOOKMARK, FPDF_BOOL, FPDF_DOCUMENT, FPDF_LIBRARY_CONFIG, FPDF_PAGE, FPDF_PAGEOBJECT,
@@ -514,6 +517,118 @@ impl<'lib, 'data> Document<'lib, 'data> {
             TextLayer { words }
         })
     }
+
+    /// Every character of the page, as PDFium orders them, with its quad in the unrotated crop box.
+    /// A line break PDFium makes up (`\r\n`) becomes one `\n`, which ends the line.
+    fn read_chars(&self, page: FPDF_PAGE) -> Result<CharLayer, TileFailure> {
+        let (frame, rotation) = self.page_frame(page);
+        let bindings = &self.pdfium.bindings;
+        self.with_text(page, |text| {
+            // SAFETY: the text page is open.
+            let count = unsafe { bindings.FPDFText_CountChars(text) }.max(0);
+            let mut chars: Vec<Glyph> = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                // SAFETY: `index` is below the count PDFium just gave.
+                let code = unsafe { bindings.FPDFText_GetUnicode(text, index) };
+                // SAFETY: as above.
+                let generated = unsafe { bindings.FPDFText_IsGenerated(text, index) } == 1;
+                if code == u32::from('\r') {
+                    continue;
+                }
+                if code == u32::from('\n') {
+                    chars.push(Glyph {
+                        ch: '\n',
+                        quad: [0.0; 8],
+                        flags: GENERATED | LINE_END,
+                    });
+                    continue;
+                }
+                let ch = char::from_u32(code)
+                    .filter(|&c| c != '\0')
+                    .unwrap_or('\u{FFFD}');
+                let mut rect = FS_RECTF {
+                    left: 0.0,
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                };
+                // SAFETY: `index` is in range and `rect` is a valid out-pointer.
+                let boxed =
+                    unsafe { bindings.FPDFText_GetLooseCharBox(text, index, &mut rect) } != 0;
+                let quad = if boxed && !generated {
+                    // SAFETY: `index` is in range.
+                    let angle = unsafe { bindings.FPDFText_GetCharAngle(text, index) };
+                    char_quad(
+                        &frame,
+                        [rect.left, rect.bottom, rect.right, rect.top],
+                        angle,
+                    )
+                } else {
+                    [0.0; 8]
+                };
+                chars.push(Glyph {
+                    ch,
+                    quad,
+                    flags: if generated { GENERATED } else { 0 },
+                });
+            }
+            if let Some(last) = chars.last_mut() {
+                last.flags |= LINE_END;
+            }
+            CharLayer {
+                rotation: rotation as u8,
+                chars,
+            }
+        })
+    }
+}
+
+/// A character's quad as fractions of the unrotated crop box `frame`, from its loose box in page
+/// space `[left, bottom, right, top]` and the angle of its baseline, counterclockwise in radians.
+/// Upright text has the box itself. Turned text has the rectangle, turned by that angle, whose
+/// bounding box is the loose box, with its corners in the glyph's own order: top left first.
+fn char_quad(frame: &FS_RECTF, [left, bottom, right, top]: [f32; 4], angle: f32) -> [f32; 8] {
+    let width = f64::from(frame.right - frame.left).max(f64::EPSILON);
+    let height = f64::from(frame.top - frame.bottom).max(f64::EPSILON);
+    let uv = |x: f64, y: f64| {
+        (
+            ((x - f64::from(frame.left)) / width) as f32,
+            ((f64::from(frame.top) - y) / height) as f32,
+        )
+    };
+    let turn = f64::from(angle).rem_euclid(std::f64::consts::TAU);
+    if !angle.is_finite() || turn < 0.01 || turn > std::f64::consts::TAU - 0.01 {
+        let (u0, v0) = uv(f64::from(left), f64::from(top));
+        let (u1, v1) = uv(f64::from(right), f64::from(bottom));
+        return box_quad([u0, v0, u1, v1]);
+    }
+    let (big_w, big_h) = (f64::from(right - left), f64::from(top - bottom));
+    let (c, s) = (turn.cos().abs(), turn.sin().abs());
+    let det = c * c - s * s;
+    let (w, h) = if det.abs() > 0.2 {
+        (
+            ((big_w * c - big_h * s) / det).abs(),
+            ((big_h * c - big_w * s) / det).abs(),
+        )
+    } else {
+        // Near 45 degrees the box cannot tell width from height: a square glyph it is.
+        let side = big_w.min(big_h) / (c + s).max(f64::EPSILON);
+        (side, side)
+    };
+    let (cx, cy) = (f64::from(left + right) / 2.0, f64::from(bottom + top) / 2.0);
+    let (dx, dy) = (turn.cos(), turn.sin());
+    let (ux, uy) = (-dy, dx);
+    let corner = |along: f64, up: f64| {
+        uv(
+            cx + dx * along * w / 2.0 + ux * up * h / 2.0,
+            cy + dy * along * w / 2.0 + uy * up * h / 2.0,
+        )
+    };
+    let (x0, y0) = corner(-1.0, 1.0);
+    let (x1, y1) = corner(1.0, 1.0);
+    let (x2, y2) = corner(1.0, -1.0);
+    let (x3, y3) = corner(-1.0, -1.0);
+    [x0, y0, x1, y1, x2, y2, x3, y3]
 }
 
 impl Engine for Document<'_, '_> {
@@ -664,6 +779,13 @@ impl Engine for Document<'_, '_> {
     fn text_layer(&mut self, index: u32) -> Result<TextLayer, TileFailure> {
         let page = self.load(index, false)?;
         let layer = self.read_words(page.handle);
+        self.done(&page);
+        layer
+    }
+
+    fn char_layer(&mut self, index: u32) -> Result<CharLayer, TileFailure> {
+        let page = self.load(index, false)?;
+        let layer = self.read_chars(page.handle);
         self.done(&page);
         layer
     }
@@ -897,6 +1019,49 @@ mod tests {
             right: 600.0,
             bottom: 0.0,
         }
+    }
+
+    #[test]
+    fn upright_characters_have_their_box_and_turned_ones_a_turned_rectangle() {
+        let frame = frame();
+        // A 10 × 20 pt glyph at (60, 400)–(70, 420): fractions of 600 × 800, from the top.
+        let quad = char_quad(&frame, [60.0, 400.0, 70.0, 420.0], 0.0);
+        let expected = [0.1, 0.475, 70.0 / 600.0, 0.475, 70.0 / 600.0, 0.5, 0.1, 0.5];
+        for (a, b) in quad.iter().zip(expected) {
+            assert!((a - b).abs() < 1e-6, "{quad:?}");
+        }
+        // The same glyph turned a quarter turn counterclockwise: its box is 20 wide and 10 high,
+        // and its top left corner is now at the bottom left of that box.
+        let turned = char_quad(
+            &frame,
+            [55.0, 405.0, 75.0, 415.0],
+            std::f32::consts::FRAC_PI_2,
+        );
+        let u = |x: f32| x / 600.0;
+        let v = |y: f32| (800.0 - y) / 800.0;
+        let expected = [
+            u(55.0),
+            v(405.0),
+            u(55.0),
+            v(415.0),
+            u(75.0),
+            v(415.0),
+            u(75.0),
+            v(405.0),
+        ];
+        for (a, b) in turned.iter().zip(expected) {
+            assert!((a - b).abs() < 1e-5, "{turned:?} vs {expected:?}");
+        }
+        // Upside down: the box again, with the corners the other way round.
+        let flipped = char_quad(&frame, [60.0, 400.0, 70.0, 420.0], std::f32::consts::PI);
+        assert!(
+            (flipped[0] - u(70.0)).abs() < 1e-5 && (flipped[1] - v(400.0)).abs() < 1e-5,
+            "{flipped:?}"
+        );
+        assert_eq!(
+            char_quad(&frame, [60.0, 400.0, 70.0, 420.0], f32::NAN),
+            quad
+        );
     }
 
     #[test]

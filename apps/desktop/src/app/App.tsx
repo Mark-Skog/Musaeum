@@ -69,6 +69,19 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
           status: current.fixed?.status() ?? null,
           outline: current.outline,
           saved: current.fixed?.saved() ?? null,
+          selection: current.selection,
+          annotations: current.annotations.map((entry) => ({
+            uuid: entry.annotation.uuid,
+            kind: entry.annotation.kind,
+            color: entry.annotation.color,
+            note: entry.annotation.note,
+            quote: entry.annotation.quote,
+            anchorState: entry.annotation.anchorState,
+            progression: entry.annotation.progression,
+            pending: entry.pending,
+            marks: entry.marks.map((mark) => ({ page: mark.page, start: mark.start, end: mark.end, quads: mark.quads.length })),
+            ranges: entry.ranges,
+          })),
           flow:
             current.flow === null
               ? null
@@ -89,6 +102,20 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       inspectFixed: () => probe.current?.fixed?.inspect() ?? null,
       resizeWindow: (width: number, height: number) => invoke('e2e_resize_window', { width, height }),
       openedLinks: () => invoke<string[]>('e2e_opened_links'),
+      /** A page's characters as the compositor gets them, as bytes, for a test to aim a drag with. */
+      pageChars: async (page: number) => {
+        const session = probe.current?.fixed?.session;
+        if (session === null || session === undefined) {
+          return null;
+        }
+        const bytes = await invoke<ArrayBuffer>('page_chars', { session: session.id, page });
+        return Array.from(new Uint8Array(bytes));
+      },
+      rects: () => ({
+        canvas: document.querySelector('.reader-canvas')?.getBoundingClientRect().toJSON() ?? null,
+        frame: document.querySelector('.reader-frame')?.getBoundingClientRect().toJSON() ?? null,
+        dpr: devicePixelRatio,
+      }),
     };
   }, [options.e2e, book, library]);
 

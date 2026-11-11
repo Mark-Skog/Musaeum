@@ -72,6 +72,21 @@ describe('messages of the app reader', () => {
     expect(isFromReader({ type: 'link', href: 'blob:http://book.x.localhost/1' })).toBe(false);
   });
 
+  it('takes a selection and a click on a mark only in their own shapes', () => {
+    const rect = { x: 10, y: 20, width: 100, height: 18 };
+    const selection = { type: 'selection', start: 'epubcfi(/6/4!/4/2/1:3)', end: 'epubcfi(/6/4!/4/2/1:9)', text: 'olhos', rect };
+    expect(isFromReader(selection)).toBe(true);
+    expect(isFromReader({ type: 'selection', start: null, end: null, text: '', rect: null })).toBe(true);
+    expect(isFromReader({ ...selection, end: null })).toBe(false);
+    expect(isFromReader({ ...selection, start: 'javascript:1' })).toBe(false);
+    expect(isFromReader({ ...selection, text: 'x'.repeat(70_000) })).toBe(false);
+    expect(isFromReader({ ...selection, rect: { ...rect, x: Number.NaN } })).toBe(false);
+    const id = '0192f3a4-5b6c-7d8e-9f01-23456789abcd';
+    expect(isFromReader({ type: 'mark-click', id, rect })).toBe(true);
+    expect(isFromReader({ type: 'mark-click', id: 'not-a-uuid', rect })).toBe(false);
+    expect(isFromReader({ type: 'mark-click', id, rect: null })).toBe(false);
+  });
+
   it('checks what the page sends the reader too', () => {
     expect(isToReader({ type: 'set-mode', mode: 'continuous' })).toBe(true);
     expect(isToReader({ type: 'set-mode', mode: 'scroll' })).toBe(false);

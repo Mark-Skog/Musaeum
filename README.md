@@ -115,6 +115,15 @@ livros. Um clique ou Enter abre o livro; `← Biblioteca` (ou Alt+←) volta. No
 paginado e contínuo e `A` liga e desliga a animação da virada, nos dois tipos de livro; `Aa` muda a
 tipografia de um livro fluido e `Sumário` mostra o sumário (o de um PDF vem dos seus marcadores).
 
+Para anotar, selecione um trecho: arrastando, ou com dois cliques numa palavra, três numa linha e, num
+livro fixo, quatro num parágrafo; a seleção atravessa páginas e, no contínuo, as partes de um capítulo
+longo. Uma barra aparece sobre a seleção, com cinco cores de realce, sublinhar, nota (em Markdown, com
+pré-visualização) e copiar; um clique numa marca abre a mesma barra, com remover (e "Desfazer").
+`Anotações` abre o Inspetor, que lista as do livro pela posição, filtra por cor, tipo e órfãs, busca nas
+citações e notas (sem se importar com acentos) e leva ao trecho com um clique. As anotações ficam no
+`library.db` e só existem para livros da biblioteca; uma que perdeu o seu trecho numa nova edição do
+arquivo continua listada como órfã, com a citação e a nota.
+
 Abrir um documento direto, como nas fases anteriores e nas medições:
 
 ```powershell
@@ -268,7 +277,25 @@ node tools\reader-check.mjs --cache D:\Temp\fluido\cache
 
 Serve o `reader.html` construído com a política do app, roda o mesmo portão de posição da janela,
 reabre cada livro nos dois modos e confere cada emenda entre partes contra o documento inteiro, refeito
-das partes. Não abre janela nem usa input, e pode rodar com o computador em uso.
+das partes. Depois arrasta o mouse sobre um trecho na tela, confere que a seleção é exatamente aquele
+texto, desenha uma marca e confere, a cada mudança de fonte, margens, modo e tema, que ela continua sobre
+o seu texto; onde o livro tem um corte, arrasta de uma parte para a outra. Não abre janela nem usa input do
+sistema, e pode rodar com o computador em uso.
+
+As anotações têm o seu teste de janela:
+
+```powershell
+node tools\e2e-annotations.mjs --phase fixtures
+node tools\e2e-annotations.mjs --phase corpus --corpus D:\Livros
+```
+
+Com as fixtures, escreve um PDF e um EPUB em duas edições (`tools/lib/test-books.mjs`) e usa o DjVu das
+fixtures: realça com um arrasto, sublinha com dois cliques, anota com três, marca através da quebra de
+página e do corte de um capítulo longo, confere na própria captura da página que o realce está desenhado
+sob a linha, muda zoom, fonte, margens e modo, busca no Inspetor e salta; depois fecha e reabre, renomeia
+os arquivos, move-os de pasta e grava por cima a segunda edição (*safe save*), e confere que nenhuma
+anotação se perdeu: as de trechos mantidos exatas, a da frase editada aproximada, a do trecho removido
+órfã. Com um acervo, anota alguns EPUBs e PDFs e confere que o acervo não mudou.
 
 ## Os caminhos de entrega de pixels
 

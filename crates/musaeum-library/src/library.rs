@@ -663,7 +663,7 @@ impl Library {
         })
     }
 
-    /// Adds a note to a document, on the revision it has now.
+    /// Adds a note about a whole document, on the revision it has now.
     pub fn add_annotation(&self, document: DocumentId, note: &str) -> Result<AnnotationId> {
         let note = note.to_owned();
         self.database.write(move |transaction| {
@@ -682,12 +682,21 @@ impl Library {
                 return Err(Error::NotFound(format!("there is no document {document}")));
             };
             let now = now_ms();
+            // A note on the whole document: no segment, so nothing that can lose its place.
+            let uuid = uuid::Uuid::now_v7();
             transaction
                 .prepare_cached(
-                    "INSERT INTO annotation (document_id, revision_id, note, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?4)",
+                    "INSERT INTO annotation (uuid, document_id, revision_id, kind, color, note,
+                         quote_source, anchor_state, resolved_revision_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'note', 'yellow', ?4, 'none', 'exact', ?3, ?5, ?5)",
                 )?
-                .execute(params![document, revision, note, now])?;
+                .execute(params![
+                    uuid.as_bytes().as_slice(),
+                    document,
+                    revision,
+                    note,
+                    now
+                ])?;
             Ok(transaction.last_insert_rowid())
         })
     }

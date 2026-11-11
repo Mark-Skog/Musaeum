@@ -105,6 +105,10 @@ function policy(script) {
 
 const bookServer = http.createServer((request, response) => {
   const url = new URL(request.url, bookOrigin);
+  if (url.pathname === '/favicon.ico') {
+    response.writeHead(204);
+    return response.end();
+  }
   const parts = url.pathname.split('/').filter((part) => part.length > 0).map(decodeURIComponent);
   const send = (status, type, body, csp) => {
     response.writeHead(status, {
@@ -163,7 +167,7 @@ const origin = params.get('origin');
 const frame = document.createElement('iframe');
 frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
 frame.src = origin + '/' + id + '/reader.html?host=' + location.origin + '&sections=allow-same-origin&package=1&e2e=1';
-const state = { opened: false, failed: null, relocations: 0, layouts: [], openMs: 0, last: null };
+const state = { opened: false, failed: null, relocations: 0, layouts: [], openMs: 0, last: null, selection: null, selections: 0 };
 const started = performance.now();
 window.hostE2E = { state, post: (message) => frame.contentWindow.postMessage(message, origin) };
 addEventListener('message', (event) => {
@@ -183,6 +187,9 @@ addEventListener('message', (event) => {
     state.layouts.push({ ms: message.ms, change: message.change });
   } else if (message.type === 'failed') {
     state.failed = message.message;
+  } else if (message.type === 'selection') {
+    state.selection = message;
+    state.selections++;
   }
 });
 document.body.append(frame);
@@ -190,6 +197,11 @@ document.body.append(frame);
 
 const hostServer = http.createServer((request, response) => {
   const url = new URL(request.url, hostOrigin);
+  if (url.pathname === '/favicon.ico') {
+    // The browser asks for one; the harness has none, and a 404 would read as an error of the reader.
+    response.writeHead(204);
+    return response.end();
+  }
   if (url.pathname === '/host.html') {
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return response.end(HOST_PAGE);
@@ -328,6 +340,12 @@ const report = { started: new Date().toISOString(), chrome, books: [], failures:
 const fail = (message) => {
   report.failures.push(message);
   console.error(`  FAILED: ${message}`);
+};
+const check = (condition, message) => {
+  if (!condition) {
+    fail(message);
+  }
+  return condition;
 };
 
 /**
@@ -535,6 +553,7 @@ async function checkBook(book) {
       await checkSeam(cut, 'serif 130% wide');
     }
   }
+  result.marks = await checkMarks(book, title, cuts);
   // Whatever the book carried, nothing in it ran.
   result.marked = await reader.evaluate(
     "[...document.querySelectorAll('iframe')].filter((frame) => frame.contentDocument?.documentElement?.hasAttribute('data-pwned')).length",
@@ -542,6 +561,141 @@ async function checkBook(book) {
   result.consoleErrors = consoleErrors;
   await explainBlobs(reader);
   result.blobs = blobReports;
+  return result;
+}
+
+/** A drag with the mouse, as a person selects, from one point of the page to another. */
+async function drag(from, to) {
+  const event = (type, at, extra = {}) =>
+    page.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', ...extra });
+  await event('mouseMoved', from, { buttons: 0 });
+  await event('mousePressed', from, { buttons: 1, clickCount: 1 });
+  for (let step = 1; step <= 10; step++) {
+    const t = step / 10;
+    await event('mouseMoved', { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t }, { buttons: 1 });
+    await delay(16);
+  }
+  await event('mouseReleased', to, { buttons: 0, clickCount: 1 });
+}
+
+/** Selecting with the mouse, a mark drawn over it, and the mark kept on its text through relayouts. */
+async function checkMarks(book, title, cuts) {
+  const result = { selection: null, steps: [], seam: null };
+  const opened = await openReader(book, title);
+  if (opened.failed) {
+    fail(`${title}: reopening for marks: ${opened.failed}`);
+    return result;
+  }
+  const reader = opened.reader;
+  let style = { family: 'publisher', size: 100, lineHeight: 1.5, margin: 'normal', theme: 'light' };
+  const setStyle = (change) => {
+    style = { ...style, ...change };
+    return post({ type: 'set-style', style });
+  };
+  // Somewhere with text on the screen: a book of pictures may have none at the first try.
+  let probe = null;
+  for (const fraction of [0.4, 0.2, 0.6, 0.8, 0.1]) {
+    await reader.evaluate(`window.musaeumReaderE2E.goToFraction(${fraction})`);
+    await settle(reader);
+    probe = await reader.evaluate('window.musaeumReaderE2E.probeSelection(false)');
+    if (probe !== null) {
+      break;
+    }
+  }
+  if (probe === null) {
+    fail(`${title}: no text on the screen to select`);
+    return result;
+  }
+  const before = (await page.evaluate('window.hostE2E.state.selections')) ?? 0;
+  await drag(probe.start, probe.end);
+  const selection = await waitFor(
+    page,
+    `(() => { const s = window.hostE2E.state; return s.selections > ${before} && s.selection?.start ? s.selection : null; })()`,
+    { timeoutMs: 5000, what: 'the selection to reach the page' },
+  ).catch(() => null);
+  const squeeze = (text) => text.replace(/\s+/g, ' ').trim();
+  result.selection = { expected: squeeze(probe.text), got: selection === null ? null : squeeze(selection.text), start: selection?.start ?? null, end: selection?.end ?? null };
+  if (!check(selection !== null && squeeze(selection.text) === squeeze(probe.text), `${title}: the drag selected ${JSON.stringify(result.selection)}`)) {
+    return result;
+  }
+  const mark = { id: '0192f3a4-5b6c-7d8e-9f01-23456789abcd', color: 'green', kind: 'highlight', note: true, ranges: [{ start: selection.start, end: selection.end }] };
+  await post({ type: 'clear-selection' });
+  await post({ type: 'marks', marks: [mark] });
+  const after = async (label) => {
+    await settle(reader);
+    const marks = await reader.evaluate('window.musaeumReaderE2E.marks()');
+    result.steps.push({ label, drawn: marks.drawn, rects: marks.rects, drift: marks.drift });
+    check(marks.drawn === 1 && marks.rects > 0 && marks.drift < 0.5, `${title}: the mark after ${label}: ${JSON.stringify(marks)}`);
+  };
+  await after('drawn');
+  await setStyle({ size: 130 });
+  await after('font size 130%');
+  await setStyle({ margin: 'wide', family: 'serif' });
+  await after('wide margins, serif');
+  await post({ type: 'set-mode', mode: 'continuous' });
+  await settle(reader);
+  await post({ type: 'go-to', target: { cfi: selection.start } });
+  await after('continuous');
+  await setStyle({ theme: 'dark', size: 100 });
+  await after('dark, 100%');
+
+  // Across a cut: a drag from the end of one part into the next, in continuous reading. A cut
+  // between pictures, or with only a short line on one side, is not one a person would drag across:
+  // a few cuts and positions are tried before giving up.
+  if (cuts.length > 0) {
+    const section = (cfi) => Number(/^epubcfi\(\/6\/(\d+)/.exec(cfi ?? '')?.[1] ?? -1) / 2 - 1;
+    const tries = [];
+    attempts: for (const cut of cuts.slice(0, 4)) {
+      for (const scroll of [-320, -200, -480]) {
+        await reader.evaluate(`window.musaeumReaderE2E.goToSection(${cut})`);
+        await settle(reader);
+        await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 700, y: 450, deltaX: 0, deltaY: scroll });
+        await delay(300);
+        await settle(reader);
+        let seam;
+        try {
+          seam = await reader.evaluate('window.musaeumReaderE2E.probeSelection(true)');
+        } catch (error) {
+          tries.push({ cut, scroll, error: error.message });
+          continue;
+        }
+        if (seam === null) {
+          tries.push({ cut, scroll, seam: false });
+          continue;
+        }
+        const count = await page.evaluate('window.hostE2E.state.selections');
+        await drag(seam.start, seam.end);
+        const across = await waitFor(
+          page,
+          `(() => { const s = window.hostE2E.state; return s.selections > ${count} && s.selection?.start ? s.selection : null; })()`,
+          { timeoutMs: 3000, what: 'the selection across the cut' },
+        ).catch(() => null);
+        const crossed = across !== null && section(across.start) === seam.sections[0] && section(across.end) === seam.sections[1];
+        const frames = await reader.evaluate(`[...document.querySelectorAll('iframe')].map((frame) => {
+          const selection = frame.contentDocument?.getSelection();
+          return selection && !selection.isCollapsed ? { title: frame.title, text: selection.toString().slice(0, 40) } : null;
+        }).filter(Boolean)`);
+        tries.push({ cut, scroll, seam: true, crossed, start: across?.start ?? null, end: across?.end ?? null, probe: seam, frames });
+        if (!crossed) {
+          continue;
+        }
+        result.seam = { sections: seam.sections, start: across.start, end: across.end, text: squeeze(across.text), tries };
+        const both = { ...mark, id: '0192f3a4-5b6c-7d8e-9f01-23456789abce', ranges: [{ start: across.start, end: across.end }] };
+        await post({ type: 'clear-selection' });
+        await post({ type: 'marks', marks: [both] });
+        await settle(reader);
+        const marks = await reader.evaluate('window.musaeumReaderE2E.marks()');
+        result.seam.frames = marks.frames[both.id] ?? 0;
+        result.seam.drift = marks.drift;
+        check(result.seam.frames === 2 && marks.drift < 0.5, `${title}: the mark across the cut is drawn over ${result.seam.frames} frames, drift ${marks.drift}`);
+        break attempts;
+      }
+    }
+    if (result.seam === null) {
+      result.seamTries = tries;
+      check(false, `${title}: no drag across a cut selected across it: ${JSON.stringify(tries)}`);
+    }
+  }
   return result;
 }
 

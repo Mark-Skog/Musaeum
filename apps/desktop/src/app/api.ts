@@ -88,6 +88,62 @@ export interface FlowPosition {
   saved: boolean;
 }
 
+export type AnnotationKind = 'highlight' | 'underline' | 'note';
+export type AnchorState = 'exact' | 'approximate' | 'orphan';
+
+/** An annotation as the library keeps it (`musaeum_library::Annotation`). */
+export interface Annotation {
+  id: number;
+  uuid: string;
+  documentId: number;
+  revisionId: number;
+  kind: AnnotationKind;
+  color: string;
+  note: string;
+  quote: string | null;
+  quoteSource: 'text_layer' | 'flow' | 'ocr' | 'none';
+  progression: number | null;
+  anchorState: AnchorState;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt: number | null;
+  segments: { ordinal: number; page: number | null; href: string | null; anchorState: AnchorState }[];
+}
+
+export interface PageMark {
+  page: number;
+  start: number;
+  end: number;
+  quads: number[][];
+}
+
+export interface FixedAnnotationView {
+  annotation: Annotation;
+  marks: PageMark[];
+}
+
+export interface FlowAnnotationView {
+  annotation: Annotation;
+  ranges: { start: string; end: string }[];
+}
+
+export interface MarkArgs {
+  kind: AnnotationKind;
+  color: string;
+  note?: string;
+}
+
+export interface AnnotationEdit {
+  kind?: AnnotationKind;
+  color?: string;
+  note?: string;
+}
+
+export interface AnnotationHit {
+  annotation: Annotation;
+  matched: 'title_start' | 'word_start' | 'substring';
+}
+
 export const api = {
   libraryInfo: () => invoke<LibraryInfo>('library_info'),
   chooseRoot: () => invoke<LibraryInfo | null>('library_choose_root'),
@@ -105,6 +161,17 @@ export const api = {
     position: { readerCfi: string; mode: FlowMode; pageTurnAnimation: boolean },
   ) => invoke<FlowPosition>('save_flow_position', { document, position }),
   closeBook: () => invoke<void>('close_book'),
+  fixedAnnotations: (session: number) => invoke<FixedAnnotationView[]>('fixed_annotations', { session }),
+  createFixedAnnotation: (session: number, spans: { page: number; start: number; end: number }[], mark: MarkArgs) =>
+    invoke<FixedAnnotationView>('create_fixed_annotation', { session, spans, mark }),
+  flowAnnotations: (document: number) => invoke<FlowAnnotationView[]>('flow_annotations', { document }),
+  createFlowAnnotation: (document: number, start: string, end: string, mark: MarkArgs) =>
+    invoke<FlowAnnotationView>('create_flow_annotation', { document, start, end, mark }),
+  editAnnotation: (uuid: string, edit: AnnotationEdit) => invoke<Annotation>('edit_annotation', { uuid, edit }),
+  deleteAnnotation: (uuid: string) => invoke<Annotation>('delete_annotation', { uuid }),
+  restoreAnnotation: (uuid: string) => invoke<Annotation>('restore_annotation', { uuid }),
+  searchAnnotations: (document: number | null, query: string) =>
+    invoke<AnnotationHit[]>('search_annotations', { document, query, limit: 500 }),
   /** Opens a book's web link in the default browser; the host checks the address again. */
   openInBrowser: (url: string) => invoke<void>('open_in_browser', { url }),
 };

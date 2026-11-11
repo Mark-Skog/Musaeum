@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod annotations;
 mod background;
 mod book;
 mod covers;
@@ -66,6 +67,7 @@ fn main() {
     let result = tauri::Builder::default()
         .manage(AppState::new(options))
         .manage(links::OpenedLinks::default())
+        .manage(annotations::CharCache::default())
         .manage(book::BookState::default())
         .register_asynchronous_uri_scheme_protocol(
             protocol::SCHEME,
@@ -86,6 +88,15 @@ fn main() {
             flow::locate_flow,
             flow::close_book,
             links::open_in_browser,
+            annotations::fixed_annotations,
+            annotations::page_chars,
+            annotations::create_fixed_annotation,
+            annotations::flow_annotations,
+            annotations::create_flow_annotation,
+            annotations::edit_annotation,
+            annotations::delete_annotation,
+            annotations::restore_annotation,
+            annotations::search_annotations,
             links::e2e_opened_links,
             shelf::library_info,
             shelf::library_choose_root,

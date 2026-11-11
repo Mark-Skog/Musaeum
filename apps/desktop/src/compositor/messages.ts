@@ -1,6 +1,7 @@
 /** Messages between the main thread and the compositor worker. Control only, never pixels. */
 
 import type { BenchOptions, SessionInfo } from '../protocol';
+import type { AnnotatorMessage, FixedMark, PageSpan } from './annotator';
 import type { SabRingBuffers } from '../sab-ring';
 import type { ModeKind, ReadingSnapshot } from './reader';
 import type { SpreadsSetting } from './spreads';
@@ -59,11 +60,20 @@ export type ToWorker =
   | { type: 'turn'; step: 1 | -1 }
   /** Shows a page, as an entry of the table of contents asks. */
   | { type: 'go-to-page'; page: number }
+  /** Shows a point of a page as stored (before its rotation), as a mark in the inspector asks. */
+  | { type: 'go-to-point'; page: number; u: number; v: number }
   | { type: 'zoom'; factor: number }
   /** Asks for an `Inspection`, for a test driving the real window. */
   | { type: 'inspect' }
   /** Sends the position now if it changed since the last one sent, then `flushed`. */
-  | { type: 'flush' };
+  | { type: 'flush' }
+  /** A page's characters, as the host sent them, or null for a page without any. */
+  | { type: 'chars'; page: number; buffer: ArrayBuffer | null }
+  /** Every mark to draw, replacing the ones before. */
+  | { type: 'marks'; marks: FixedMark[] }
+  | { type: 'clear-selection' }
+  /** Where the pointer is, with no button down. */
+  | { type: 'hover'; x: number; y: number };
 
 export interface ProbeReply {
   type: 'probe-reply';
@@ -116,9 +126,15 @@ export interface Inspection {
   viewWidth: number;
   viewHeight: number;
   pages: ShownPage[];
+  /** What is selected, and how many marks there are. */
+  selection: PageSpan[];
+  marks: number;
+  /** The pages whose characters the compositor has. */
+  charPages: number[];
 }
 
 export type FromWorker =
+  | AnnotatorMessage
   | ProbeReply
   | Inspection
   | { type: 'ready'; gpu: string; pageCount: number; clockRttMs: number }

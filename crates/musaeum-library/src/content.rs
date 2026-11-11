@@ -676,6 +676,14 @@ fn separate_replacement(
     transaction
         .prepare_cached("UPDATE annotation SET document_id = ?2 WHERE revision_id = ?1")?
         .execute(params![revision, document])?;
+    // The old document's annotations were found on these bytes; they are someone else's now, so
+    // those annotations are found again on whatever the old document opens with next.
+    transaction
+        .prepare_cached(
+            "UPDATE annotation SET resolved_revision_id = NULL
+             WHERE resolved_revision_id = ?1 AND document_id <> ?2",
+        )?
+        .execute(params![revision, document])?;
     transaction
         .prepare_cached("UPDATE reading_state SET document_id = ?2 WHERE revision_id = ?1")?
         .execute(params![revision, document])?;
@@ -954,6 +962,15 @@ fn merge_into_existing(
             "UPDATE annotation SET revision_id = ?2, document_id = ?3 WHERE revision_id = ?1",
         )?
         .execute(params![from, into, into_document])?;
+    // The same bytes, so whatever an annotation's anchors were worked out on holds on the other.
+    transaction
+        .prepare_cached(
+            "UPDATE annotation SET resolved_revision_id = ?2 WHERE resolved_revision_id = ?1",
+        )?
+        .execute(params![from, into])?;
+    transaction
+        .prepare_cached("UPDATE anchor_selector SET revision_id = ?2 WHERE revision_id = ?1")?
+        .execute(params![from, into])?;
     // The same bytes, so a position taken on one is right on the other.
     transaction
         .prepare_cached("UPDATE reading_state SET revision_id = ?2 WHERE revision_id = ?1")?

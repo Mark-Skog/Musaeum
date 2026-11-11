@@ -87,7 +87,32 @@ export interface FixedReaderConfig {
   onBenchDone?(report: Record<string, unknown>): void;
   onFirstSharp?(atEpochMs: number): void;
   onReady?(): void;
+  /** What is selected now, in CSS pixels of the canvas; no spans when nothing is. */
+  onSelection?(selection: FixedSelection): void;
+  /** A click on a mark, which opens it. */
+  onMarkClick?(id: string, rect: CssRect): void;
 }
+
+/** A box in CSS pixels, relative to the canvas. */
+export interface CssRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface FixedSelection {
+  spans: { page: number; start: number; end: number }[];
+  text: string;
+  rect: CssRect | null;
+}
+
+const toCss = (rect: { x: number; y: number; width: number; height: number }): CssRect => ({
+  x: rect.x / devicePixelRatio,
+  y: rect.y / devicePixelRatio,
+  width: rect.width / devicePixelRatio,
+  height: rect.height / devicePixelRatio,
+});
 
 /** One listener for the WebView2 buffers the host posts, for as long as the page lives. */
 let sharedInbox: SharedBufferInbox | null | undefined;
@@ -235,11 +260,17 @@ function forwardInput(
     },
     { signal },
   );
+  // A pointer over the pages without a press only says where it is, now and then, so the cursor can
+  // show text where there is some.
+  let lastHover = 0;
   canvas.addEventListener(
     'pointermove',
     (event) => {
       if (canvas.hasPointerCapture(event.pointerId)) {
         send({ type: 'pointer', phase: 'move', ...at(event) });
+      } else if (event.timeStamp - lastHover > 60) {
+        lastHover = event.timeStamp;
+        send({ type: 'hover', ...at(event) });
       }
     },
     { signal },
@@ -413,6 +444,24 @@ export class FixedReader {
           break;
         case 'probe-reply':
           break;
+        case 'need-chars':
+          for (const page of message.pages) {
+            void this.sendChars(page);
+          }
+          break;
+        case 'selection':
+          config.onSelection?.({
+            spans: message.spans,
+            text: message.text,
+            rect: message.rect === null ? null : toCss(message.rect),
+          });
+          break;
+        case 'mark-click':
+          config.onMarkClick?.(message.id, toCss(message.rect));
+          break;
+        case 'cursor':
+          canvas.style.cursor = message.cursor === 'text' ? 'text' : message.cursor === 'mark' ? 'pointer' : '';
+          break;
       }
     });
     worker.addEventListener('error', (event) => {
@@ -528,6 +577,31 @@ export class FixedReader {
     if (this.pump !== null || (bench !== null && !measuringMemory)) {
       requestAnimationFrame(onAnimationFrame);
     }
+  }
+
+  /** Fetches a page's characters from the host and hands them to the compositor. */
+  private async sendChars(page: number): Promise<void> {
+    const session = this.session;
+    if (session === null || this.finished) {
+      return;
+    }
+    try {
+      const bytes = await invoke<ArrayBuffer | number[]>('page_chars', { session: session.id, page });
+      const buffer = bytes instanceof ArrayBuffer ? bytes : new Uint8Array(bytes).buffer;
+      this.send({ type: 'chars', page, buffer }, [buffer]);
+    } catch (error) {
+      console.warn(`page ${page}'s characters`, error);
+      this.send({ type: 'chars', page, buffer: null });
+    }
+  }
+
+  /** Every mark to draw, replacing the ones before. */
+  setMarks(marks: import('../compositor/annotator').FixedMark[]): void {
+    this.send({ type: 'marks', marks });
+  }
+
+  clearSelection(): void {
+    this.send({ type: 'clear-selection' });
   }
 
   /** How many shared slots arrived damaged, for the benchmark report. */

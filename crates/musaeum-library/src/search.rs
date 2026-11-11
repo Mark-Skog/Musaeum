@@ -75,7 +75,7 @@ fn title_start_query(terms: &[&str]) -> Option<String> {
 }
 
 /// `"dom"* "casm"*`: each word starts a word somewhere.
-fn word_start_query(terms: &[&str]) -> Option<String> {
+pub(crate) fn word_start_query(terms: &[&str]) -> Option<String> {
     let words: Vec<String> = terms
         .iter()
         .filter(|term| has_word_characters(term))
@@ -86,7 +86,7 @@ fn word_start_query(terms: &[&str]) -> Option<String> {
 
 /// `"dom" "asm"`: each term is somewhere, as a substring. A shorter term could not be looked up, and
 /// leaving it out would return works without it, so then this tier does not run at all.
-fn substring_query(terms: &[&str]) -> Option<String> {
+pub(crate) fn substring_query(terms: &[&str]) -> Option<String> {
     let long_enough = terms
         .iter()
         .all(|term| term.chars().count() >= MIN_SUBSTRING_CHARS);
@@ -99,8 +99,8 @@ fn substring_query(terms: &[&str]) -> Option<String> {
     })
 }
 
-/// Finds works matching what was typed.
-pub(crate) fn search(connection: &Connection, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+/// What was typed as at most [`MAX_TERMS`] terms of at most [`MAX_TERM_CHARS`] characters each.
+pub(crate) fn terms_of(query: &str) -> Vec<String> {
     // A control character is not something to look for, and a NUL would end the query for SQLite.
     let visible: String = query
         .chars()
@@ -112,11 +112,16 @@ pub(crate) fn search(connection: &Connection, query: &str, limit: usize) -> Resu
             }
         })
         .collect();
-    let cut: Vec<String> = visible
+    visible
         .split_whitespace()
         .take(MAX_TERMS)
         .map(|term| term.chars().take(MAX_TERM_CHARS).collect())
-        .collect();
+        .collect()
+}
+
+/// Finds works matching what was typed.
+pub(crate) fn search(connection: &Connection, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    let cut = terms_of(query);
     let terms: Vec<&str> = cut.iter().map(String::as_str).collect();
     if terms.is_empty() || limit == 0 {
         return Ok(Vec::new());

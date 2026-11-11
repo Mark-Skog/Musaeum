@@ -29,6 +29,7 @@ import {
   type TileConsumer,
 } from './delivery';
 import { FramePlanner, TileList, wantedScale } from './frame-planner';
+import { Annotator } from './annotator';
 import { parseGeometry } from './layout';
 import type {
   FromWorker,
@@ -115,6 +116,7 @@ class Compositor {
   private readonly around = new PlacedPages(64);
   private readonly wanted = new TileList(2048);
   private readonly neighbours = new TileList(2048);
+  private readonly annotator: Annotator;
 
   private viewWidth: number;
   private viewHeight: number;
@@ -163,6 +165,7 @@ class Compositor {
     budgetBytes: number,
   ) {
     const base = tileBaseUrl(session.id);
+    this.annotator = new Annotator(widths, heights, (message) => post(message));
     this.viewWidth = width;
     this.viewHeight = height;
     this.renderer = new TileRenderer(
@@ -224,15 +227,34 @@ class Compositor {
       case 'key':
         reader.key(message.key, message.ctrl, message.shift, now);
         break;
-      case 'pointer':
+      case 'pointer': {
+        // A press on text selects; anywhere else it pans, as it always did.
+        const placed = this.current;
         if (message.phase === 'down') {
-          reader.pointerDown(message.x, message.y, now);
+          if (!this.annotator.pointerDown(message.x, message.y, now, placed)) {
+            reader.pointerDown(message.x, message.y, now);
+          }
         } else if (message.phase === 'move') {
-          reader.pointerMove(message.x, message.y, now);
-        } else {
+          if (!this.annotator.pointerMove(message.x, message.y, placed)) {
+            reader.pointerMove(message.x, message.y, now);
+          }
+        } else if (!this.annotator.pointerUp(placed)) {
           reader.pointerUp(now);
         }
         break;
+      }
+      case 'chars':
+        this.annotator.setChars(message.page, message.buffer);
+        break;
+      case 'marks':
+        this.annotator.setMarks(message.marks);
+        break;
+      case 'clear-selection':
+        this.annotator.clear(false);
+        break;
+      case 'hover':
+        this.annotator.hover(message.x, message.y, this.current);
+        return;
       case 'set-mode':
         reader.setMode(message.mode);
         break;
@@ -248,6 +270,12 @@ class Compositor {
       case 'go-to-page':
         if (Number.isSafeInteger(message.page) && message.page >= 0 && message.page < reader.pageCount) {
           reader.goToPage(message.page);
+        }
+        break;
+      case 'go-to-point':
+        if (Number.isSafeInteger(message.page) && message.page >= 0 && message.page < reader.pageCount) {
+          const [u, v] = this.annotator.shownPoint(message.page, message.u, message.v);
+          reader.goToPoint(message.page, u, v);
         }
         break;
       case 'zoom':
@@ -299,6 +327,9 @@ class Compositor {
       viewWidth: this.viewWidth,
       viewHeight: this.viewHeight,
       pages,
+      selection: this.annotator.spans(),
+      marks: this.annotator.markCount,
+      charPages: this.annotator.charPages,
     };
   }
 
@@ -383,6 +414,9 @@ class Compositor {
     this.reader.placeCurrent(this.current);
     const { viewWidth, viewHeight } = this;
     this.planner.plan(this.frameNumber, this.current, viewWidth, viewHeight, this.renderer);
+    // Marks and the selection go over the very pages this frame drew.
+    this.annotator.want(this.current, now);
+    this.annotator.draw(this.renderer, this.current);
     this.updateDemand(now);
     this.renderer.flush();
 

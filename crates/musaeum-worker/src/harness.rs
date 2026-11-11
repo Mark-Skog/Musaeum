@@ -19,7 +19,8 @@ use musaeum_shm::wire::{
     read_frame, write_frame,
 };
 use musaeum_shm::{
-    PageGeometry, PixelSlab, ShmRegion, TILE_BYTES, TILE_SIZE, TextLayer, TileAnnouncement, TileKey,
+    CharLayer, PageGeometry, PixelSlab, ShmRegion, TILE_BYTES, TILE_SIZE, TextLayer,
+    TileAnnouncement, TileKey,
 };
 
 /// A worker process and the host's side of its pipes and slab.
@@ -174,6 +175,30 @@ impl Worker {
                     .copy_slot_prefix(slot, len as usize)
                     .expect("a valid slot");
                 Ok(TextLayer::decode(&bytes).expect("a well-formed text layer"))
+            }
+            other => Err(other),
+        }
+    }
+
+    /// Reads one page's characters through `slot`, and decodes them.
+    pub fn chars(
+        &mut self,
+        job_seq: u64,
+        slot: u32,
+        page: u32,
+    ) -> Result<CharLayer, WorkerMessage> {
+        self.send(HostMessage::ExtractChars(TextJob {
+            job_seq,
+            slot,
+            page,
+        }));
+        match self.receive().expect("the worker should answer") {
+            WorkerMessage::TextDone { len, .. } => {
+                let bytes = self
+                    .slab
+                    .copy_slot_prefix(slot, len as usize)
+                    .expect("a valid slot");
+                Ok(CharLayer::decode(&bytes).expect("a well-formed character layer"))
             }
             other => Err(other),
         }

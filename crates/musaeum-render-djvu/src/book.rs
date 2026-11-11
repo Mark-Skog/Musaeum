@@ -7,9 +7,12 @@
 use std::time::Instant;
 
 use musaeum_djvu::{Document, OpenError, RawWord};
+use musaeum_shm::chars::{GENERATED, LINE_END, box_quad};
 use musaeum_shm::tile::{page_pixels, tile_in_page};
 use musaeum_shm::wire::TileFailure;
-use musaeum_shm::{PageContent, PageGeometry, TILE_SIZE, TILE_STRIDE, TextLayer, TileKey, Word};
+use musaeum_shm::{
+    CharLayer, Glyph, PageContent, PageGeometry, TILE_SIZE, TILE_STRIDE, TextLayer, TileKey, Word,
+};
 use musaeum_worker::{CancelProbe, Engine, Hints, RenderOutcome};
 
 /// The resolution assumed when a page states none that makes sense.
@@ -178,6 +181,68 @@ fn into_layer(page: &Page, words: Vec<RawWord>) -> TextLayer {
     }
 }
 
+/// A page's characters from its words, with quads in the page as stored, from its top-left corner.
+/// DjVu keeps boxes for words, so each word's box is shared among its characters in equal parts;
+/// the spaces between words and the line breaks are made up, as a PDF's are.
+fn into_chars(page: &Page, words: Vec<RawWord>) -> CharLayer {
+    let (width, height) = if page.rotation & 1 == 1 {
+        (page.height, page.width)
+    } else {
+        (page.width, page.height)
+    };
+    let (width, height) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let mut chars: Vec<Glyph> = Vec::new();
+    let mut line_open = false;
+    for word in &words {
+        let text = word.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if line_open {
+            chars.push(Glyph {
+                ch: ' ',
+                quad: [0.0; 8],
+                flags: GENERATED,
+            });
+        }
+        let [x0, y0, x1, y1] = word.rect;
+        let (left, right) = (f64::from(x0.min(x1)) / width, f64::from(x0.max(x1)) / width);
+        let top = 1.0 - f64::from(y0.max(y1)) / height;
+        let bottom = 1.0 - f64::from(y0.min(y1)) / height;
+        let count = text.chars().count() as f64;
+        for (index, ch) in text.chars().enumerate() {
+            let from = left + (right - left) * index as f64 / count;
+            let to = left + (right - left) * (index + 1) as f64 / count;
+            chars.push(Glyph {
+                ch,
+                quad: box_quad([
+                    from.clamp(0.0, 1.0) as f32,
+                    top.clamp(0.0, 1.0) as f32,
+                    to.clamp(0.0, 1.0) as f32,
+                    bottom.clamp(0.0, 1.0) as f32,
+                ]),
+                flags: 0,
+            });
+        }
+        line_open = !word.line_end;
+        if word.line_end {
+            chars.push(Glyph {
+                ch: '\n',
+                quad: [0.0; 8],
+                flags: GENERATED | LINE_END,
+            });
+        }
+    }
+    if let Some(last) = chars.last_mut() {
+        last.flags |= LINE_END;
+    }
+    CharLayer {
+        // DjVu counts its turns counter-clockwise; the character layer, clockwise.
+        rotation: (4 - page.rotation % 4) % 4,
+        chars,
+    }
+}
+
 impl Engine for Book {
     fn page_sizes(&self) -> &[PageGeometry] {
         &self.sizes
@@ -286,6 +351,14 @@ impl Engine for Book {
         Ok(into_layer(self.page(index)?, words))
     }
 
+    fn char_layer(&mut self, index: u32) -> Result<CharLayer, TileFailure> {
+        let words = self
+            .document
+            .words(index)
+            .map_err(|_| TileFailure::DecodeFailed)?;
+        Ok(into_chars(self.page(index)?, words))
+    }
+
     fn trim(&mut self) {
         self.document.trim();
     }
@@ -309,5 +382,37 @@ mod tests {
         assert_eq!(to_shown(&page(1, (800, 600)), corner), [0.0, 0.9, 0.1, 1.0]);
         assert_eq!(to_shown(&page(2, (600, 800)), corner), [0.9, 0.9, 1.0, 1.0]);
         assert_eq!(to_shown(&page(3, (800, 600)), corner), [0.9, 0.0, 1.0, 0.1]);
+    }
+
+    #[test]
+    fn a_word_shares_its_box_among_its_characters() {
+        let page = Page {
+            width: 800,
+            height: 600,
+            rotation: 1,
+        };
+        let words = vec![
+            RawWord {
+                text: "ab".to_owned(),
+                rect: [0, 720, 60, 800],
+                line_end: false,
+            },
+            RawWord {
+                text: "c".to_owned(),
+                rect: [120, 720, 180, 800],
+                line_end: true,
+            },
+        ];
+        let layer = into_chars(&page, words);
+        assert_eq!(layer.text(), "ab c\n");
+        assert_eq!(
+            layer.rotation, 3,
+            "a quarter counter-clockwise is three clockwise"
+        );
+        // The stored page is 600 × 800; "a" is the left half of the first tenth.
+        assert_eq!(layer.chars[0].quad, box_quad([0.0, 0.0, 0.05, 0.1]));
+        assert_eq!(layer.chars[1].quad, box_quad([0.05, 0.0, 0.1, 0.1]));
+        assert!(layer.chars[2].is_generated());
+        assert!(layer.chars[4].ends_line());
     }
 }

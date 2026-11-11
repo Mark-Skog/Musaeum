@@ -15,6 +15,8 @@ import {
   type Shortcut,
   type ToReader,
 } from '../../reader/messages';
+import type { FlowMark } from '../../reader/annotations';
+import type { ReaderRect } from '../../reader/messages';
 import type { ReadingStyle } from '../../reader/typography';
 
 const READER_SANDBOX = 'allow-scripts allow-same-origin';
@@ -37,6 +39,9 @@ export interface FlowReaderEvents {
   link(href: string): void;
   layout(ms: number, change: string): void;
   error(message: string): void;
+  /** What the reader selected, with its box in CSS pixels of this page; `start` null when nothing. */
+  selection?(selection: { start: string | null; end: string | null; text: string; rect: ReaderRect | null }): void;
+  markClick?(id: string, rect: ReaderRect): void;
 }
 
 export class FlowReader {
@@ -144,6 +149,17 @@ export class FlowReader {
       case 'link':
         this.events.link(message.href);
         return;
+      case 'selection':
+        this.events.selection?.({
+          start: message.start,
+          end: message.end,
+          text: message.text,
+          rect: message.rect === null ? null : this.toPage(message.rect),
+        });
+        return;
+      case 'mark-click':
+        this.events.markClick?.(message.id, this.toPage(message.rect));
+        return;
       case 'failed':
         failed(new Error(message.message));
         this.events.error(message.message);
@@ -151,6 +167,20 @@ export class FlowReader {
       default:
         return;
     }
+  }
+
+  /** A box in the reader's page as a box in this one. */
+  private toPage(rect: ReaderRect): ReaderRect {
+    const frame = this.frame.getBoundingClientRect();
+    return { x: rect.x + frame.left, y: rect.y + frame.top, width: rect.width, height: rect.height };
+  }
+
+  setMarks(marks: FlowMark[]): void {
+    this.post({ type: 'marks', marks });
+  }
+
+  clearSelection(): void {
+    this.post({ type: 'clear-selection' });
   }
 
   private scheduleSave(): void {

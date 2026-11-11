@@ -201,3 +201,78 @@ fn a_background_render_draws_the_same_pixels_without_keeping_the_page() {
         }
     }
 }
+
+#[test]
+fn characters_come_one_by_one_with_quads_in_the_unrotated_crop_box() {
+    let pdf = fixture("chars", gen_fixtures::write_content_fixture);
+    let mut worker = Worker::started(exe(), &pdf, Policy::Lockdown);
+
+    let words = worker.text(1, 0, 0).unwrap();
+    let layer = worker.chars(2, 0, 0).unwrap();
+    assert_eq!(layer.rotation, 0);
+    // The characters spell the same words, with the spaces and line breaks PDFium puts between them.
+    let spelled: Vec<String> = layer.text().split_whitespace().map(str::to_owned).collect();
+    let expected: Vec<String> = words.words.iter().map(|word| word.text.clone()).collect();
+    assert_eq!(spelled, expected);
+    assert_eq!(
+        layer.chars.iter().filter(|glyph| glyph.ends_line()).count(),
+        30,
+        "thirty lines"
+    );
+    // Each drawn character sits inside its word's box, which on an unrotated page is the same frame.
+    let mut word = 0;
+    let mut in_word = false;
+    for glyph in &layer.chars {
+        if glyph.ch.is_whitespace() {
+            if in_word {
+                word += 1;
+                in_word = false;
+            }
+            continue;
+        }
+        in_word = true;
+        assert!(!glyph.is_generated());
+        assert!(glyph.is_upright());
+        let [left, top, right, bottom] = words.words[word].rect;
+        let (x, y) = glyph.center();
+        assert!(
+            x >= left - 1e-3 && x <= right + 1e-3 && y >= top - 1e-3 && y <= bottom + 1e-3,
+            "{:?} of {:?} is outside {:?}",
+            glyph,
+            words.words[word].text,
+            words.words[word].rect
+        );
+    }
+
+    assert!(
+        worker.chars(3, 0, 1).unwrap().chars.is_empty(),
+        "a scan has no characters"
+    );
+}
+
+#[test]
+fn a_rotated_page_keeps_its_quads_where_the_text_is_stored() {
+    let pdf = fixture("chars-rotated", gen_fixtures::write_content_fixture);
+    let mut worker = Worker::started(exe(), &pdf, Policy::Lockdown);
+    let layer = worker.chars(1, 0, 7).unwrap();
+    assert_eq!(layer.rotation, 1, "shown a quarter turn clockwise");
+    let first = layer
+        .chars
+        .iter()
+        .find(|glyph| !glyph.is_generated())
+        .unwrap();
+    let (u, v) = first.center();
+    // Written at the top left of the page as stored: that is where the quad stays.
+    assert!(u < 0.15 && v < 0.15, "{:?}", first.quad);
+    assert!(first.is_upright(), "upright on the stored page");
+    // Turned as the page is shown, it lands where the text layer, which follows the page as shown,
+    // puts the first word.
+    let words = worker.text(2, 0, 7).unwrap();
+    let [left, top, right, bottom] = words.words[0].rect;
+    let (x, y) = (1.0 - v, u);
+    assert!(
+        x >= left - 1e-3 && x <= right + 1e-3 && y >= top - 1e-3 && y <= bottom + 1e-3,
+        "{x} {y} {:?}",
+        words.words[0].rect
+    );
+}

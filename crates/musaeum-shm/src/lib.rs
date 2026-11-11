@@ -12,11 +12,13 @@
 //!   compromised worker can only corrupt pixels, not the delivery bookkeeping.
 //!
 //! [`tile`] holds the tile arithmetic both sides of the boundary must agree on, [`content`] how a
-//! page's measurements become its class, and [`text`] the layout of a text layer in a slot.
+//! page's measurements become its class, [`text`] the layout of a text layer in a slot, and [`chars`]
+//! that of a page's characters with their quads.
 
 #[cfg(not(windows))]
 compile_error!("musaeum-shm only implements shared memory for Windows in Phase 0.");
 
+pub mod chars;
 pub mod content;
 pub mod outline;
 pub mod region;
@@ -26,6 +28,7 @@ pub mod text;
 pub mod tile;
 pub mod wire;
 
+pub use chars::{CHARS_VERSION, CharLayer, Glyph};
 pub use content::{ContentClass, PageContent};
 pub use outline::{OUTLINE_PAGE, OutlineEntry};
 pub use region::ShmRegion;

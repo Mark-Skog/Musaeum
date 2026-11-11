@@ -159,15 +159,23 @@ impl Fixture {
             document: instance.document_id,
             revision: instance.revision_id,
             instance: instance.id,
+            highlight: None,
         }
     }
 
-    /// An annotation and a rating: the kind of thing losing a file's identity would lose.
+    /// Annotations and a rating: the kind of thing losing a file's identity would lose. One note
+    /// about the whole document, and one highlight anchored on its first page.
     pub fn mark_as_cared_for(&self, path: &Path) -> Identity {
-        let identity = self.identity(path);
+        let mut identity = self.identity(path);
         self.library()
             .add_annotation(identity.document, "my note")
             .unwrap();
+        let highlight = self
+            .library()
+            .create_annotation(anchored_highlight(identity.document, identity.revision))
+            .unwrap();
+        identity.highlight =
+            Some(u128::from_str_radix(&highlight.uuid.replace('-', ""), 16).unwrap());
         self.library()
             .edit_work(
                 identity.work,
@@ -183,8 +191,40 @@ impl Fixture {
     /// Fails unless what a person put on this work and document is still there.
     pub fn assert_still_cared_for(&self, identity: &Identity) {
         let document = self.library().document(identity.document).unwrap();
-        assert_eq!(document.annotations.len(), 1, "the annotation is gone");
+        assert_eq!(document.annotations.len(), 2, "an annotation is gone");
         assert_eq!(document.annotations[0].note, "my note");
+        if let Some(uuid) = identity.highlight {
+            let hex = format!("{uuid:032x}");
+            let uuid = format!(
+                "{}-{}-{}-{}-{}",
+                &hex[..8],
+                &hex[8..12],
+                &hex[12..16],
+                &hex[16..20],
+                &hex[20..]
+            );
+            let kept = self.library().annotation(&uuid).unwrap();
+            let made = anchored_highlight(identity.document, identity.revision);
+            assert_eq!(
+                kept.document_id, identity.document,
+                "the highlight left its document"
+            );
+            assert_eq!(kept.deleted_at, None);
+            assert_eq!(kept.quote, made.quote, "the quote changed");
+            assert_eq!(kept.note, made.note);
+            assert_eq!(kept.segments.len(), 1, "a segment is gone");
+            let selectors = &kept.segments[0].selectors;
+            assert_eq!(
+                selectors.len(),
+                made.segments[0].selectors.len(),
+                "a selector is gone"
+            );
+            let quote = selectors
+                .iter()
+                .find(|selector| selector.kind == musaeum_library::SelectorKind::TextQuote)
+                .expect("the quote selector");
+            assert_eq!(quote.data, made.segments[0].selectors[2].data);
+        }
         let work = self.library().work(identity.work).unwrap();
         assert_eq!(work.rating, Some(5), "the rating is gone");
     }
@@ -209,12 +249,82 @@ impl Fixture {
 }
 
 /// Who a file is, as far as the library is concerned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Identity {
     pub work: WorkId,
     pub document: DocumentId,
     pub revision: RevisionId,
     pub instance: InstanceId,
+    /// The UUID of the highlight `mark_as_cared_for` made, as a number so this stays `Copy`.
+    pub highlight: Option<u128>,
+}
+
+/// Two identities are the same file when the work, document, revision and instance are: the
+/// highlight made on it is what is checked separately, in `assert_still_cared_for`.
+impl PartialEq for Identity {
+    fn eq(&self, other: &Self) -> bool {
+        (self.work, self.document, self.revision, self.instance)
+            == (other.work, other.document, other.revision, other.instance)
+    }
+}
+
+impl Eq for Identity {}
+
+/// A highlight on the first page, with the three selectors a fixed layout's annotation has.
+pub fn anchored_highlight(
+    document: DocumentId,
+    revision: RevisionId,
+) -> musaeum_library::NewAnnotation {
+    use musaeum_library::{
+        AnchorState, AnnotationKind, QuoteSource, Segment, Selector, SelectorKind,
+    };
+    use serde_json::json;
+    let selector = |kind, priority, data| Selector {
+        kind,
+        data,
+        priority,
+        normalizer_version: Some(1),
+        revision_id: Some(revision),
+    };
+    musaeum_library::NewAnnotation {
+        document_id: document,
+        revision_id: revision,
+        kind: AnnotationKind::Highlight,
+        color: "green".to_owned(),
+        note: "**worth** keeping".to_owned(),
+        quote: Some("a quoted passage".to_owned()),
+        quote_source: QuoteSource::TextLayer,
+        progression: Some(0.0),
+        anchor_state: AnchorState::Exact,
+        resolved_version: Some(1),
+        pdf_nm: None,
+        segments: vec![Segment {
+            ordinal: 0,
+            page: Some(0),
+            href: None,
+            clip: None,
+            anchor_state: AnchorState::Exact,
+            selectors: vec![
+                selector(
+                    SelectorKind::PageCharRange,
+                    0,
+                    json!({"page": 0, "start": 10, "end": 26}),
+                ),
+                selector(
+                    SelectorKind::PageQuads,
+                    1,
+                    json!({"page": 0, "quads": [[0.1, 0.1, 0.4, 0.1, 0.4, 0.12, 0.1, 0.12]]}),
+                ),
+                Selector {
+                    kind: SelectorKind::TextQuote,
+                    data: json!({"exact": "a quoted passage", "prefix": "This is ", "suffix": " on a page"}),
+                    priority: 2,
+                    normalizer_version: None,
+                    revision_id: None,
+                },
+            ],
+        }],
+    }
 }
 
 /// A small, real PDF with bytes of its own.

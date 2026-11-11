@@ -517,14 +517,15 @@ fn restoring_a_backup_brings_it_back_and_keeps_what_it_replaced() {
             .unwrap()
             .annotations
             .len(),
-        1
+        2,
+        "the note and the highlight of the backup, not the note made after it"
     );
 
     let replaced = rusqlite::Connection::open(set_aside.join("library.db")).unwrap();
     let notes: i64 = replaced
         .query_row("SELECT count(*) FROM annotation", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(notes, 2, "what was replaced is still there to go back to");
+    assert_eq!(notes, 3, "what was replaced is still there to go back to");
 }
 
 #[test]

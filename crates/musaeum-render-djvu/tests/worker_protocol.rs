@@ -231,3 +231,47 @@ fn cancelled_and_bad_jobs_fail_alone() {
         WorkerMessage::TileDone { .. }
     ));
 }
+
+#[test]
+fn characters_turn_with_the_page_into_their_words() {
+    let mut worker = Worker::started(exe(), &fixture("chars"), POLICY);
+    // Where a point of the stored page is shown, for a page shown turned clockwise `turns` times.
+    let shown = |(u, v): (f32, f32), turns: u8| match turns {
+        1 => (1.0 - v, u),
+        2 => (1.0 - u, 1.0 - v),
+        3 => (v, 1.0 - u),
+        _ => (u, v),
+    };
+    for (index, spec) in DJVU_PAGES.iter().enumerate() {
+        let page = index as u32;
+        let chars = worker.chars(200 + u64::from(page), 1, page).unwrap();
+        let words = worker.text(300 + u64::from(page), 1, page).unwrap();
+        if !spec.text {
+            assert!(chars.chars.is_empty(), "page {index}");
+            continue;
+        }
+        let spelled: Vec<String> = chars.text().split_whitespace().map(str::to_owned).collect();
+        let expected: Vec<String> = words.words.iter().map(|word| word.text.clone()).collect();
+        assert_eq!(spelled, expected, "page {index}");
+        let mut word = 0;
+        let mut in_word = false;
+        for glyph in &chars.chars {
+            if glyph.is_generated() {
+                if in_word {
+                    word += 1;
+                    in_word = false;
+                }
+                continue;
+            }
+            in_word = true;
+            let (x, y) = shown(glyph.center(), chars.rotation);
+            let [left, top, right, bottom] = words.words[word].rect;
+            assert!(
+                x >= left - 1e-3 && x <= right + 1e-3 && y >= top - 1e-3 && y <= bottom + 1e-3,
+                "page {index}, {:?} at ({x}, {y}) outside {:?}",
+                glyph.ch,
+                words.words[word].rect
+            );
+        }
+    }
+}

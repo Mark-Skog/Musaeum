@@ -201,6 +201,47 @@ impl LogicalDocument {
         })
     }
 
+    /// The point at a text offset as the end of a range: in the run the text before it ends in, so a
+    /// range that ends with a run does not reach into the next one, which may be in another part.
+    pub fn end_point_at(&self, units: u64) -> Option<Point> {
+        if units == 0 {
+            return self.point_at(0);
+        }
+        let index = self
+            .runs
+            .partition_point(|run| run.units + run.length < units);
+        let run = self.runs.get(index)?;
+        (units > run.units).then_some(Point::Text {
+            node: run.node,
+            offset: (units - run.units) as u32,
+        })
+    }
+
+    /// The byte index in [`Self::text`] of a UTF-16 offset, if it falls on a character.
+    pub fn byte_of(&self, units: u64) -> Option<usize> {
+        if units >= self.text_length {
+            return (units == self.text_length).then_some(self.text.len());
+        }
+        self.byte_at(units)
+    }
+
+    /// The UTF-16 offset of a byte index in [`Self::text`] that falls on a character.
+    pub fn units_of(&self, byte: usize) -> u64 {
+        let index = self
+            .runs
+            .partition_point(|run| run.bytes <= byte)
+            .saturating_sub(1);
+        match self.runs.get(index) {
+            Some(run) if byte >= run.bytes => {
+                run.units
+                    + u64::from(cfi::utf16_len(
+                        &self.text[run.bytes..byte.min(self.text.len())],
+                    ))
+            }
+            _ => 0,
+        }
+    }
+
     /// The byte index in [`Self::text`] of a UTF-16 offset that falls on a character.
     fn byte_at(&self, units: u64) -> Option<usize> {
         let index = self

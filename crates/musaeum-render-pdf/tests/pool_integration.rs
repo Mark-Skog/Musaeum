@@ -689,6 +689,54 @@ fn a_text_layer_comes_back_decoded_and_bad_pages_are_refused() {
 }
 
 #[test]
+fn characters_and_words_of_a_page_are_asked_for_together_and_come_back_apart() {
+    let path = temp_dir("chars").join("content.pdf");
+    gen_fixtures::write_content_fixture(&path).unwrap();
+    let (pool, _tiles) = start_pull(path, 2, 4);
+    // Both at once, for the same page: each answer is its own kind.
+    let chars = pool.request_chars(0);
+    let words = pool.request_text(0);
+    let again = pool.request_chars(0);
+    let chars = chars
+        .recv_timeout(WAIT)
+        .unwrap()
+        .expect("page 0 has characters");
+    let words = words.recv_timeout(WAIT).unwrap().expect("page 0 has words");
+    assert_eq!(
+        again.recv_timeout(WAIT).unwrap().unwrap(),
+        chars,
+        "one job, two answers"
+    );
+    assert_eq!(words.words.len(), 270);
+    assert!(
+        chars.text().starts_with("The "),
+        "{:?}",
+        &chars.text()[..20]
+    );
+    assert_eq!(
+        chars.text().split_whitespace().count(),
+        words.words.len(),
+        "the same words"
+    );
+    assert_eq!(
+        pool.request_chars(99).recv_timeout(WAIT).unwrap(),
+        Err(TextError::NoSuchPage(99))
+    );
+    assert_eq!(
+        pool.request_chars(7)
+            .recv_timeout(WAIT)
+            .unwrap()
+            .unwrap()
+            .rotation,
+        1
+    );
+    // The outline still travels as the text of the page every bit of which is set.
+    assert!(pool.outline(WAIT).is_ok());
+    let stats = pool.stats().unwrap();
+    assert_eq!(stats.protocol_violations, 0);
+}
+
+#[test]
 fn background_work_finishes_even_when_its_worker_is_killed() {
     let path = temp_dir("background-kill").join("scan.pdf");
     gen_fixtures::write_scan_fixture(&path, 40).unwrap();

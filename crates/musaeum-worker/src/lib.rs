@@ -26,7 +26,7 @@ use musaeum_shm::wire::{
     TileFailure, WorkerMessage, read_frame, write_frame,
 };
 use musaeum_shm::{
-    PageContent, PageGeometry, PixelSlab, ShmRegion, TILE_BYTES, TextLayer, TileKey,
+    CharLayer, PageContent, PageGeometry, PixelSlab, ShmRegion, TILE_BYTES, TextLayer, TileKey,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 
@@ -132,6 +132,13 @@ pub trait Engine {
 
     /// Reads a page's text layer. A page without one has an empty layer.
     fn text_layer(&mut self, page: u32) -> Result<TextLayer, TileFailure>;
+
+    /// Reads a page's characters and their quads in the unrotated crop box. A page without a text
+    /// layer, or a format without one, has none.
+    fn char_layer(&mut self, page: u32) -> Result<CharLayer, TileFailure> {
+        let _ = page;
+        Ok(CharLayer::default())
+    }
 
     /// The document's outline, in reading order. Formats without one have none.
     fn outline(&mut self) -> Vec<OutlineEntry> {
@@ -284,6 +291,11 @@ pub fn serve<E: Engine, R: Read, W: Write>(
                 fence(Ordering::Release);
                 outbox.send(report)?;
             }
+            HostMessage::ExtractChars(job) => {
+                let report = extract_chars(engine, slab, job);
+                fence(Ordering::Release);
+                outbox.send(report)?;
+            }
             HostMessage::Shutdown => break,
             HostMessage::Trim => {
                 engine.trim();
@@ -412,6 +424,42 @@ fn extract_text<E: Engine>(engine: &mut E, slab: &PixelSlab, job: TextJob) -> Wo
     };
     // SAFETY: as for a render, the host gave this worker the slot until the report goes out,
     // and `slot_ptr` checked that the whole tile is mapped.
+    let out = unsafe { std::slice::from_raw_parts_mut(target, TILE_BYTES) };
+    match layer.encode_into(out) {
+        Some(len) => WorkerMessage::TextDone {
+            job_seq,
+            slot,
+            len: len as u32,
+            elapsed_us: micros_since(started),
+        },
+        None => failed(TileFailure::TooLarge),
+    }
+}
+
+fn extract_chars<E: Engine>(engine: &mut E, slab: &PixelSlab, job: TextJob) -> WorkerMessage {
+    let started = Instant::now();
+    let TextJob {
+        job_seq,
+        slot,
+        page,
+    } = job;
+    let failed = |failure| WorkerMessage::TileFailed {
+        job_seq,
+        slot,
+        failure,
+    };
+    let target = match slab.slot_ptr(slot) {
+        Ok(target) => target,
+        Err(_) => return failed(TileFailure::InvalidSlot),
+    };
+    if page as usize >= engine.page_sizes().len() {
+        return failed(TileFailure::OutOfBounds);
+    }
+    let layer = match engine.char_layer(page) {
+        Ok(layer) => layer,
+        Err(failure) => return failed(failure),
+    };
+    // SAFETY: as for a text layer.
     let out = unsafe { std::slice::from_raw_parts_mut(target, TILE_BYTES) };
     match layer.encode_into(out) {
         Some(len) => WorkerMessage::TextDone {

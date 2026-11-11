@@ -9,6 +9,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anchoring;
+pub mod annotations;
 pub mod catalog;
 mod content;
 mod content_kind;
@@ -30,6 +32,10 @@ mod search;
 mod sql;
 mod thumbnails;
 
+pub use annotations::{
+    AnchorState, Annotation, AnnotationEdit, AnnotationHit, AnnotationKind, NewAnnotation,
+    QuoteSource, Reanchoring, Segment, SegmentUpdate, Selector, SelectorKind,
+};
 pub use catalog::{BookFile, BookRow, BrowsePage, BrowseQuery, FolderEntry, MAX_BROWSE};
 pub use content::ContentReport;
 pub use db::backup::{BackupInfo, BackupPolicy};

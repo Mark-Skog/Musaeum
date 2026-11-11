@@ -191,6 +191,12 @@ async function openPackage(): Promise<void> {
       case 'key':
         engine?.key(message.key, message.shift);
         return;
+      case 'marks':
+        engine?.setMarks(message.marks);
+        return;
+      case 'clear-selection':
+        engine?.clearSelection();
+        return;
       default:
         return;
     }
@@ -209,6 +215,9 @@ async function openPackage(): Promise<void> {
       seams: () => engine?.seams() ?? [],
       plan: (index: number) => engine?.plan(index) ?? null,
       clickLink: (href: string) => engine?.clickLink(href) ?? false,
+      select: (start: string, end: string) => engine?.annotations.select(start, end) ?? false,
+      marks: () => engine?.annotations.inspect() ?? null,
+      probeSelection: (seam: boolean, needle: string | null = null) => engine?.annotations.probe(seam, needle) ?? null,
     };
   }
   send({ type: 'ready', sections: book.sections.length, openMs: performance.now() - started });

@@ -868,7 +868,11 @@ fn accepting_a_suggestion_is_the_one_way_to_merge_and_loses_nothing() {
     let document = fixture.document_at(&edition);
     assert_eq!(document.id, identity.document);
     assert_eq!(document.revisions.len(), 2);
-    assert_eq!(document.annotations.len(), 2);
+    assert_eq!(
+        document.annotations.len(),
+        3,
+        "the note and highlight of one, the note of the other"
+    );
     assert_eq!(fixture.document_count(), 1);
     assert_eq!(fixture.library().suggestions(true).unwrap().len(), 0);
 }
@@ -1579,7 +1583,11 @@ fn notes_made_before_the_hash_arrives_follow_the_file() {
 
     let document = fixture.document_at(&again);
     assert_eq!(document.id, identity.document);
-    assert_eq!(document.annotations.len(), 2, "both notes");
+    assert_eq!(
+        document.annotations.len(),
+        3,
+        "both notes and the highlight"
+    );
     let work = fixture.library().work(document.work_id).unwrap();
     assert_eq!(
         work.rating,

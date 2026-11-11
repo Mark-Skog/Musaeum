@@ -350,6 +350,13 @@ export class Reader {
     this.goToScreen(this.screen + step);
   }
 
+  /** Shows a point of a page, as fractions of the page as shown, a little below the top. */
+  goToPoint(page: number, u: number, v: number): void {
+    const target = clamp(page, 0, this.pageCount - 1);
+    this.locator = { page: target, u: clamp(u, 0, 1), v: clamp(v - 0.04, 0, 1) };
+    this.moveTo(this.locator);
+  }
+
   goToPage(page: number): void {
     const target = clamp(page, 0, this.pageCount - 1);
     this.locator = { page: target, u: 0, v: 0 };

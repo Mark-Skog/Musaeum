@@ -40,6 +40,10 @@ export interface ViewEvents {
   relocate(anchor: ViewAnchor, reason: string): void;
   /** A section's document loaded, for the keys and links it must pass up. */
   document(doc: Document, index: number): void;
+  /** In continuous reading, the slot a section's frame is in, where its marks are drawn. */
+  overlay?(doc: Document, index: number, slot: HTMLElement): void;
+  /** A section's document went away. */
+  released?(doc: Document): void;
 }
 
 interface Slot {
@@ -378,6 +382,7 @@ export class ContinuousView {
       slot.doc = doc;
       this.prepare(slot);
       this.events.document(doc, slot.index);
+      this.events.overlay?.(doc, slot.index, slot.element);
       this.measure(slot, true);
       const observed = doc.body ?? doc.documentElement;
       slot.observer = new ResizeObserver(() => this.measure(slot, false));
@@ -390,6 +395,9 @@ export class ContinuousView {
 
   private unload(slot: Slot): void {
     slot.generation++;
+    if (slot.doc !== null) {
+      this.events.released?.(slot.doc);
+    }
     slot.observer?.disconnect();
     slot.observer = null;
     if (slot.frame !== null) {
@@ -752,6 +760,11 @@ export class ContinuousView {
     const anchor = this.range();
     const line = anchor !== null ? lineHeightAt(anchor.range) : 24;
     this.root.scrollBy({ top: step * Math.max(line, viewport - line * 1.5), behavior: animated ? 'smooth' : 'auto' });
+  }
+
+  /** Scrolls by a number of CSS pixels, as a drag near the screen's edge does. */
+  scrollByPixels(pixels: number): void {
+    this.root.scrollBy({ top: pixels });
   }
 
   scrollByLines(lines: number): void {

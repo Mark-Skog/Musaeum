@@ -6,6 +6,7 @@
  * again, and what the benchmark needs, which is not there outside a benchmark.
  */
 
+import type { FlowMark } from './annotations';
 import { isReadingStyle, type ReadingStyle } from './typography';
 
 export type ReaderScenario = 'interactive' | 'layout' | 'security' | 'memory' | 'smoke';
@@ -49,7 +50,18 @@ export type ToReader =
   | { type: 'set-style'; style: ReadingStyle }
   | { type: 'go-to'; target: ReaderTarget }
   | { type: 'turn'; step: 1 | -1 }
-  | { type: 'key'; key: string; shift: boolean };
+  | { type: 'key'; key: string; shift: boolean }
+  /** Every mark to draw, replacing the ones before. */
+  | { type: 'marks'; marks: FlowMark[] }
+  | { type: 'clear-selection' };
+
+/** A box in CSS pixels of the reader's page. */
+export interface ReaderRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 /** Keys the reader acts on itself, for when the host has them. */
 export const NAVIGATION_KEYS = new Set([
@@ -87,10 +99,30 @@ export type FromReader =
     }
   | { type: 'layout'; ms: number; change: string }
   | { type: 'shortcut'; key: Shortcut }
-  | { type: 'link'; href: string };
+  | { type: 'link'; href: string }
+  /** What the reader selected, from where to where, or nothing (`start` null). */
+  | { type: 'selection'; start: string | null; end: string | null; text: string; rect: ReaderRect | null }
+  /** A click on a mark. */
+  | { type: 'mark-click'; id: string; rect: ReaderRect };
 
 const MAX_CFI = 4096;
 const MAX_HREF = 2048;
+const MAX_SELECTION_TEXT = 65536;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function isCfi(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_CFI && value.startsWith('epubcfi(');
+}
+
+function isRect(value: unknown): value is ReaderRect {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const rect = value as Record<string, unknown>;
+  return ['x', 'y', 'width', 'height'].every(
+    (key) => typeof rect[key] === 'number' && Number.isFinite(rect[key]) && Math.abs(rect[key] as number) < 1e6,
+  );
+}
 
 function isFraction(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
@@ -153,6 +185,19 @@ export function isFromReader(data: unknown): data is FromReader {
         message.href.length <= MAX_HREF &&
         /^(https?:|mailto:|tel:)/i.test(message.href)
       );
+    case 'selection':
+      if (message.start === null) {
+        return message.end === null && typeof message.text === 'string' && message.rect === null;
+      }
+      return (
+        isCfi(message.start) &&
+        isCfi(message.end) &&
+        typeof message.text === 'string' &&
+        message.text.length <= MAX_SELECTION_TEXT &&
+        (message.rect === null || isRect(message.rect))
+      );
+    case 'mark-click':
+      return typeof message.id === 'string' && UUID.test(message.id) && isRect(message.rect);
     default:
       return false;
   }
@@ -188,6 +233,10 @@ export function isToReader(data: unknown): data is ToReader {
       return message.step === 1 || message.step === -1;
     case 'key':
       return typeof message.key === 'string' && typeof message.shift === 'boolean';
+    case 'marks':
+      return Array.isArray(message.marks);
+    case 'clear-selection':
+      return true;
     default:
       return false;
   }

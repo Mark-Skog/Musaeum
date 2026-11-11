@@ -12,6 +12,7 @@ import { ContinuousView, type LoadableSection, type ViewAnchor } from './continu
 import { PaginatedView } from './paginated-view';
 import { guardSectionLoads } from './section-loads';
 import { rangeOf, startOf, textOffset } from './anchor';
+import { FlowAnnotations, type FlowMark } from './annotations';
 import { changesLayout, contentCss, THEMES, type ReadingStyle } from './typography';
 
 /** The part of foliate-js's EPUB this uses. */
@@ -51,6 +52,7 @@ export class FlowEngine {
   /** Keeps changes in order: a second one waits for the first to finish. */
   private queue: Promise<void> = Promise.resolve();
   private wired: WeakRef<Document>[] = [];
+  readonly annotations: FlowAnnotations;
 
   constructor(
     private readonly book: FlowBook,
@@ -65,6 +67,17 @@ export class FlowEngine {
     this.style = options.style;
     // Both views, and anything else, ask for sections through this.
     guardSectionLoads(book.sections);
+    this.annotations = new FlowAnnotations({
+      sectionOf: (cfi) => this.book.resolveCFI(cfi).index,
+      sectionCfi: (index) => this.book.sections[index].cfi,
+      send: (message) => this.send(message),
+      dark: () => this.style.theme === 'dark',
+      scrollBy: (pixels) => {
+        if (this.view instanceof ContinuousView) {
+          this.view.scrollByPixels(pixels);
+        }
+      },
+    });
     this.applyTheme();
     this.view = this.createView(this.mode);
   }
@@ -74,9 +87,18 @@ export class FlowEngine {
     const events = {
       relocate: (anchor: ViewAnchor, reason: string) => this.onRelocate(anchor, reason),
       document: (doc: Document, index: number) => this.wire(doc, index),
+      overlay: (doc: Document, index: number, slot: HTMLElement) => this.annotations.overlayIn(slot, doc, index),
+      released: (doc: Document) => this.annotations.release(doc),
     };
     if (mode === 'paginated') {
       const view = new PaginatedView(this.book, this.book.sections, this.style, css, this.animated, events);
+      // foliate-js places a layer over each section's frame and redraws it after every layout.
+      view.element.addEventListener('create-overlayer', (event) => {
+        const { doc, index, attach } = (
+          event as CustomEvent<{ doc: Document; index: number; attach(overlayer: unknown): void }>
+        ).detail;
+        attach(this.annotations.overlay(doc, index));
+      });
       view.mount(this.container);
       return view;
     }
@@ -217,6 +239,14 @@ export class FlowEngine {
     this.send({ type: 'layout', ms: performance.now() - started, change });
   }
 
+  setMarks(marks: FlowMark[]): void {
+    this.annotations.setMarks(marks);
+  }
+
+  clearSelection(): void {
+    this.annotations.clearSelection();
+  }
+
   setStyle(style: ReadingStyle): Promise<void> {
     return this.serially(async () => {
       const relayout = changesLayout(this.style, style);
@@ -230,6 +260,8 @@ export class FlowEngine {
           this.view.relayout(relayout ? 'typography' : 'theme', style, css);
         }
       });
+      // A new theme draws the marks in its own way; a new layout moves them.
+      this.annotations.redrawAll();
     });
   }
 
@@ -311,6 +343,7 @@ export class FlowEngine {
   private wire(doc: Document, index: number): void {
     doc.addEventListener('keydown', (event) => this.onKey(event));
     doc.addEventListener('click', (event) => this.onClick(event, index));
+    this.annotations.wire(doc, index);
     // Weakly, and pruned here: only the test hook below reads these.
     this.wired = this.wired.filter((ref) => (ref.deref()?.defaultView ?? null) !== null);
     this.wired.push(new WeakRef(doc));
@@ -359,6 +392,14 @@ export class FlowEngine {
     const target = event.target as Element | null;
     const link = target?.closest?.('a[href], area[href]');
     if (link === null || link === undefined) {
+      // A click on a mark, with nothing being selected, opens it.
+      const doc = target?.ownerDocument ?? null;
+      if (doc !== null && (doc.getSelection()?.isCollapsed ?? true)) {
+        const hit = this.annotations.hit(doc, event.clientX, event.clientY);
+        if (hit !== null) {
+          this.send({ type: 'mark-click', id: hit.id, rect: hit.rect });
+        }
+      }
       return;
     }
     const href = link.getAttribute('href') ?? '';

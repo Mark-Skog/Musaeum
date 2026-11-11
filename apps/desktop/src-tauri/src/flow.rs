@@ -44,7 +44,7 @@ pub struct FlowBook {
 
 impl FlowBook {
     /// One whole document, put back together from its parts.
-    fn document(&self, index: usize) -> Result<Arc<LogicalDocument>, String> {
+    pub fn document(&self, index: usize) -> Result<Arc<LogicalDocument>, String> {
         {
             let mut kept = self
                 .documents
@@ -119,8 +119,20 @@ impl FlowBook {
     }
 }
 
+impl musaeum_library::anchoring::flow::Documents for FlowBook {
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    fn document(&self, index: usize) -> Option<Arc<LogicalDocument>> {
+        FlowBook::document(self, index)
+            .map_err(|error| eprintln!("document {index} could not be read: {error}"))
+            .ok()
+    }
+}
+
 /// Runs `work` on a thread with a stack deep enough for any document the normalizer lets through.
-fn on_large_stack<T: Send + 'static>(
+pub fn on_large_stack<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     std::thread::Builder::new()
