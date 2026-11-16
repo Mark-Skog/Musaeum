@@ -47,7 +47,9 @@ const MAX_QUADS = 8192;
  * since text can be turned on its page, with two colors: one for light paper and one for dark.
  *
  * The tiles of a frame are drawn into a texture first, and each mark reads the pixel under it
- * from that texture and decides by its luminance how to mix. Over light paper it takes the
+ * from that texture. How to mix it decides by the paper around that pixel, not by the pixel: the
+ * mean of the 16 by 16 block it is in (a level of the texture's mipmaps), where thin type weighs
+ * little, so a white letter on a black page counts as black paper. Over light paper it takes the
  * minimum, as a highlighter does: white paper takes the color, black ink stays black, and two
  * marks over each other do not darken. Over a dark page it takes the maximum with the dark
  * color, the same thing the other way round: the dark paper takes a dimmer color and white type
@@ -80,10 +82,12 @@ flat in vec3 v_light;
 flat in vec3 v_dark;
 uniform sampler2D u_frame;
 uniform vec2 u_viewport;
+uniform float u_paperLevel;
 out vec4 o_color;
 void main() {
-  vec3 under = texture(u_frame, gl_FragCoord.xy / u_viewport).rgb;
-  float luminance = dot(under, vec3(0.299, 0.587, 0.114));
+  vec3 under = texelFetch(u_frame, ivec2(gl_FragCoord.xy), 0).rgb;
+  vec3 paper = textureLod(u_frame, gl_FragCoord.xy / u_viewport, u_paperLevel).rgb;
+  float luminance = dot(paper, vec3(0.299, 0.587, 0.114));
   float light = smoothstep(0.30, 0.60, luminance);
   o_color = vec4(mix(max(under, v_dark), min(under, v_light), light), 1.0);
 }`;
@@ -93,6 +97,8 @@ const MAX_MARKS = 16384;
 /** The light and dark colors of the mark that only copies the frame. */
 const COPY_LIGHT: readonly [number, number, number] = [1, 1, 1];
 const COPY_DARK: readonly [number, number, number] = [0, 0, 0];
+/** The mipmap level whose texels are the paper a mark decides by: 16 by 16 pixels. */
+const PAPER_LEVEL = 4;
 
 /** Matches the white the render worker fills tiles with, so plates never flash. */
 const PAPER_COLOR: readonly [number, number, number] = [1, 1, 1];
@@ -109,6 +115,9 @@ export class TileRenderer implements QuadSink {
   /** Where the tiles of a frame are drawn, for the marks to read what is under them. */
   private frame: WebGLFramebuffer | null = null;
   private frameTexture: WebGLTexture | null = null;
+  private markPaperLevelUniform: WebGLUniformLocation | null = null;
+  /** The paper level the frame texture has, smaller on a canvas too small for the full one. */
+  private paperLevel = 0;
   private frameWidth = 0;
   private frameHeight = 0;
   private tileProgram: WebGLProgram | null = null;
@@ -205,16 +214,10 @@ export class TileRenderer implements QuadSink {
     this.markViewportUniform = gl.getUniformLocation(markProgram, 'u_viewport');
     gl.useProgram(markProgram);
     gl.uniform1i(gl.getUniformLocation(markProgram, 'u_frame'), 1);
+    this.markPaperLevelUniform = gl.getUniformLocation(markProgram, 'u_paperLevel');
     gl.useProgram(program);
-    // The frame texture, on unit 1; the tiles stay on unit 0, which `upload` relies on.
-    this.frameTexture = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.activeTexture(gl.TEXTURE0);
+    // The frame texture, on unit 1, made in `fitFrame`; the tiles stay on unit 0, which `upload`
+    // relies on.
     this.frame = gl.createFramebuffer();
     this.frameWidth = 0;
     this.frameHeight = 0;
@@ -258,12 +261,24 @@ export class TileRenderer implements QuadSink {
     const { gl } = this;
     const width = Math.max(1, this.canvas.width);
     const height = Math.max(1, this.canvas.height);
-    if (this.frameTexture === null || (width === this.frameWidth && height === this.frameHeight)) {
+    if (this.frame === null || (width === this.frameWidth && height === this.frameHeight)) {
       return;
     }
+    // Storage of a fixed size, with the mip levels up to the paper one, made anew on a resize:
+    // always complete, so the copy reads it even in a frame that did not make the mipmaps.
+    if (this.frameTexture !== null) {
+      gl.deleteTexture(this.frameTexture);
+    }
+    this.paperLevel = Math.min(PAPER_LEVEL, Math.floor(Math.log2(Math.max(width, height))));
+    this.frameTexture = gl.createTexture();
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texStorage2D(gl.TEXTURE_2D, this.paperLevel + 1, gl.RGBA8, width, height);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, this.paperLevel);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.frame);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.frameTexture, 0);
@@ -379,10 +394,17 @@ export class TileRenderer implements QuadSink {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (this.markProgram !== null) {
       this.write(0, [0, 0, width, 0, width, height, 0, height], COPY_LIGHT, COPY_DARK);
+      if (this.markCount > 1) {
+        // The paper the marks decide by; the copy alone changes nothing whatever it reads there.
+        gl.activeTexture(gl.TEXTURE1);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.activeTexture(gl.TEXTURE0);
+      }
       gl.useProgram(this.markProgram);
       gl.bindVertexArray(this.markVertexArray);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.markBuffer);
       gl.uniform2f(this.markViewportUniform, width, height);
+      gl.uniform1f(this.markPaperLevelUniform, this.paperLevel);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.marks, 0, this.markCount * FLOATS_PER_MARK);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.markCount);
       gl.useProgram(this.tileProgram);

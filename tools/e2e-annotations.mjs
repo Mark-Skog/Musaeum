@@ -348,6 +348,9 @@ async function fixedBook(main, row, pdf) {
   await reveal(main, 3, 0.15);
   await waitSharp(main);
   aim = await aimFixed(main, 3, targets.dark);
+  // A pixel of the first letter, before anything is over it: the mark must leave it as it is.
+  const typeAt = await screenOf(main, 3, (aim.layer.chars[aim.start].quad[0] + aim.layer.chars[aim.start].quad[2]) / 2, (aim.layer.chars[aim.start].quad[1] + aim.layer.chars[aim.start].quad[5]) / 2, 0);
+  const typeBefore = await pixel(main, typeAt);
   await drag(main, aim.from, aim.to);
   await selectionNow(main, 'fixed');
   await click(main, '#mark-color-pink');
@@ -356,9 +359,10 @@ async function fixedBook(main, row, pdf) {
   const darkGap = await gapIn(main, 3, aim.layer, targets.dark);
   const darkColor = await pixel(main, darkGap);
   step('on a black ground the highlight is its color dimmed', near(darkColor, onDark(PINK), 16), { color: darkColor, expected: onDark(PINK) });
-  const typeAt = await screenOf(main, 3, (aim.layer.chars[aim.start].quad[0] + aim.layer.chars[aim.start].quad[2]) / 2, (aim.layer.chars[aim.start].quad[1] + aim.layer.chars[aim.start].quad[5]) / 2, 0);
   const typeColor = await pixel(main, typeAt);
-  step('and the white type under it stays light', typeColor.every((value) => value >= 200) || Math.max(...typeColor) >= 230, { color: typeColor });
+  // Light type over a dark page counts as the dark page (the renderer decides by the paper around
+  // a pixel): the mark takes the maximum with a dim color, which leaves the type as it was, untinted.
+  step('and the light type under it stays as it was', typeBefore.some((value) => value >= 150) && near(typeColor, typeBefore, 8), { before: typeBefore, color: typeColor });
 
   // 6. Zoom and mode: the marks follow the text, drawn in the same frames as the pages.
   const zoomCheck = async (label) => {
