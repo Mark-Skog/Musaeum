@@ -12,7 +12,7 @@ use musaeum_core::{
     DeliveryMode, DocumentOrientation, FixedFormat, PoolConfig, PoolStats, RenderPool,
     geometry_bytes, summarize_orientation,
 };
-use musaeum_library::{IngestClient, Library};
+use musaeum_library::{Hash, IngestClient, Library};
 use musaeum_sandbox::Policy;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::{PixelSlab, ShmRegion};
@@ -21,6 +21,7 @@ use tauri::{AppHandle, LogicalSize, Manager, State, WebviewWindow};
 
 use crate::background::{self, Pending};
 use crate::memory::MemorySampler;
+use crate::ocr::Ocr;
 use crate::options::{DeliveryFault, DeliveryPath, StartupOptions};
 use crate::reading::{self, SavedReading};
 use crate::shelf::Shelf;
@@ -48,6 +49,8 @@ pub struct Session {
     pub geometry: Vec<u8>,
     /// The library's document and revision, if the file is in the library.
     pub document: Option<(i64, i64)>,
+    /// The file's exact bytes, as the library hashed them, which is what the cache keys by.
+    pub blake3: Option<Hash>,
     /// What kind of document it is.
     pub format: FixedFormat,
 }
@@ -65,6 +68,8 @@ pub struct AppState {
     pub shelf: Shelf,
     /// The ingest worker that normalizes flowing books as they are opened, kept between books.
     pub flow_client: Mutex<Option<IngestClient>>,
+    /// The OCR worker that reads the text under marks on scans, kept while a document is open.
+    pub ocr: Ocr,
 }
 
 impl AppState {
@@ -84,6 +89,7 @@ impl AppState {
             started: Instant::now(),
             shelf: Shelf::new(options.library.clone(), options.bench.is_some()),
             flow_client: Mutex::new(None),
+            ocr: Ocr::default(),
             options,
             current: RwLock::new(None),
             next_id: AtomicU32::new(1),
@@ -91,7 +97,7 @@ impl AppState {
     }
 
     /// The library, if there is one to remember things in.
-    fn library(&self) -> Option<Arc<Library>> {
+    pub fn library(&self) -> Option<Arc<Library>> {
         self.shelf.library()
     }
 
@@ -116,6 +122,8 @@ impl AppState {
         if let Some(session) = session {
             session.pool.shutdown();
         }
+        // Its worker holds the models in memory; the next document starts another if it needs one.
+        self.ocr.release();
     }
 
     fn current_stats(&self) -> Option<PoolStats> {
@@ -331,6 +339,7 @@ pub fn open_session(
         id: state.next_id.fetch_add(1, Ordering::Relaxed),
         geometry: geometry_bytes(pool.pages()),
         document: known.file.map(|file| (file.document, file.revision)),
+        blake3: known.file.and_then(|file| file.blake3),
         format,
         pool,
     });

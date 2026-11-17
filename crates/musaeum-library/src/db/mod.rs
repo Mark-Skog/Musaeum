@@ -49,6 +49,14 @@ pub(crate) const LIBRARY_MIGRATIONS: &[Migration] = &[
         version: 4,
         sql: include_str!("../../migrations/library/0004_annotations.sql"),
     },
+    Migration {
+        version: 5,
+        sql: include_str!("../../migrations/library/0005_page_region.sql"),
+    },
+    Migration {
+        version: 6,
+        sql: include_str!("../../migrations/library/0006_ocr_quote.sql"),
+    },
 ];
 
 /// The migrations of `cache.db`, in order.
@@ -64,6 +72,14 @@ pub(crate) const CACHE_MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         sql: include_str!("../../migrations/cache/0003_page_content.sql"),
+    },
+    Migration {
+        version: 4,
+        sql: include_str!("../../migrations/cache/0004_line_model.sql"),
+    },
+    Migration {
+        version: 5,
+        sql: include_str!("../../migrations/cache/0005_ocr_line.sql"),
     },
 ];
 

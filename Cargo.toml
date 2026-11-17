@@ -14,6 +14,10 @@ members = [
     "crates/musaeum-fs",
     "crates/musaeum-ingest",
     "crates/musaeum-library",
+    "crates/musaeum-vision",
+    "crates/musaeum-tesseract",
+    "crates/musaeum-ocr",
+    "crates/musaeum-ocr-worker",
     "apps/cli",
     "apps/desktop/src-tauri",
     "tools/corpus-check",
@@ -40,6 +44,9 @@ musaeum-ingest = { path = "crates/musaeum-ingest" }
 musaeum-library = { path = "crates/musaeum-library" }
 musaeum-sandbox = { path = "crates/musaeum-sandbox" }
 musaeum-shm = { path = "crates/musaeum-shm" }
+musaeum-vision = { path = "crates/musaeum-vision" }
+musaeum-tesseract = { path = "crates/musaeum-tesseract" }
+musaeum-ocr = { path = "crates/musaeum-ocr" }
 musaeum-worker = { path = "crates/musaeum-worker" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 
@@ -72,6 +79,9 @@ undocumented_unsafe_blocks = "deny"
 # Decoding, resampling and compressing images unoptimized is tens of times slower, so tests of the
 # comic worker would measure the build instead of the code. Only these crates are optimized.
 [profile.dev.package]
+# The line detector is pure arithmetic over a page of pixels: its tests and the corpus run in seconds
+# optimized, minutes without.
+musaeum-vision.opt-level = 3
 fast_image_resize.opt-level = 3
 fdeflate.opt-level = 3
 gif.opt-level = 3

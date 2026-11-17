@@ -12,8 +12,10 @@ mod background;
 mod book;
 mod covers;
 mod flow;
+mod lines;
 mod links;
 mod memory;
+mod ocr;
 mod options;
 mod picker;
 mod protocol;
@@ -91,6 +93,9 @@ fn main() {
             annotations::fixed_annotations,
             annotations::page_chars,
             annotations::create_fixed_annotation,
+            annotations::create_region_annotation,
+            lines::line_model,
+            ocr::region_text,
             annotations::flow_annotations,
             annotations::create_flow_annotation,
             annotations::edit_annotation,
@@ -139,6 +144,8 @@ fn main() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 // Stop the workers while the WebView2 buffers they map are still alive.
                 handle.state::<AppState>().stop_current_session();
+                // And the OCR's, with the quotes it was reading.
+                handle.state::<AppState>().ocr.shutdown();
                 // And the indexer and the covers, finishing what they are writing.
                 handle.state::<AppState>().shelf.close();
             }

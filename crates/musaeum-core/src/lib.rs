@@ -19,7 +19,8 @@ pub use geometry::{
     summarize_orientation,
 };
 pub use pool::{
-    BackgroundResult, BackgroundSink, BackgroundWork, DeliveryMode, Poller, PoolConfig, PoolError,
+    BackgroundResult, BackgroundSink, BackgroundTask, BackgroundWork, DeliveryMode,
+    MAX_REGION_PIXELS, Poller, PoolConfig, PoolError, PoolHandle, RegionPicture, RegionRequest,
     RenderPool, TextError, TextReply, encode_tile_batch,
 };
 pub use scheduler::{

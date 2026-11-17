@@ -2,8 +2,8 @@
 // Annotations in the real window, driven through the WebView2's debugging protocol with the input a
 // person gives: drags, double and triple clicks, the bar's buttons, the note editor, the inspector.
 //
-//   node tools/e2e-annotations.mjs [--build target/release] [--out FILE.json] [--phase fixtures|corpus|all]
-//                                  [--corpus DIR] [--require-idle SECONDS]
+//   node tools/e2e-annotations.mjs [--build target/release] [--out FILE.json] [--phase fixtures|corpus|lines|ocr|real|all]
+//                                  [--corpus DIR] [--require-idle SECONDS] [--real INSPECT.json,INSPECT.json]
 //
 // 1. Fixtures: a PDF and an EPUB written for this (tools/lib/test-books.mjs) and the DjVu fixture.
 //    In each it makes highlights, an underline and a note, one across a page break (PDF) or across a
@@ -17,17 +17,46 @@
 //    highlight each, kept through typography, zoom and reopening; the collection is listed before and
 //    after and must be the same.
 //
+// 3. Lines (Phase 5): a scanned book with no text layer. The lines the background finds on its
+//    picture are counted against the ones drawn; a drag with the lines tool selects from a word of
+//    one line to a word of another, the lines between whole; with snapping off, the ends stay where
+//    the pointer is; a box and a stroke are drawn too. Each becomes an annotation, drawn on the
+//    screen, found again exactly after closing and reopening.
+//
+// 4. OCR (Phase 5, Part 2): a book with a text layer, of prose, two columns over a photograph, a
+//    chart, a table and text turned 90°, 45° and −30° (gen-fixtures --only ocr), and its scanned
+//    twin, pictures only (visual-check scan). What a copy of three lines of the native book puts on
+//    the system clipboard, the same lines of the twin copied with the lines tool put there too, word
+//    for word and line for line; so does a box; turned text copies as it reads; a box over the
+//    photograph copies nothing and a drag on it selects nothing. A highlight on the twin gets the
+//    native highlight's quote from the OCR, in the background, the search finds it by a word
+//    without its accent, and it keeps it after reopening; no OCR worker outlives the app. The
+//    clipboard is put aside before and put back after.
+//
+// 5. Real pages (the audit of Phase 5): pages of two books of the real collection, only read, where
+//    the lines tool failed by hand. The lines to drag along, and what they say, come from
+//    `corpus-check --inspect --ocr` on the same pages (`--real`, its reports); the folders of the
+//    two books are added to a fresh library, and the collection is listed before and after and
+//    must be the same. A drag along lines of a table of contents takes the line with a leader of
+//    dashes and the short line in italics between two others; one along a line underlined in
+//    pencil, with scribbles in the margin, copies its words and not the next line's; and one up the
+//    lines of a page printed the long way copies them whole, without the scanner's mark at 0°
+//    under them. On a page with a text layer, the copy is the OCR's, as the audit decided.
+//    Not part of `all`.
+//
 // Libraries, caches and the written books live in a temporary folder, removed at the end. The run
 // waits for the machine to be free and stops as soon as someone uses it (exit code 3).
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { click, closeApp, connectFrame, idleSeconds, launch, press, typeInto, waitFor } from './lib/cdp.mjs';
+import { clipboardText, saveClipboard, setClipboardText } from './lib/clipboard.mjs';
 import { decodePng } from './lib/png.mjs';
-import { annotatedEpub, annotatedPdf } from './lib/test-books.mjs';
+import { annotatedEpub, annotatedPdf, scanPdf } from './lib/test-books.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const SCALE_ONE = 4096;
@@ -40,6 +69,7 @@ function parseArguments(argv) {
     corpus: 'C:\\Marte\\Archives\\DigitalLibrary\\Books',
     requireIdle: 60,
     samples: 2,
+    real: [],
   };
   for (let at = 0; at < argv.length; at++) {
     const flag = argv[at];
@@ -50,6 +80,7 @@ function parseArguments(argv) {
     else if (flag === '--corpus') options.corpus = resolve(value());
     else if (flag === '--require-idle') options.requireIdle = Number(value());
     else if (flag === '--samples') options.samples = Number(value());
+    else if (flag === '--real') options.real = value().split(/[,+]/).filter((path) => path.length > 0).map((path) => resolve(path));
     else throw new Error(`unknown argument: ${flag}`);
   }
   return options;
@@ -71,7 +102,7 @@ function checkStillQuiet() {
   quietSince = idle;
 }
 
-const report = { started: new Date().toISOString(), options, fixtures: null, corpus: null, failures: [] };
+const report = { started: new Date().toISOString(), options, fixtures: null, corpus: null, lines: null, ocr: null, real: null, failures: [] };
 function check(condition, message) {
   if (!condition) {
     report.failures.push(message);
@@ -161,6 +192,7 @@ async function pixel(main, at) {
 
 const near = (rgb, expected, tolerance) => rgb.every((value, at) => Math.abs(value - expected[at]) <= tolerance);
 const GREEN = [168, 230, 161];
+const BLUE = [153, 201, 252];
 const PINK = [250, 173, 214];
 /** What a highlight is over a black ground: its color dimmed to 55%, the type left white. */
 const DARK_FILL = 0.55;
@@ -865,6 +897,592 @@ async function runCorpus(work) {
   return result;
 }
 
+/** A scanned book: lines found on its picture, marks along them, a box, a stroke. */
+async function runLines(work) {
+  const books = join(work, 'escaneados');
+  mkdirSync(books, { recursive: true });
+  const scan = scanPdf(2);
+  writeFileSync(join(books, 'escaneado.pdf'), scan.pdf);
+  const library = join(work, 'biblioteca-linhas');
+  const run = await launch(app, ['--library', library, '--e2e', '--width', '1400', '--height', '900'], 'window.musaeumApp !== undefined');
+  const main = run.cdp;
+  const result = { steps: [] };
+  report.lines = result;
+  const step = (label, ok, detail = {}) => {
+    result.steps.push({ label, ok, ...detail });
+    check(ok, `lines: ${label} ${JSON.stringify(detail)}`);
+  };
+  try {
+    await waitFor(main, "document.querySelector('.welcome') !== null || document.querySelector('.library') !== null", { what: 'the first screen' });
+    await main.evaluate(`window.musaeumApp.addRoot(${JSON.stringify(books)})`);
+    const [row] = (
+      await waitFor(main, '(() => { const r = window.musaeumApp.rows(); const i = window.musaeumApp.library(); return r.total === 1 && i && !i.indexing && r.rows.every((b) => b.blake3 !== null) ? r : null; })()', {
+        timeoutMs: 120_000,
+        what: 'the scanned book in the library',
+      })
+    ).rows;
+    await openBook(main, row.documentId);
+    await waitSharp(main);
+
+    // The lines tool: the page's lines are traced ahead of the rest of the background.
+    await click(main, 'button[aria-label="Selecionar por linhas da imagem"]');
+    const truth = scan.pages[0];
+    const traced = await waitFor(main, '(async () => { const i = await window.musaeumApp.inspectFixed(); const p = i?.linePages?.find((x) => x.page === 0); return p ? { tool: i.tool, lines: p.lines } : null; })()', {
+      timeoutMs: 90_000,
+      what: "page 0's lines",
+    });
+    step('the lines found on the picture are the lines drawn on it', traced.tool === 'lines' && traced.lines === truth.length, { found: traced.lines, drawn: truth.length });
+
+    const at = async (line, u) => screenOf(main, 0, u, truth[line].v - scan.xHeight / 2, 0);
+    const middleOf = ([from, to]) => (from + to) / 2;
+    // From the middle of the second word of line 3 to the middle of the third word of line 5.
+    const from = await at(3, middleOf(truth[3].words[1]));
+    const to = await at(5, middleOf(truth[5].words[2]));
+    await drag(main, from, to);
+    let selection = await selectionNow(main, 'region');
+    let region = selection.region;
+    const width = (line) => truth[line].words.at(-1)[1] - truth[line].words[0][0];
+    const along = (line, u) => (u - truth[line].words[0][0]) / width(line);
+    step(
+      'a drag along lines takes the first from its word, the middle one whole, the last to its word',
+      region.tool === 'lines' &&
+        region.lines.map((piece) => piece.index).join() === '3,4,5' &&
+        Math.abs(region.lines[0].from - along(3, truth[3].words[1][0])) < 0.01 &&
+        region.lines[1].from === 0 &&
+        region.lines[1].to === 1 &&
+        Math.abs(region.lines[2].to - along(5, truth[5].words[2][1])) < 0.01,
+      { lines: region.lines },
+    );
+    await click(main, '#mark-color-green');
+    let list = await written(main, 1, 'the mark along lines');
+    // Its quote is what the OCR reads under it, afterwards: on these made-up letters, whatever it reads.
+    step('it is kept as an annotation with its three lines', list[0].marks.length === 1 && list[0].marks[0].quads === 3, list[0]);
+    await waitSharp(main);
+    // Between two words of the middle line: paper, under the mark.
+    const gap = await at(4, (truth[4].words[1][1] + truth[4].words[2][0]) / 2);
+    const green = await pixel(main, gap);
+    step('the mark is drawn on the picture', near(green, GREEN, 16), { color: green });
+
+    // Snapping off: the ends stay where the pointer is. The points are worked out again: the view
+    // may have moved since.
+    await click(main, '#line-snap');
+    await waitSharp(main);
+    await drag(main, await at(3, middleOf(truth[3].words[1])), await at(5, middleOf(truth[5].words[2])));
+    selection = await selectionNow(main, 'region');
+    region = selection.region;
+    step(
+      'with snapping off the ends are where the pointer was',
+      Math.abs(region.lines[0].from - along(3, middleOf(truth[3].words[1]))) < 0.01 &&
+        Math.abs(region.lines.at(-1).to - along(5, middleOf(truth[5].words[2]))) < 0.01,
+      { lines: region.lines },
+    );
+    await press(main, 'Escape');
+    await click(main, '#line-snap');
+
+    // A box over three lines. Paper inside it, a space between two words of its middle line, is
+    // read first: a scan's paper is not white, and the box takes the minimum with it.
+    await click(main, 'button[aria-label="Caixa retangular"]');
+    await waitSharp(main);
+    const space = truth[11].words.findIndex((word, index) => index > 0 && truth[11].words[index - 1][1] > 0.32 && word[0] < 0.58);
+    const inBox = await at(11, (truth[11].words[space - 1][1] + truth[11].words[space][0]) / 2);
+    const paper = await pixel(main, inBox);
+    const boxFrom = await screenOf(main, 0, 0.3, truth[10].v - scan.xHeight * 2, 0);
+    const boxTo = await screenOf(main, 0, 0.6, truth[12].v + scan.xHeight, 0);
+    await drag(main, boxFrom, boxTo);
+    selection = await selectionNow(main, 'region');
+    step('a box is a region of one quad', selection.region.tool === 'rect' && selection.region.quads.length === 1, { clip: selection.region.clip });
+    await click(main, '#mark-color-blue');
+    list = await written(main, 2, 'the box');
+    await waitSharp(main);
+    const blue = await pixel(main, inBox);
+    const expected = BLUE.map((value, channel) => Math.min(value, paper[channel]));
+    step('the box is drawn translucent over the paper', near(blue, expected, 12), { color: blue, paper, expected });
+
+    // A stroke down the margin.
+    await click(main, 'button[aria-label="Traço livre"]');
+    await drag(main, await screenOf(main, 0, 0.06, truth[14].v, 0), await screenOf(main, 0, 0.07, truth[18].v, 0));
+    selection = await selectionNow(main, 'region');
+    step('a stroke keeps its path', selection.region.tool === 'free' && selection.region.path.length >= 4, { points: selection.region.path.length / 2 });
+    await click(main, '#mark-color-yellow');
+    list = await written(main, 3, 'the stroke');
+    const inspected = await main.evaluate('window.musaeumApp.inspectFixed()');
+    step('every mark is drawn', inspected.marks === 3, { marks: inspected.marks });
+
+    // Closed and opened again: the three, exact, on the page they were made on.
+    await back(main);
+    await openBook(main, row.documentId);
+    await waitSharp(main);
+    list = await written(main, 3, 'the marks after reopening');
+    step('closed and opened again, every mark is found exactly', list.every((entry) => entry.anchorState === 'exact' && entry.marks.length === 1 && entry.marks[0].page === 0), list.map((entry) => ({ state: entry.anchorState, marks: entry.marks })));
+    await waitSharp(main);
+    const again = await pixel(main, await at(4, (truth[4].words[1][1] + truth[4].words[2][0]) / 2));
+    step('and drawn where it was', near(again, GREEN, 16), { color: again });
+  } finally {
+    result.exitCode = await closeApp(run).catch((error) => String(error));
+    result.log = run.log().slice(-20000);
+    result.console = run.console.slice();
+  }
+  return result;
+}
+
+// --- OCR: a native book and its scanned twin, side by side ---
+
+/** Text as two copies are compared: line ends as `\n`, each line's words one space apart. */
+const linesOf = (text) =>
+  text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim().replace(/\s+/g, ' '))
+    .filter((line) => line !== '');
+const sameLines = (a, b) => JSON.stringify(linesOf(a)) === JSON.stringify(linesOf(b));
+const collapse = (text) => text.replace(/\s+/g, ' ').trim();
+const plain = (text) => text.normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+/** Characters to change to make `a` into `b`, by Levenshtein's distance. */
+function edits(a, b) {
+  const x = [...a];
+  const y = [...b];
+  let row = Array.from({ length: y.length + 1 }, (_, at) => at);
+  for (let i = 1; i <= x.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= y.length; j++) {
+      next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+    }
+    row = next;
+  }
+  return row[y.length];
+}
+
+/** Where a point of a page of the OCR book, in points from its bottom-left corner, is on the screen. */
+async function bookPoint(main, page, [x, y], size) {
+  return screenOf(main, page, x / size[0], 1 - y / size[1], 0);
+}
+
+/** A point on a line of the OCR book `t` of the way along it, `rise` points up across it. */
+function onLine(line, t, rise) {
+  const [x0, y0] = line.start;
+  const [x1, y1] = line.end;
+  const length = Math.hypot(x1 - x0, y1 - y0);
+  const [dx, dy] = [(x1 - x0) / length, (y1 - y0) / length];
+  // Up across a line in PDF's frame, y growing upward: to the left of the way it goes.
+  return [x0 + dx * length * t - dy * rise, y0 + dy * length * t + dx * rise];
+}
+
+/** The stored frame's point of the left part of a character, and of the right part of another. */
+function charEnds(layer, start, end) {
+  const first = layer.chars[start].quad;
+  const last = layer.chars[end - 1].quad;
+  const [u0, v0] = centerOf(first);
+  const [u1, v1] = centerOf(last);
+  return {
+    from: [Math.max(first[0] + 0.0005, u0 - (first[2] - first[0]) * 0.35), v0],
+    to: [u1 + (last[2] - last[0]) * 0.35, v1],
+  };
+}
+
+const NOTHING_COPIED = 'musaeum-e2e: nada copiado';
+
+/** Copies with Ctrl+C what is selected, and reads what the clipboard has then; null if nothing came. */
+async function copied(main, work) {
+  setClipboardText(NOTHING_COPIED, work);
+  checkStillQuiet();
+  await press(main, 'c', 2);
+  const started = Date.now();
+  while (Date.now() - started < 30_000) {
+    const text = clipboardText(work);
+    if (text !== null && text !== NOTHING_COPIED) {
+      return text;
+    }
+    await delay(250);
+  }
+  return null;
+}
+
+/** The text a region selection will copy, once it is read. */
+async function regionRead(main) {
+  return waitFor(main, "(() => { const s = window.musaeumApp.reader()?.selection; return s && s.kind === 'region' && !s.reading ? s : null; })()", {
+    timeoutMs: 120_000,
+    what: 'the text under the region to be read',
+  });
+}
+
+/** A page's line model traced, for the lines tool. */
+async function linesTraced(main, page) {
+  return waitFor(main, `(async () => { const i = await window.musaeumApp.inspectFixed(); const p = i?.linePages?.find((x) => x.page === ${page}); return p && p.lines > 0 ? p : null; })()`, {
+    timeoutMs: 120_000,
+    what: `page ${page}'s lines`,
+  });
+}
+
+/**
+ * The OCR book and its scanned twin, in one library. What a copy of lines of the native book puts
+ * on the clipboard, a copy of the same lines of the twin with the lines tool puts there too, word
+ * for word and line for line; so does a box; text at 90°, 45° and −30° is copied as it reads; a box
+ * over the photograph copies nothing and a drag on it selects nothing; a highlight on the twin
+ * gets the native quote, is found by the search without accents, and keeps it after reopening;
+ * and no OCR worker outlives the app.
+ */
+async function runOcr(work) {
+  const result = { steps: [], copies: [] };
+  report.ocr = result;
+  const step = (label, ok, detail = {}) => {
+    result.steps.push({ label, ok, ...detail });
+    check(ok, `ocr: ${label} ${JSON.stringify(detail)}`);
+  };
+  // The native book, from gen-fixtures, and its clean twin, scanned at 300 dpi by visual-check.
+  const source = join(work, 'ocr-fonte');
+  const books = join(work, 'ocr-livros');
+  mkdirSync(books, { recursive: true });
+  execFileSync(join(options.build, 'gen-fixtures.exe'), ['--only', 'ocr', '--out', source], { stdio: 'ignore', windowsHide: true });
+  const truth = JSON.parse(readFileSync(join(source, 'ocr-native.json'), 'utf8'));
+  const size = truth.page;
+  copyFileSync(join(source, 'ocr-native.pdf'), join(books, 'nativo.pdf'));
+  execFileSync(
+    join(options.build, 'visual-check.exe'),
+    ['scan', '--document', join(source, 'ocr-native.pdf'), '--out', join(books, 'escaneado.pdf'), '--dpi', '300', '--noise', '1', '--seed', '1'],
+    { stdio: 'ignore', windowsHide: true },
+  );
+  const lines = (page, kind, block) => truth.lines.filter((line) => line.page === page && line.kind === kind && (block === undefined || line.block === block) && line.text !== '');
+
+  // OCR workers already running belong to someone else (a measurement, say): only new ones count.
+  const ocrPids = () =>
+    execFileSync('tasklist', ['/FI', 'IMAGENAME eq musaeum-ocr.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true })
+      .split('\n')
+      .filter((line) => line.includes('musaeum-ocr.exe'))
+      .map((line) => line.split('","')[1]);
+  const before = new Set(ocrPids());
+  const restore = saveClipboard(work);
+  const library = join(work, 'biblioteca-ocr');
+  const run = await launch(app, ['--library', library, '--e2e', '--width', '1400', '--height', '900'], 'window.musaeumApp !== undefined');
+  const main = run.cdp;
+  let ocrWorkers = [];
+  try {
+    await waitFor(main, "document.querySelector('.welcome') !== null || document.querySelector('.library') !== null", { what: 'the first screen' });
+    await main.evaluate(`window.musaeumApp.addRoot(${JSON.stringify(books)})`);
+    const rows = (
+      await waitFor(main, '(() => { const r = window.musaeumApp.rows(); const i = window.musaeumApp.library(); return r.total === 2 && i && !i.indexing && r.rows.every((b) => b.blake3 !== null) ? r : null; })()', {
+        timeoutMs: 120_000,
+        what: 'both books in the library',
+      })
+    ).rows;
+    const native = rows.find((row) => basename(row.path) === 'nativo.pdf');
+    const twin = rows.find((row) => basename(row.path) === 'escaneado.pdf');
+
+    // 1. The native book: three lines of prose selected with the text tool and copied.
+    const body = lines(0, 'body', 1);
+    const chosen = body.slice(1, 4);
+    await openBook(main, native.documentId);
+    await waitSharp(main);
+    await waitFor(main, '(async () => (await window.musaeumApp.inspectFixed())?.charPages?.includes(0))()', { timeoutMs: 15_000, what: "page 0's characters" });
+    const layer = await pageChars(main, 0);
+    const start = layer.text.indexOf(chosen[0].text);
+    const end = layer.text.indexOf(chosen[2].text) + chosen[2].text.length;
+    step('the native book has the lines as written', start >= 0 && end > start, { start, end });
+    const ends = charEnds(layer, start, end);
+    await drag(main, await screenOf(main, 0, ...ends.from, 0), await screenOf(main, 0, ...ends.to, 0));
+    const nativeSelection = await selectionNow(main, 'fixed');
+    const nativeCopy = await copied(main, work);
+    const expected = chosen.map((line) => line.text).join('\n');
+    result.copies.push({ what: 'native, text tool', text: nativeCopy });
+    step('the native copy is the three lines as written', nativeCopy !== null && sameLines(nativeCopy, expected), { copied: nativeCopy, selected: nativeSelection.text });
+    await click(main, '#mark-color-green');
+    const nativeMarks = await written(main, 1, 'the native highlight');
+    const nativeQuote = nativeMarks[0].quote;
+    await back(main);
+
+    // 2. The twin: the same three lines with the lines tool, from the same places.
+    await openBook(main, twin.documentId);
+    await waitSharp(main);
+    await click(main, 'button[aria-label="Selecionar por linhas da imagem"]');
+    await linesTraced(main, 0);
+    await waitSharp(main);
+    await drag(main, await screenOf(main, 0, ...ends.from, 0), await screenOf(main, 0, ...ends.to, 0));
+    let region = await regionRead(main);
+    step('a drag along the lines takes the three, whole', region.region.lines.length === 3 && region.region.lines.every((piece, at) => (at > 0 || piece.from === 0) && (at < 2 || piece.to === 1)), { lines: region.region.lines });
+    let twinCopy = await copied(main, work);
+    result.copies.push({ what: 'scan, lines tool', text: twinCopy });
+    step('the scan copies what the native book copies, word for word and line for line', twinCopy !== null && nativeCopy !== null && sameLines(twinCopy, nativeCopy), {
+      native: nativeCopy,
+      scan: twinCopy,
+      edits: twinCopy === null || nativeCopy === null ? null : edits(linesOf(twinCopy).join('\n'), linesOf(nativeCopy).join('\n')),
+    });
+
+    // A highlight on them: its quote is read in the background, and is the native one.
+    await click(main, '#mark-color-green');
+    await written(main, 1, 'the highlight on the scan');
+    const quoted = await waitFor(main, '(() => { const a = window.musaeumApp.reader()?.annotations ?? []; return a.length === 1 && a[0].quote !== null ? a[0] : null; })()', {
+      timeoutMs: 60_000,
+      what: 'the quote read by the OCR',
+    }).catch(() => null);
+    step('the mark on the scan quotes what the native one does', quoted !== null && quoted.quote === nativeQuote && quoted.quoteSource === 'ocr', { scan: quoted?.quote ?? null, native: nativeQuote });
+
+    // 3. A box over three lines of the next paragraph.
+    await click(main, 'button[aria-label="Caixa retangular"]');
+    const boxed = lines(0, 'body', 2).slice(0, 3);
+    const top = boxed[0].start[1] + boxed[0].size * 0.9;
+    const bottom = boxed[2].start[1] - boxed[2].size * 0.4;
+    await waitSharp(main);
+    await drag(main, await bookPoint(main, 0, [64, top], size), await bookPoint(main, 0, [552, bottom], size));
+    region = await regionRead(main);
+    const boxCopy = await copied(main, work);
+    result.copies.push({ what: 'scan, box', text: boxCopy });
+    step('a box copies the lines inside it', boxCopy !== null && sameLines(boxCopy, boxed.map((line) => line.text).join('\n')), { copied: boxCopy });
+    await press(main, 'Escape');
+
+    // 4. The photograph: a box inside it copies nothing; a drag on it selects nothing.
+    const photo = truth.graphics.find((graphic) => graphic.kind === 'photograph');
+    const [left, lower, right, upper] = photo.rect;
+    const middle = [(left + right) / 2, (lower + upper) / 2];
+    await reveal(main, 1, 1 - middle[1] / size[1]);
+    await waitSharp(main);
+    await drag(main, await bookPoint(main, 1, [left + 12, upper - 12], size), await bookPoint(main, 1, [right - 12, lower + 12], size));
+    region = await regionRead(main);
+    step('a box over the photograph has no text', region.text === '', { text: region.text });
+    setClipboardText(NOTHING_COPIED, work);
+    await press(main, 'c', 2);
+    await delay(1500);
+    step('and a copy of it puts nothing on the clipboard', clipboardText(work) === NOTHING_COPIED);
+    await press(main, 'Escape');
+    await click(main, 'button[aria-label="Selecionar por linhas da imagem"]');
+    await linesTraced(main, 1);
+    await drag(main, await bookPoint(main, 1, [middle[0] - 60, middle[1] + 20], size), await bookPoint(main, 1, [middle[0] + 60, middle[1] - 20], size));
+    await delay(500);
+    const onPhoto = await main.evaluate('window.musaeumApp.reader()?.selection ?? null');
+    step('a drag along lines on the photograph selects nothing', onPhoto === null, { selection: onPhoto });
+
+    // 5. Text at other angles, on the third page: a box around the block read upward, and drags
+    // along the blocks at 45° and at −30°.
+    const upward = lines(2, 'turned', 1);
+    const across = (line) => line.start[0];
+    await reveal(main, 2, 0.5);
+    await linesTraced(main, 2);
+    await click(main, 'button[aria-label="Caixa retangular"]');
+    await waitSharp(main);
+    await drag(main, await bookPoint(main, 2, [across(upward[0]) - 11, 650], size), await bookPoint(main, 2, [across(upward.at(-1)) + 2, 112], size));
+    region = await regionRead(main);
+    const upwardCopy = await copied(main, work);
+    result.copies.push({ what: 'scan, box, 90°', text: upwardCopy });
+    const upwardText = upward.map((line) => line.text).join('\n');
+    step('a box around text read upward copies it as it reads', upwardCopy !== null && sameLines(upwardCopy, upwardText), {
+      copied: upwardCopy,
+      edits: upwardCopy === null ? null : edits(linesOf(upwardCopy).join('\n'), upwardText),
+      chars: upwardText.length,
+    });
+    await press(main, 'Escape');
+    await click(main, 'button[aria-label="Selecionar por linhas da imagem"]');
+    for (const [block, label] of [
+      [3, '45°'],
+      [4, '−30°'],
+    ]) {
+      const turned = lines(2, 'turned', block);
+      const rise = turned[0].size * 0.22;
+      await waitSharp(main);
+      await drag(main, await bookPoint(main, 2, onLine(turned[0], 0.03, rise), size), await bookPoint(main, 2, onLine(turned.at(-1), 0.995, rise), size));
+      region = await regionRead(main);
+      const copy = await copied(main, work);
+      const text = turned.map((line) => line.text).join('\n');
+      result.copies.push({ what: `scan, lines tool, ${label}`, text: copy });
+      step(`a drag along lines at ${label} copies them as they read`, copy !== null && sameLines(copy, text), {
+        lines: region.region.lines,
+        copied: copy,
+        edits: copy === null ? null : edits(linesOf(copy).join('\n'), text),
+        chars: text.length,
+      });
+      await press(main, 'Escape');
+    }
+
+    // 6. The search finds the mark on the scan by a word of its quote without its accent, and
+    // closed and opened again it keeps its quote.
+    const accented = (quoted?.quote ?? '').split(/[\s,.;:]+/).find((word) => word.length >= 5 && plain(word) !== word) ?? '';
+    await click(main, '#annotations-toggle');
+    await waitFor(main, "document.querySelector('.annotation-panel') !== null", { timeoutMs: 5000, what: 'the inspector' });
+    await typeInto(main, '#annotation-search', plain(accented).toLowerCase());
+    const found = await waitFor(main, "(() => { const n = document.querySelectorAll('.annotation-item'); return n.length === 1 ? n[0].textContent : null; })()", { timeoutMs: 8000, what: 'the search' }).catch(() => null);
+    step('the search finds the mark on the scan by a word without its accent', accented !== '' && found !== null, { word: accented, found });
+    await click(main, '#annotations-toggle');
+    await back(main);
+    await openBook(main, twin.documentId);
+    await waitSharp(main);
+    const again = await written(main, 1, 'the mark after reopening');
+    step('closed and opened again, the mark keeps its quote and its place', again[0].quote === nativeQuote && again[0].anchorState === 'exact', again[0]);
+  } finally {
+    result.exitCode = await closeApp(run).catch((error) => String(error));
+    result.log = run.log().slice(-20000);
+    result.console = run.console.slice();
+    // No worker outlives the app that started it.
+    await delay(1000);
+    ocrWorkers = ocrPids().filter((pid) => !before.has(pid));
+    result.clipboardRestored = restore();
+  }
+  step('no OCR worker is left running', ocrWorkers.length === 0, { workers: ocrWorkers });
+  return result;
+}
+
+/**
+ * What to do on the real pages: the book (its folder and the start of its name), the page as the
+ * reader numbers it from 1, the lines a drag starts and ends on (by what `corpus-check --inspect`
+ * read on them) and how far along each, and what the copy must have and must not.
+ */
+const REAL_DRAGS = [
+  {
+    label: 'a table of contents keeps the line with a leader of dashes',
+    book: 'TM9-1005-213-10',
+    page: 82,
+    from: { line: /TERIEL TO PREVENT/, t: 0.03 },
+    to: { line: /^APPENDIX A\. REFERENCES/, t: 0.97 },
+    has: ['TERIEL TO PREVENT', 'ENEMY USE', 'REFERENCES'],
+  },
+  {
+    label: 'a table of contents keeps the short line in italics between two others',
+    book: 'Vida Maravilhosa',
+    page: 14,
+    from: { line: /^Prossegue o desfile/, t: 0.02 },
+    to: { line: /^Anomalocaris/, t: 0.97 },
+    has: ['Prossegue o desfile', 'Wiwaxia, 215', 'Anomalocaris'],
+  },
+  {
+    label: 'a line underlined in pencil, beside scribbles, copies its own words',
+    book: 'Vida Maravilhosa',
+    page: 17,
+    from: { line: /^tivos dias de Burgess/, t: 0.55 },
+    to: { line: /^tivos dias de Burgess/, t: 0.995 },
+    has: ['novamente a partir desse'],
+    hasNot: ['Sia', 'cia', 'mesmo ponto'],
+  },
+  {
+    label: 'the next line keeps the end of its last word',
+    book: 'Vida Maravilhosa',
+    page: 17,
+    from: { line: /^mesmo ponto/, t: 0.55 },
+    to: { line: /^mesmo ponto/, t: 0.995 },
+    has: ['semelhante à inteligência'],
+  },
+  {
+    label: 'up the lines of a page printed the long way, whole, without the mark at 0° under them',
+    book: 'TM9-1005-213-10',
+    page: 79,
+    from: { line: /^By Order of the Secretary/, t: 0.03 },
+    to: { line: /^aircraft, M63/, t: 0.97 },
+    has: ['By Order of the Secretary of the Army', 'To be distributed in accordance with DA Form', 'Operator Maintenance requirements for Machine Gun'],
+    hasNot: ['Google'],
+  },
+];
+
+/** A point of an inspected line `t` of the way along it, half its small letters up from it, in fractions of the page as shown. */
+function onInspected(page, line, t) {
+  const points = line.baseline;
+  const lengths = points.slice(1).map((point, at) => Math.hypot(point[0] - points[at][0], point[1] - points[at][1]));
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  let walked = t * total;
+  for (let at = 0; at < lengths.length; at++) {
+    if (walked <= lengths[at] || at === lengths.length - 1) {
+      const [a, b] = [points[at], points[at + 1]];
+      const f = lengths[at] > 0 ? Math.min(1, walked / lengths[at]) : 0;
+      const [dx, dy] = [(b[0] - a[0]) / lengths[at], (b[1] - a[1]) / lengths[at]];
+      // Up across a line going right, with y growing downward: (dy, -dx).
+      const rise = line.xHeight * 0.5;
+      return [(a[0] + (b[0] - a[0]) * f + dy * rise) / page.width, (a[1] + (b[1] - a[1]) * f - dx * rise) / page.height];
+    }
+    walked -= lengths[at];
+  }
+  return [points[0][0] / page.width, points[0][1] / page.height];
+}
+
+/** A point of the page as shown, in the frame the page is stored in. */
+function toStoredFrame([x, y], rotation) {
+  return rotation === 1 ? [y, 1 - x] : rotation === 2 ? [1 - x, 1 - y] : rotation === 3 ? [1 - y, x] : [x, y];
+}
+
+/** Pages of two books of the real collection, only read: drags with the lines tool, and their copies. */
+async function runReal(work) {
+  const result = { drags: [] };
+  report.real = result;
+  const step = (label, ok, detail = {}) => {
+    result.drags.push({ label, ok, ...detail });
+    check(ok, `real: ${label} ${JSON.stringify(detail)}`);
+  };
+  if (options.real.length === 0) {
+    throw new Error('--real: the reports of corpus-check --inspect --ocr on the pages are needed');
+  }
+  const inspected = options.real.map((path) => JSON.parse(readFileSync(path, 'utf8')));
+  const before = listTree(options.corpus);
+  const restore = saveClipboard(work);
+  const library = join(work, 'biblioteca-real');
+  const run = await launch(app, ['--library', library, '--e2e', '--width', '1400', '--height', '900'], 'window.musaeumApp !== undefined');
+  const main = run.cdp;
+  try {
+    await waitFor(main, "document.querySelector('.welcome') !== null || document.querySelector('.library') !== null", { what: 'the first screen' });
+    // Only the folders of the two books, so the library has little to index.
+    const folders = [...new Set(inspected.map((report) => dirname(join(options.corpus, report.file))))];
+    for (const folder of folders) {
+      await main.evaluate(`window.musaeumApp.addRoot(${JSON.stringify(folder)})`);
+    }
+    const rows = (
+      await waitFor(main, '(() => { const r = window.musaeumApp.rows(); const i = window.musaeumApp.library(); return r.total > 0 && i && !i.indexing && r.rows.every((b) => b.blake3 !== null) ? r : null; })()', {
+        timeoutMs: 600_000,
+        what: 'the books in the library',
+      })
+    ).rows;
+    let open = null;
+    for (const drag_ of REAL_DRAGS) {
+      checkStillQuiet();
+      const report_ = inspected.find((candidate) => basename(candidate.file).includes(drag_.book));
+      const row = rows.find((candidate) => basename(candidate.path).includes(drag_.book));
+      const page = report_?.pages.find((candidate) => candidate.page === drag_.page);
+      if (report_ === undefined || row === undefined || page === undefined) {
+        step(drag_.label, false, { missing: { report: report_ === undefined, book: row === undefined, page: page === undefined } });
+        continue;
+      }
+      const from = page.lines.find((line) => drag_.from.line.test(line.text));
+      const to = page.lines.find((line) => drag_.to.line.test(line.text));
+      if (from === undefined || to === undefined) {
+        step(drag_.label, false, { linesNotInspected: { from: from === undefined, to: to === undefined } });
+        continue;
+      }
+      console.log(`  ${drag_.book}, page ${drag_.page}: ${drag_.label}`);
+      if (open !== row.documentId) {
+        if (open !== null) {
+          await back(main);
+        }
+        await openBook(main, row.documentId);
+        open = row.documentId;
+        await click(main, 'button[aria-label="Selecionar por linhas da imagem"]');
+      }
+      const index = drag_.page - 1;
+      await main.evaluate(`window.musaeumApp.goToPage(${index})`);
+      await waitFor(main, `(async () => (await window.musaeumApp.inspectFixed())?.pages?.some((p) => p.page === ${index}))()`, { timeoutMs: 20_000, what: `page ${drag_.page} on the screen` });
+      await linesTraced(main, index);
+      await waitSharp(main);
+      const start = await screenOf(main, index, ...toStoredFrame(onInspected(page, from, drag_.from.t), page.rotation), page.rotation);
+      const end = await screenOf(main, index, ...toStoredFrame(onInspected(page, to, drag_.to.t), page.rotation), page.rotation);
+      await drag(main, start, end);
+      const region = await regionRead(main).catch(() => null);
+      const copy = region === null ? null : await copied(main, work);
+      const has = (drag_.has ?? []).filter((needle) => copy === null || !copy.includes(needle));
+      const hasNot = (drag_.hasNot ?? []).filter((needle) => copy !== null && copy.includes(needle));
+      step(drag_.label, copy !== null && has.length === 0 && hasNot.length === 0 && region.source === 'ocr', {
+        page: drag_.page,
+        copied: copy,
+        source: region?.source ?? null,
+        lines: region?.region?.lines ?? null,
+        missing: has,
+        unwanted: hasNot,
+      });
+      await press(main, 'Escape');
+    }
+  } finally {
+    result.exitCode = await closeApp(run).catch((error) => String(error));
+    result.log = run.log().slice(-20000);
+    result.console = run.console.slice();
+    result.clipboardRestored = restore();
+    const after = listTree(options.corpus);
+    result.unchanged = JSON.stringify(after) === JSON.stringify(before);
+    result.listing = { entries: before.length };
+    check(result.unchanged, 'the collection changed during the run');
+  }
+  return result;
+}
+
 async function main() {
   if (!existsSync(app)) {
     throw new Error(`${app} is missing: run npm run build:app first`);
@@ -886,8 +1504,32 @@ async function main() {
       console.log(`corpus: ${options.corpus}`);
       await runCorpus(work);
     }
+    if (options.phase === 'lines' || options.phase === 'all') {
+      console.log('lines');
+      await runLines(work);
+    }
+    if (options.phase === 'ocr' || options.phase === 'all') {
+      console.log('ocr');
+      await runOcr(work);
+    }
+    if (options.phase === 'real') {
+      console.log(`real pages: ${options.corpus}`);
+      await runReal(work);
+    }
   } finally {
-    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    // The app's last writes may still hold a file when it has just closed: try again for a while,
+    // and say so if something is left in %TEMP%.
+    for (let attempt = 0; attempt < 20 && existsSync(work); attempt++) {
+      try {
+        rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      } catch {
+        await delay(1000);
+      }
+    }
+    report.workLeft = existsSync(work) ? work : null;
+    if (report.workLeft !== null) {
+      report.failures.push(`the work folder could not be removed: ${work}`);
+    }
   }
 }
 

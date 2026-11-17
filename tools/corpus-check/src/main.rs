@@ -3,6 +3,10 @@
 //! ```text
 //! corpus-check --corpus DIR --work DIR [--out REPORT.json] [--sample N] [--skip-render]
 //!              [--skip-content] [--flow-only]
+//! corpus-check --lines --corpus DIR --work DIR [--out REPORT.json] [--sample N] [--pages-per-file N] [--ocr]
+//! corpus-check --lines-synthetic [--out REPORT.json] [--pages N]
+//! corpus-check --ocr-book --work DIR [--out REPORT.json]
+//! corpus-check --inspect BOOK.pdf --at 14,78,100-120 --corpus DIR --work DIR [--ocr] [--out REPORT.json]
 //! ```
 //!
 //! The collection is only ever read. Every file and folder in it, with its size, dates and
@@ -26,9 +30,18 @@
 //! With `--flow-only`, it does something else: every flowing book (EPUB, MOBI, AZW3, FB2, TXT,
 //! Markdown) is normalized twice in the sandboxed ingest worker, kept in the store on disk, and every
 //! position in it written as a CFI and a Locator and found again (see `flow.rs`).
+//!
+//! With `--lines`, the line detector of Phase 5 on the scanned pages of a sample of PDFs, and with
+//! `--lines-synthetic` on the labeled corpus, which needs no collection (see `lines.rs`).
+//!
+//! With `--inspect`, the detector and the OCR on chosen pages of one book of the collection, for
+//! looking at (see `inspect.rs`).
 
 mod content;
 mod flow;
+mod inspect;
+mod lines;
+mod ocr;
 mod render;
 mod snapshot;
 
@@ -54,6 +67,15 @@ struct Options {
     skip_render: bool,
     skip_content: bool,
     flow_only: bool,
+    lines: bool,
+    lines_synthetic: bool,
+    ocr_book: bool,
+    /// With `--lines`: the OCR reads the hybrid pages' body lines too, against their text layer.
+    read_lines: bool,
+    pages_per_file: u32,
+    dump: Option<PathBuf>,
+    /// With `--inspect`: the book, and its pages from 0.
+    inspect: Option<(PathBuf, Vec<u32>)>,
 }
 
 fn parse_options() -> Result<Options, String> {
@@ -64,6 +86,14 @@ fn parse_options() -> Result<Options, String> {
     let mut skip_render = false;
     let mut skip_content = false;
     let mut flow_only = false;
+    let mut lines = false;
+    let mut lines_synthetic = false;
+    let mut ocr_book = false;
+    let mut read_lines = false;
+    let mut pages_per_file = 6;
+    let mut dump = None;
+    let mut inspect_file = None;
+    let mut inspect_pages = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -79,8 +109,47 @@ fn parse_options() -> Result<Options, String> {
             "--skip-render" => skip_render = true,
             "--skip-content" => skip_content = true,
             "--flow-only" => flow_only = true,
+            "--lines" => lines = true,
+            "--dump" => dump = Some(PathBuf::from(value()?)),
+            "--lines-synthetic" => lines_synthetic = true,
+            "--ocr-book" => ocr_book = true,
+            "--ocr" => read_lines = true,
+            "--inspect" => inspect_file = Some(PathBuf::from(value()?)),
+            "--at" => inspect_pages = inspect::parse_pages(&value()?)?,
+            "--pages-per-file" | "--pages" => {
+                pages_per_file = value()?
+                    .parse()
+                    .map_err(|error| format!("{flag}: {error}"))?;
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
+    }
+    if lines_synthetic || ocr_book {
+        let work = match work {
+            Some(work) if ocr_book => {
+                std::fs::create_dir_all(&work)
+                    .map_err(|error| format!("the work folder: {error}"))?;
+                work
+            }
+            None if ocr_book => return Err("--work is required".into()),
+            _ => PathBuf::new(),
+        };
+        return Ok(Options {
+            corpus: PathBuf::new(),
+            work,
+            out,
+            sample,
+            skip_render,
+            skip_content,
+            flow_only,
+            lines,
+            lines_synthetic,
+            ocr_book,
+            read_lines,
+            pages_per_file,
+            dump,
+            inspect: None,
+        });
     }
     let corpus = std::fs::canonicalize(corpus.ok_or("--corpus is required")?)
         .map_err(|error| format!("the corpus: {error}"))?;
@@ -98,6 +167,13 @@ fn parse_options() -> Result<Options, String> {
         skip_render,
         skip_content,
         flow_only,
+        lines,
+        lines_synthetic,
+        ocr_book,
+        read_lines,
+        pages_per_file,
+        dump,
+        inspect: inspect_file.map(|file| (file, inspect_pages)),
     })
 }
 
@@ -148,7 +224,30 @@ fn main() {
         }
     };
     lower_priority();
-    let result = if options.flow_only {
+    let result = if let Some((file, pages)) = &options.inspect {
+        inspect::run_inspect(
+            &options.corpus,
+            &options.work,
+            file,
+            pages,
+            options.read_lines,
+            options.out.as_deref(),
+        )
+    } else if options.ocr_book {
+        ocr::run_ocr_book(&options.work, options.out.as_deref())
+    } else if options.lines_synthetic {
+        lines::run_synthetic(options.out.as_deref(), u64::from(options.pages_per_file))
+    } else if options.lines {
+        lines::run_lines(
+            options.dump.as_deref(),
+            &options.corpus,
+            &options.work,
+            options.out.as_deref(),
+            options.sample,
+            options.pages_per_file,
+            options.read_lines,
+        )
+    } else if options.flow_only {
         run_flow(&options)
     } else {
         run(&options)

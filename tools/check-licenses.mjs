@@ -96,6 +96,13 @@ function checkVendored() {
   if (pinned !== null && !manifest.components.some(({ file }) => file.includes(`chromium-${pinned[1]}`))) {
     failures.push(`vendor/third-party.json does not cover PDFium chromium/${pinned[1]}`);
   }
+  // Nor what tools/fetch-ocr.ps1 pins: each source folder it unpacks has its entry.
+  const ocr = readFileSync(join(root, 'tools', 'fetch-ocr.ps1'), 'utf8');
+  for (const [, folder] of ocr.matchAll(/Name = '([^']+)'/g)) {
+    if (!manifest.components.some(({ file }) => file.startsWith(`vendor/tesseract/${folder}/`))) {
+      failures.push(`vendor/third-party.json does not cover ${folder}`);
+    }
+  }
   const fetchedNote = notFetched > 0 ? `, ${notFetched} license files not fetched yet` : '';
   return `${manifest.components.length} components${fetchedNote}`;
 }

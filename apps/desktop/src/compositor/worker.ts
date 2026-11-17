@@ -165,7 +165,12 @@ class Compositor {
     budgetBytes: number,
   ) {
     const base = tileBaseUrl(session.id);
-    this.annotator = new Annotator(widths, heights, (message) => post(message));
+    this.annotator = new Annotator(
+      widths,
+      heights,
+      (message) => post(message),
+      (x, y, width, height) => this.renderer.readRegion(x, y, width, height),
+    );
     this.viewWidth = width;
     this.viewHeight = height;
     this.renderer = new TileRenderer(
@@ -255,6 +260,18 @@ class Compositor {
       case 'hover':
         this.annotator.hover(message.x, message.y, this.current);
         return;
+      case 'set-tool':
+        this.annotator.setTool(message.tool);
+        break;
+      case 'set-snap':
+        this.annotator.setSnap(message.on);
+        break;
+      case 'lines':
+        if (message.buffer === null && message.retry) {
+          this.annotator.forgetAskedLines(message.page);
+        }
+        this.annotator.setLines(message.page, message.buffer);
+        break;
       case 'set-mode':
         reader.setMode(message.mode);
         break;
@@ -330,6 +347,10 @@ class Compositor {
       selection: this.annotator.spans(),
       marks: this.annotator.markCount,
       charPages: this.annotator.charPages,
+      tool: this.annotator.currentTool,
+      snap: this.annotator.snapping,
+      linePages: this.annotator.linePageList.map((page) => ({ page, lines: this.annotator.lineCount(page) })),
+      region: this.annotator.regionSelection,
     };
   }
 

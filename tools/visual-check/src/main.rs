@@ -4,6 +4,9 @@
 //! visual-check compare --document PATH --page N --scale S --shot PNG --x X --y Y [--diff PNG]
 //! visual-check tiles --document PATH --pages N,N... [--width PX] [--diff DIR]
 //! visual-check colors --document colors.pdf [--scale S] [--shot PNG --x X --y Y]
+//! visual-check scan --document PATH --out PDF [--dpi D] [--skew DEG] [--curl F] [--noise N]
+//! visual-check page --document PATH --page N --out PGM [--edge PX]
+//!     [--seed N] [--pgm DIR]
 //! ```
 //!
 //! `compare` draws page `N` whole at scale `S` (in units of 1/4096 pixel per point) with the
@@ -19,6 +22,12 @@
 //! `colors` checks the patches of `gen-fixtures`' color page: RGB has to come out exactly, the
 //! process primaries close to what the SWOP profile gives, and the rest is reported as measured.
 //! With a screenshot, it also checks that the window shows the colors PDFium drew.
+//!
+//! `scan` makes a PDF's scanned twin: every page drawn whole at `D` pixels per inch (300 by
+//! default), turned gray, made to look scanned by `gen_fixtures::scan` (turned by `DEG` degrees,
+//! curled toward the spine by `F` of the page's height, grained by `N`), and written as a PDF of
+//! pictures only, the pages the same size. With `--pgm`, each page's picture is also written there as
+//! a PGM, for trying the OCR on.
 //!
 //! This is a developer's tool. It runs the format libraries in its own process, without the
 //! sandbox the reader puts them in, so it is only ever pointed at fixtures and at books the user
@@ -478,8 +487,110 @@ fn colors(pairs: &[(String, String)]) -> Result<Value, String> {
     }))
 }
 
+/// The scanned twin of a document.
+fn scan(pairs: &[(String, String)]) -> Result<Value, String> {
+    use gen_fixtures::scan::{GrayPage, Scanning, image_pdf, scan as scan_page};
+    let document = PathBuf::from(option(pairs, "--document").ok_or("--document is required")?);
+    let out = PathBuf::from(option(pairs, "--out").ok_or("--out is required")?);
+    let dpi: f32 = option(pairs, "--dpi").map_or(Ok(300.0), |value| {
+        value
+            .parse()
+            .map_err(|_| "--dpi is not a number".to_owned())
+    })?;
+    let read = |name: &str| -> Result<f32, String> {
+        option(pairs, name).map_or(Ok(0.0), |value| {
+            value.parse().map_err(|_| format!("{name} is not a number"))
+        })
+    };
+    let scanning = Scanning {
+        skew_degrees: read("--skew")?,
+        curl: read("--curl")?,
+        noise: read("--noise")?,
+        seed: read("--seed")? as u64,
+    };
+    let pgm = option(pairs, "--pgm").map(PathBuf::from);
+    if let Some(dir) = &pgm {
+        std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    }
+    let bytes =
+        std::fs::read(&document).map_err(|error| format!("{}: {error}", document.display()))?;
+    let dll = std::env::current_exe()
+        .map_err(|error| error.to_string())?
+        .with_file_name("pdfium.dll");
+    let pdfium = Pdfium::load(&dll).map_err(|error| format!("{}: {error}", dll.display()))?;
+    let mut opened = Document::open(&pdfium, &bytes)
+        .map_err(|error| format!("PDFium error {}", error.pdfium_error))?;
+    let scale = (SCALE_ONE as f32 * dpi / 72.0).round() as u32;
+    let mut pages = Vec::new();
+    let mut size_points = [0.0f32; 2];
+    for page in 0..opened.page_count() {
+        let (width, height, rgba) = opened
+            .render_page(page, scale)
+            .map_err(|failure| failure.to_string())?;
+        size_points = [width as f32 * 72.0 / dpi, height as f32 * 72.0 / dpi];
+        let flat = GrayPage::from_rgba(width, height, &rgba);
+        let scanned = scan_page(&flat, &scanning, page);
+        if let Some(dir) = &pgm {
+            let path = dir.join(format!("page-{page}.pgm"));
+            let mut file = format!("P5\n{} {}\n255\n", scanned.width, scanned.height).into_bytes();
+            file.extend_from_slice(&scanned.pixels);
+            std::fs::write(&path, file).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        pages.push(scanned);
+    }
+    let pdf = image_pdf(&pages, size_points).map_err(|error| error.to_string())?;
+    std::fs::write(&out, &pdf).map_err(|error| format!("{}: {error}", out.display()))?;
+    Ok(json!({
+        "pages": pages.len(),
+        "dpi": dpi,
+        "bytes": pdf.len(),
+        "out": out.display().to_string(),
+    }))
+}
+
+/// One page of a PDF drawn gray, its longest edge `--edge` pixels (1500 by default, as the line
+/// detector sees it), as a PGM: for looking at what the detector makes of a page of a collection,
+/// which is only read.
+fn page(pairs: &[(String, String)]) -> Result<Value, String> {
+    use gen_fixtures::scan::GrayPage;
+    let document = PathBuf::from(option(pairs, "--document").ok_or("--document is required")?);
+    let out = PathBuf::from(option(pairs, "--out").ok_or("--out is required")?);
+    let index: u32 = option(pairs, "--page")
+        .ok_or("--page is required")?
+        .parse()
+        .map_err(|_| "--page is not a number".to_owned())?;
+    let edge: f32 = option(pairs, "--edge").map_or(Ok(1500.0), |value| {
+        value
+            .parse()
+            .map_err(|_| "--edge is not a number".to_owned())
+    })?;
+    let bytes =
+        std::fs::read(&document).map_err(|error| format!("{}: {error}", document.display()))?;
+    let dll = std::env::current_exe()
+        .map_err(|error| error.to_string())?
+        .with_file_name("pdfium.dll");
+    let pdfium = Pdfium::load(&dll).map_err(|error| format!("{}: {error}", dll.display()))?;
+    let mut opened = Document::open(&pdfium, &bytes)
+        .map_err(|error| format!("PDFium error {}", error.pdfium_error))?;
+    // Measured at one pixel a point, then drawn at the scale that gives the edge asked for.
+    let (w, h, _) = opened
+        .render_page(index, SCALE_ONE)
+        .map_err(|failure| failure.to_string())?;
+    let scale = (SCALE_ONE as f32 * edge / w.max(h) as f32).round() as u32;
+    let (width, height, rgba) = opened
+        .render_page(index, scale)
+        .map_err(|failure| failure.to_string())?;
+    let gray = GrayPage::from_rgba(width, height, &rgba);
+    let mut file = format!("P5\n{width} {height}\n255\n").into_bytes();
+    file.extend_from_slice(&gray.pixels);
+    std::fs::write(&out, file).map_err(|error| format!("{}: {error}", out.display()))?;
+    Ok(json!({ "width": width, "height": height, "out": out.display().to_string() }))
+}
+
 fn main() -> ExitCode {
     let result = arguments().and_then(|(command, pairs)| match command.as_str() {
+        "scan" => scan(&pairs),
+        "page" => page(&pairs),
         "compare" => compare(&pairs),
         "tiles" => tiles(&pairs),
         "colors" => colors(&pairs),

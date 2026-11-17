@@ -215,9 +215,15 @@ let nextPort = 9360;
 /** Starts the app with its debugging port open, and connects to its main page. */
 export async function launch(app, args, readyExpression) {
   const port = nextPort++;
+  // The WebView2's profile beside the run's library, in the run's own temporary folder: a profile
+  // is shared only by instances started with the same options, so a run would not start beside
+  // the app a person has open, and must not touch that person's profile anyway.
+  const library = args[args.indexOf('--library') + 1];
+  const profile = args.includes('--library') && library !== undefined ? { WEBVIEW2_USER_DATA_FOLDER: `${library}-webview2` } : {};
   const child = spawn(app, args, {
     env: {
       ...process.env,
+      ...profile,
       // Only for this run: the WebView answers DevTools on this port. The app's own arguments are
       // repeated, with the ones its benchmarks use so that a covered window is not slowed down.
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: [

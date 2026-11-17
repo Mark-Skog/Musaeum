@@ -5,8 +5,9 @@ mod common;
 
 use common::{Fixture, TempDir, options, pdf, pdf_with_id};
 use musaeum_library::{
-    DocumentGeometry, Error, Library, LibraryPaths, PageContentClass, PageContentRecord,
-    PageOrientation, PageRecord, ReadingMode, ReadingState, Spreads,
+    DocumentGeometry, Error, Library, LibraryPaths, LineModelRecord, OcrLineRecord, OcrReading,
+    PageContentClass, PageContentRecord, PageOrientation, PageRecord, ReadingMode, ReadingState,
+    Spreads,
 };
 
 fn state(page: u32) -> ReadingState {
@@ -338,5 +339,231 @@ fn a_phase_1_library_is_copied_and_then_upgraded() {
         reopened.backups().unwrap().len(),
         1,
         "nothing to upgrade the second time"
+    );
+}
+
+#[test]
+fn the_lines_of_a_scanned_page_are_kept_by_version_and_only_for_pages_the_file_has() {
+    let mut fixture = Fixture::new();
+    let hash = [7u8; 32];
+    let page = PageRecord {
+        width_pt: 595.0,
+        height_pt: 842.0,
+        orientation: PageOrientation::Portrait,
+    };
+    fixture
+        .library()
+        .store_page_geometry(
+            &hash,
+            &DocumentGeometry {
+                pages: vec![page; 3],
+                ..DocumentGeometry::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        fixture
+            .library()
+            .pages_without_line_model(&hash, &[2, 0, 1, 7], 1)
+            .unwrap(),
+        vec![2, 0, 1],
+        "every page of the file is missing, in the order asked, and page 7 is not one"
+    );
+
+    let record = |page: u32, version: u32, page_hash: u64| LineModelRecord {
+        page,
+        version,
+        page_hash,
+        model: format!("MLIN page {page}").into_bytes(),
+    };
+    fixture
+        .library()
+        .store_line_models(
+            &hash,
+            &[
+                // All 64 bits survive SQLite's signed integer.
+                record(0, 1, 0xF0E1_D2C3_B4A5_9687),
+                record(2, 1, 1),
+                // A page the geometry does not have is skipped.
+                record(9, 1, 2),
+            ],
+        )
+        .unwrap();
+    fixture.close();
+    fixture.reopen();
+    let library = fixture.library();
+    assert_eq!(
+        library.line_model(&hash, 0, 1).unwrap(),
+        Some(record(0, 1, 0xF0E1_D2C3_B4A5_9687))
+    );
+    assert_eq!(library.line_model(&hash, 9, 1).unwrap(), None);
+    assert_eq!(
+        library.line_model(&hash, 0, 2).unwrap(),
+        None,
+        "another detector's model counts as none"
+    );
+    assert_eq!(
+        library
+            .pages_without_line_model(&hash, &[0, 1, 2], 1)
+            .unwrap(),
+        vec![1]
+    );
+    assert_eq!(
+        library
+            .pages_without_line_model(&hash, &[0, 1, 2], 2)
+            .unwrap(),
+        vec![0, 1, 2],
+        "a new detector traces every page again"
+    );
+
+    // Tracing again replaces the page's model.
+    library
+        .store_line_models(&hash, &[record(2, 2, 3)])
+        .unwrap();
+    assert_eq!(library.line_model(&hash, 2, 1).unwrap(), None);
+    assert_eq!(
+        library.line_model(&hash, 2, 2).unwrap(),
+        Some(record(2, 2, 3))
+    );
+
+    assert!(matches!(
+        library.store_line_models(
+            &hash,
+            &[LineModelRecord {
+                model: Vec::new(),
+                ..record(1, 1, 0)
+            }]
+        ),
+        Err(Error::Refused(_))
+    ));
+    assert!(matches!(
+        library.store_line_models(&hash, &[record(1, 0, 0)]),
+        Err(Error::Refused(_))
+    ));
+}
+
+#[test]
+fn what_the_ocr_read_is_kept_line_by_line_for_the_reading_that_read_it() {
+    let mut fixture = Fixture::new();
+    let hash = [9u8; 32];
+    let reading = OcrReading {
+        lines_version: 2,
+        ocr_version: 1,
+        languages: "por+eng",
+    };
+    let line = |line: u32, text: &str| OcrLineRecord {
+        line,
+        words: format!(
+            r#"{{"words":[["{text}",0.0,1.0,96.0]],"confidence":96.0,"flipped":false}}"#
+        ),
+    };
+    assert!(
+        fixture
+            .library()
+            .ocr_lines(&hash, 3, reading, &[0, 1])
+            .unwrap()
+            .is_empty()
+    );
+    fixture
+        .library()
+        .store_ocr_lines(&hash, 3, reading, &[line(4, "Lisboa"), line(1, "Porto")])
+        .unwrap();
+    fixture.close();
+    fixture.reopen();
+    let library = fixture.library();
+    assert_eq!(
+        library.ocr_lines(&hash, 3, reading, &[1, 2, 4]).unwrap(),
+        vec![line(1, "Porto"), line(4, "Lisboa")],
+        "the lines asked for that were read, in the order asked"
+    );
+    assert!(
+        library
+            .ocr_lines(&hash, 2, reading, &[1])
+            .unwrap()
+            .is_empty(),
+        "another page"
+    );
+    for other in [
+        OcrReading {
+            lines_version: 3,
+            ..reading
+        },
+        OcrReading {
+            ocr_version: 2,
+            ..reading
+        },
+        OcrReading {
+            languages: "eng",
+            ..reading
+        },
+    ] {
+        assert!(
+            library
+                .ocr_lines(&hash, 3, other, &[1, 4])
+                .unwrap()
+                .is_empty(),
+            "read by another detector, OCR or languages counts as unread: {other:?}"
+        );
+    }
+
+    // Read again by a newer OCR, a line is replaced.
+    let newer = OcrReading {
+        ocr_version: 2,
+        ..reading
+    };
+    library
+        .store_ocr_lines(&hash, 3, newer, &[line(1, "Braga")])
+        .unwrap();
+    assert!(
+        library
+            .ocr_lines(&hash, 3, reading, &[1])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        library.ocr_lines(&hash, 3, newer, &[1]).unwrap(),
+        vec![line(1, "Braga")]
+    );
+
+    for (bad_reading, bad_line) in [
+        (
+            reading,
+            OcrLineRecord {
+                line: 0,
+                words: "not json".to_owned(),
+            },
+        ),
+        (
+            reading,
+            OcrLineRecord {
+                line: 0,
+                words: format!("\"{}\"", "a".repeat(musaeum_library::MAX_OCR_LINE_BYTES)),
+            },
+        ),
+        (
+            OcrReading {
+                languages: "",
+                ..reading
+            },
+            line(0, "Faro"),
+        ),
+        (
+            OcrReading {
+                ocr_version: 0,
+                ..reading
+            },
+            line(0, "Faro"),
+        ),
+    ] {
+        assert!(matches!(
+            library.store_ocr_lines(&hash, 3, bad_reading, &[bad_line]),
+            Err(Error::Refused(_))
+        ));
+    }
+    assert!(
+        library
+            .ocr_lines(&hash, 3, reading, &[0])
+            .unwrap()
+            .is_empty()
     );
 }

@@ -23,6 +23,7 @@ import {
   ToggleButtonGroup,
 } from 'react-aria-components';
 
+import type { RegionSelection, Tool } from '../../compositor/annotator';
 import type { ReaderStatus } from '../../compositor/messages';
 import { FixedReader } from '../../fixed/fixed-reader';
 import type { StartupOptions } from '../../protocol';
@@ -37,15 +38,18 @@ import {
 } from '../../reader/typography';
 import { invoke } from '@tauri-apps/api/core';
 
+import { listen } from '@tauri-apps/api/event';
 import {
   api,
   isWebAddress,
+  type Annotation,
   type AnnotationKind,
   type BookRow,
   type FixedAnnotationView,
   type FlowAnnotationView,
   type FlowPosition,
   type NavPoint,
+  type RegionText,
 } from '../api';
 import { formatName } from '../library/LibraryView';
 import { FlowReader, type Relocation } from './flow-reader';
@@ -55,6 +59,17 @@ import { AnnotationStore, draft, type Entry } from './annotations/store';
 /** What the reader has selected now, in either kind of book, with its box on the screen. */
 export type ReaderSelection =
   | { kind: 'fixed'; spans: { page: number; start: number; end: number }[]; text: string; rect: ScreenRect | null }
+  | {
+      kind: 'region';
+      region: RegionSelection;
+      /** What a copy gives, once read: by the OCR on a scan, or by the characters of a page. */
+      text: string;
+      /** What read it, once read. */
+      source: RegionText['source'] | null;
+      /** Whether its text is still being read. */
+      reading: boolean;
+      rect: ScreenRect | null;
+    }
   | { kind: 'flow'; start: string; end: string; text: string; rect: ScreenRect | null };
 
 const fixedEntry = (view: FixedAnnotationView): Entry => ({ annotation: view.annotation, marks: view.marks, ranges: [], pending: false });
@@ -244,6 +259,41 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
     [book.documentId],
   );
   const entries = useSyncExternalStore(store.subscribe, store.list);
+  /** What the host reads under each region drawn: one reading, shared by the copy and the prefetch. */
+  const regionReads = useRef(new WeakMap<RegionSelection, Promise<RegionText | null>>());
+  const readRegion = useCallback((region: RegionSelection): Promise<RegionText | null> => {
+    const known = regionReads.current.get(region);
+    if (known !== undefined) {
+      return known;
+    }
+    const session = fixed.current?.session;
+    if (session === null || session === undefined) {
+      return Promise.resolve(null);
+    }
+    const reading = api.regionText(session.id, region).then(
+      (read) => {
+        if (read.pending) {
+          // Asked again, it may find the lines traced by then.
+          regionReads.current.delete(region);
+        }
+        return read;
+      },
+      () => {
+        regionReads.current.delete(region);
+        return null;
+      },
+    );
+    regionReads.current.set(region, reading);
+    return reading;
+  }, []);
+
+  // The quote the OCR read under a mark on a scan, after it was made.
+  useEffect(() => {
+    const stop = listen<Annotation>('annotation-text', (event) => store.learned(event.payload));
+    return () => {
+      void stop.then((unlisten) => unlisten());
+    };
+  }, [store]);
   const [selection, setSelection] = useState<ReaderSelection | null>(null);
   const [activeMark, setActiveMark] = useState<{ uuid: string; rect: ScreenRect } | null>(null);
   const [editing, setEditing] = useState<Entry | null>(null);
@@ -251,6 +301,9 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
   const [undo, setUndo] = useState<Entry | null>(null);
   const lastColor = useRef('yellow');
   const closing = useRef(false);
+  /** What a press on a page of a fixed layout does, and whether lines snap. */
+  const [tool, setTool] = useState<Tool>('text');
+  const [snap, setSnap] = useState(true);
   const kind = book.layout;
 
   const updateProbe = useCallback(() => {
@@ -313,6 +366,23 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
           const box = canvas.getBoundingClientRect();
           setSelection(null);
           setActiveMark({ uuid: id, rect: { ...rect, x: rect.x + box.left, y: rect.y + box.top } });
+        },
+        onRegion: (region, rect) => {
+          const box = canvas.getBoundingClientRect();
+          setActiveMark(null);
+          setSelection(
+            region === null
+              ? null
+              : { kind: 'region', region, text: '', source: null, reading: true, rect: rect === null ? null : { ...rect, x: rect.x + box.left, y: rect.y + box.top } },
+          );
+          if (region !== null) {
+            // Read at once, so a copy has it by the time it is asked for.
+            void readRegion(region).then((read) => {
+              setSelection((now) =>
+                now?.kind === 'region' && now.region === region ? { ...now, text: read?.text ?? '', source: read?.source ?? null, reading: false } : now,
+              );
+            });
+          }
         },
       })
         .then(async (reader) => {
@@ -447,6 +517,16 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
       lastColor.current = color;
       const quote = chosen.text.replace(/\s+/g, ' ').trim();
       const mark = { kind, color, note };
+      if (chosen.kind === 'region') {
+        const session = fixed.current?.session;
+        if (session === null || session === undefined) {
+          return null;
+        }
+        const shown: Entry = { annotation: draft(book.documentId, kind, color, note, '', null), marks: [], ranges: [], pending: true };
+        const written = await store.create(shown, async () => fixedEntry(await api.createRegionAnnotation(session.id, chosen.region, mark)));
+        fixed.current?.clearSelection();
+        return written;
+      }
       if (chosen.kind === 'fixed') {
         const session = fixed.current?.session;
         if (session === null || session === undefined) {
@@ -472,6 +552,36 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
   const copyText = useCallback((text: string) => {
     void navigator.clipboard.writeText(text).catch(() => setNotice('O texto não pôde ser copiado.'));
   }, []);
+
+  /** Copies a selection: its characters, or what the text layer or the OCR has under a region. */
+  const copySelection = useCallback(
+    (chosen: ReaderSelection) => {
+      if (chosen.kind !== 'region') {
+        copyText(chosen.text);
+        return;
+      }
+      if (!chosen.reading) {
+        if (chosen.text !== '') {
+          copyText(chosen.text);
+        } else {
+          setNotice('Não há texto legível nesta região.');
+        }
+        return;
+      }
+      void readRegion(chosen.region).then((read) => {
+        if (read === null) {
+          setNotice('O texto desta região não pôde ser lido.');
+        } else if (read.text !== '') {
+          copyText(read.text);
+        } else if (read.pending) {
+          setNotice('As linhas desta página ainda estão sendo analisadas. Tente de novo daqui a pouco.');
+        } else {
+          setNotice('Não há texto legível nesta região.');
+        }
+      });
+    },
+    [copyText, readRegion],
+  );
 
   const removeEntry = useCallback(
     async (uuid: string) => {
@@ -591,9 +701,9 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
         void back();
         return;
       }
-      if (event.ctrlKey && (event.key === 'c' || event.key === 'C') && selection?.kind === 'fixed') {
+      if (event.ctrlKey && (event.key === 'c' || event.key === 'C') && (selection?.kind === 'fixed' || selection?.kind === 'region')) {
         event.preventDefault();
-        copyText(selection.text);
+        copySelection(selection);
         return;
       }
       if (event.key === 'Escape' && (selection !== null || activeMark !== null)) {
@@ -627,7 +737,7 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [kind, shortcut, back, selection, activeMark, clearSelection, copyText]);
+  }, [kind, shortcut, back, selection, activeMark, clearSelection, copySelection]);
 
   const sectionOf = useMemo(() => {
     const info = flow.current?.info;
@@ -733,6 +843,46 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
               <ToggleButton id="single" className="segment">1</ToggleButton>
               <ToggleButton id="double" className="segment">2</ToggleButton>
             </ToggleButtonGroup>
+            <ToggleButtonGroup
+              className="segmented"
+              aria-label="Marcar"
+              selectionMode="single"
+              disallowEmptySelection
+              selectedKeys={[tool]}
+              onSelectionChange={(keys) => {
+                const chosen = [...keys][0] as Tool;
+                setTool(chosen);
+                setSelection(null);
+                fixed.current?.setTool(chosen);
+              }}
+            >
+              <ToggleButton id="text" className="segment" aria-label="Selecionar texto">
+                Texto
+              </ToggleButton>
+              <ToggleButton id="lines" className="segment" aria-label="Selecionar por linhas da imagem">
+                Linhas
+              </ToggleButton>
+              <ToggleButton id="rect" className="segment" aria-label="Caixa retangular">
+                Caixa
+              </ToggleButton>
+              <ToggleButton id="free" className="segment" aria-label="Traço livre">
+                Traço
+              </ToggleButton>
+            </ToggleButtonGroup>
+            {tool === 'lines' ? (
+              <Switch
+                id="line-snap"
+                className="switch"
+                isSelected={snap}
+                onChange={(on) => {
+                  setSnap(on);
+                  fixed.current?.setSnap(on);
+                }}
+              >
+                <span className="switch-track" aria-hidden="true" />
+                Ajustar às palavras
+              </Switch>
+            ) : null}
           </>
         ) : null}
         <Button
@@ -911,7 +1061,7 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
               }
             });
           }}
-          onCopy={() => copyText(selection.text)}
+          onCopy={() => copySelection(selection)}
           onClose={clearSelection}
         />
       ) : null}
@@ -932,7 +1082,14 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
                   setActiveMark(null);
                   setEditing(target);
                 }}
-                onCopy={() => copyText(target.annotation.quote ?? '')}
+                onCopy={() => {
+                  const quote = target.annotation.quote ?? '';
+                  if (quote !== '') {
+                    copyText(quote);
+                  } else {
+                    setNotice(target.annotation.quoteSource === 'none' ? 'O texto desta marca ainda está sendo lido.' : 'Esta marca não tem texto.');
+                  }
+                }}
                 onRemove={() => {
                   setActiveMark(null);
                   void removeEntry(uuid);

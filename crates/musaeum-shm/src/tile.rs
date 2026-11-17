@@ -84,12 +84,42 @@ pub fn tile_grid(page: PageGeometry, scale: u32) -> (u64, u64) {
 
 /// Longest edge of a page thumbnail, in pixels.
 pub const THUMBNAIL_EDGE: u32 = 256;
+/// Longest edge of the picture of a page the line detector looks at, in pixels: on a scanned book
+/// the strokes of body text are then a few pixels wide, which is what the detector needs.
+pub const LINES_EDGE: u32 = 1500;
 
 /// The finest scale at which the whole page fits in a square of `edge` pixels, so that its
-/// thumbnail is the single tile at `x = 0, y = 0`. `edge` is at most [`TILE_SIZE`]. Only a page
-/// longer than `edge` × 64 points, which PDF without `/UserUnit` does not allow, still overflows it.
+/// thumbnail is the single tile at `x = 0, y = 0`. `edge` is at most [`TILE_SIZE`].
 pub fn thumbnail_scale(page: PageGeometry, edge: u32) -> u32 {
-    let edge = edge.clamp(1, TILE_SIZE);
+    fit_scale(page, edge.clamp(1, TILE_SIZE))
+}
+
+/// The longest a landscape page's picture for the line detector gets.
+pub const LINES_MAX_EDGE: u32 = 3000;
+
+/// The longest edge of a page's picture for the line detector: [`LINES_EDGE`] pixels, and for a
+/// landscape page, which is often two pages scanned side by side, the height a single page gets,
+/// up to [`LINES_MAX_EDGE`]. Drawn 1500 pixels wide, the letters of such a spread are five or six
+/// pixels tall, too few to find the lines by.
+pub fn lines_edge(page: PageGeometry) -> u32 {
+    let (width, height) = (page.width_pt, page.height_pt);
+    if height > 0.0 && width > height * 1.2 {
+        ((LINES_EDGE as f32 * width / height).round() as u32).clamp(LINES_EDGE, LINES_MAX_EDGE)
+    } else {
+        LINES_EDGE
+    }
+}
+
+/// The scale the line detector looks at a page at: its longest edge [`lines_edge`] pixels, which
+/// takes a few tiles.
+pub fn lines_scale(page: PageGeometry) -> u32 {
+    fit_scale(page, lines_edge(page))
+}
+
+/// The finest scale at which the whole page fits in a square of `edge` pixels. Only a page longer
+/// than `edge` × 64 points, which PDF without `/UserUnit` does not allow, still overflows it.
+pub fn fit_scale(page: PageGeometry, edge: u32) -> u32 {
+    let edge = edge.max(1);
     let longest = page.width_pt.max(page.height_pt);
     if !longest.is_finite() || longest <= 0.0 {
         return MIN_SCALE;
@@ -119,6 +149,26 @@ pub fn tile_in_page(key: TileKey, page: PageGeometry) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_landscape_page_is_drawn_for_the_lines_as_tall_as_a_portrait_one() {
+        let portrait = PageGeometry {
+            width_pt: 595.0,
+            height_pt: 842.0,
+        };
+        let spread = PageGeometry {
+            width_pt: 1190.0,
+            height_pt: 842.0,
+        };
+        let banner = PageGeometry {
+            width_pt: 3000.0,
+            height_pt: 400.0,
+        };
+        assert_eq!(lines_edge(portrait), LINES_EDGE);
+        assert_eq!(lines_edge(spread), 2120);
+        assert_eq!(lines_edge(banner), LINES_MAX_EDGE);
+        assert_eq!(page_pixels(spread.height_pt, lines_scale(spread)), 1500);
+    }
+
     use super::*;
 
     const LETTER: PageGeometry = PageGeometry {

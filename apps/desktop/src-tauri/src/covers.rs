@@ -232,6 +232,7 @@ fn draw_page(library: &Library, path: &Path, hash: &Hash, own_file: bool) -> Res
         BackgroundWork {
             analyze: Vec::new(),
             thumbnails: vec![0],
+            lines: Vec::new(),
         },
         Box::new(move |result| {
             let _ = sender.send(result);
@@ -257,7 +258,7 @@ fn draw_page(library: &Library, path: &Path, hash: &Hash, own_file: bool) -> Res
                 break Ok(false);
             }
             Ok(BackgroundResult::Finished) => break Ok(false),
-            Ok(BackgroundResult::Content { .. }) => {}
+            Ok(BackgroundResult::Content { .. } | BackgroundResult::Lines { .. }) => {}
             Err(_) => break Err("the worker did not draw the cover in time".to_owned()),
         }
     };

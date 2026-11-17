@@ -1,7 +1,7 @@
 /** Messages between the main thread and the compositor worker. Control only, never pixels. */
 
 import type { BenchOptions, SessionInfo } from '../protocol';
-import type { AnnotatorMessage, FixedMark, PageSpan } from './annotator';
+import type { AnnotatorMessage, FixedMark, PageSpan, RegionSelection, Tool } from './annotator';
 import type { SabRingBuffers } from '../sab-ring';
 import type { ModeKind, ReadingSnapshot } from './reader';
 import type { SpreadsSetting } from './spreads';
@@ -73,7 +73,16 @@ export type ToWorker =
   | { type: 'marks'; marks: FixedMark[] }
   | { type: 'clear-selection' }
   /** Where the pointer is, with no button down. */
-  | { type: 'hover'; x: number; y: number };
+  | { type: 'hover'; x: number; y: number }
+  /** What a press on a page does from now on. */
+  | { type: 'set-tool'; tool: Tool }
+  /** Whether a drag along lines snaps to words and follows the lines' curves. */
+  | { type: 'set-snap'; on: boolean }
+  /**
+   * A page's line model as the host sent it (the page hash, then `MLIN`), or null when the host
+   * has none to send. `retry` says the host has none yet and may later: asking again is allowed.
+   */
+  | { type: 'lines'; page: number; buffer: ArrayBuffer | null; retry: boolean };
 
 export interface ProbeReply {
   type: 'probe-reply';
@@ -131,6 +140,12 @@ export interface Inspection {
   marks: number;
   /** The pages whose characters the compositor has. */
   charPages: number[];
+  tool: Tool;
+  snap: boolean;
+  /** The pages whose line models the compositor has, with how many lines each. */
+  linePages: { page: number; lines: number }[];
+  /** The region drawn and not yet an annotation. */
+  region: RegionSelection | null;
 }
 
 export type FromWorker =

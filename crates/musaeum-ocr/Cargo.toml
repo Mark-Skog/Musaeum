@@ -1,0 +1,16 @@
+[package]
+name = "musaeum-ocr"
+description = "Reads the text on pictures of pages through an isolated Tesseract worker: the conversation with it, the host's side, and the geometry of lines straightened for it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+musaeum-sandbox.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -62,6 +62,8 @@ pub struct PoolStats {
     pub tiles_failed: u64,
     /// Thumbnails rendered, counted apart from the tiles above.
     pub thumbnails_done: u64,
+    /// Tiles of the pictures drawn for the line detector, counted apart too.
+    pub lines_tiles_done: u64,
     /// Pages classified.
     pub pages_analyzed: u64,
     /// Text layers read.
@@ -88,6 +90,8 @@ pub struct PoolStats {
     pub recovery_us: Summary,
     /// Microseconds per thumbnail.
     pub thumbnail_us: Summary,
+    /// Microseconds per tile drawn for the line detector.
+    pub lines_us: Summary,
     /// Microseconds to classify a page.
     pub analyze_us: Summary,
 }
@@ -102,6 +106,7 @@ pub(crate) struct StatsCollector {
     batch_copy_us: Vec<u32>,
     recovery_us: Vec<u32>,
     thumbnail_us: Vec<u32>,
+    lines_us: Vec<u32>,
     analyze_us: Vec<u32>,
 }
 
@@ -121,6 +126,11 @@ impl StatsCollector {
     pub(crate) fn thumbnail_done(&mut self, render_us: u32) {
         self.totals.thumbnails_done += 1;
         record(&mut self.thumbnail_us, render_us);
+    }
+
+    pub(crate) fn lines_tile_done(&mut self, render_us: u32) {
+        self.totals.lines_tiles_done += 1;
+        record(&mut self.lines_us, render_us);
     }
 
     pub(crate) fn analyzed(&mut self, micros: u32) {
@@ -148,6 +158,7 @@ impl StatsCollector {
             batch_copy_us: Summary::of(&self.batch_copy_us),
             recovery_us: Summary::of(&self.recovery_us),
             thumbnail_us: Summary::of(&self.thumbnail_us),
+            lines_us: Summary::of(&self.lines_us),
             analyze_us: Summary::of(&self.analyze_us),
             ..self.totals.clone()
         }

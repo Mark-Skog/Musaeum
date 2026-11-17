@@ -1,5 +1,6 @@
 /** What the app asks the host, typed as the Rust side answers. */
 
+import type { RegionSelection } from '../compositor/annotator';
 import { invoke } from '@tauri-apps/api/core';
 
 import type { FlowMode, SectionPlan } from '../reader/messages';
@@ -110,6 +111,28 @@ export interface Annotation {
   segments: { ordinal: number; page: number | null; href: string | null; anchorState: AnchorState }[];
 }
 
+/** The text under a region drawn on the picture of a page. */
+export interface RegionText {
+  /** Lines in reading order, one `\n` between them. */
+  text: string;
+  source: Annotation['quoteSource'];
+  /** The page's lines were not traced yet; asking again later may find text. */
+  pending: boolean;
+}
+
+/** A region as the host's commands take it. */
+function regionArgs(region: RegionSelection): Record<string, unknown> {
+  return {
+    page: region.page,
+    tool: region.tool,
+    quads: region.quads,
+    clip: region.clip,
+    lines: region.lines,
+    path: region.path,
+    regionHash: region.regionHash,
+  };
+}
+
 export interface PageMark {
   page: number;
   start: number;
@@ -164,6 +187,15 @@ export const api = {
   fixedAnnotations: (session: number) => invoke<FixedAnnotationView[]>('fixed_annotations', { session }),
   createFixedAnnotation: (session: number, spans: { page: number; start: number; end: number }[], mark: MarkArgs) =>
     invoke<FixedAnnotationView>('create_fixed_annotation', { session, spans, mark }),
+  /**
+   * Makes an annotation of a region drawn on the picture of a page; the host adds the page's hash.
+   * On a scan with no text layer it quotes nothing at first: the host reads the text under it in
+   * the background and announces the annotation with its quote as `annotation-text`.
+   */
+  createRegionAnnotation: (session: number, region: RegionSelection, mark: MarkArgs) =>
+    invoke<FixedAnnotationView>('create_region_annotation', { session, region: regionArgs(region), mark }),
+  /** The text under a region drawn on the picture of a page, as a copy of it gives. */
+  regionText: (session: number, region: RegionSelection) => invoke<RegionText>('region_text', { session, region: regionArgs(region) }),
   flowAnnotations: (document: number) => invoke<FlowAnnotationView[]>('flow_annotations', { document }),
   createFlowAnnotation: (document: number, start: string, end: string, mark: MarkArgs) =>
     invoke<FlowAnnotationView>('create_flow_annotation', { document, start, end, mark }),

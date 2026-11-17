@@ -6,6 +6,7 @@
 
 pub mod fixed;
 pub mod flow;
+pub mod region;
 pub mod text;
 
 use crate::annotations::AnchorState;

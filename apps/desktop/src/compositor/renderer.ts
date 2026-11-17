@@ -376,6 +376,38 @@ export class TileRenderer implements QuadSink {
   }
 
   /**
+   * Pixels of the last frame's tiles, without the marks over them: RGBA rows, top first, of the
+   * box at `x`, `y` in device pixels of the canvas, clamped to it. Null when nothing is left of it.
+   */
+  readRegion(x: number, y: number, width: number, height: number): Uint8Array | null {
+    const { gl } = this;
+    if (this.frame === null) {
+      return null;
+    }
+    const x0 = Math.max(0, Math.floor(x));
+    const y0 = Math.max(0, Math.floor(y));
+    const x1 = Math.min(this.frameWidth, Math.ceil(x + width));
+    const y1 = Math.min(this.frameHeight, Math.ceil(y + height));
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (w < 1 || h < 1 || w !== Math.round(width) || h !== Math.round(height)) {
+      // Partly off the canvas: a hash of part of it would say nothing about the whole.
+      return null;
+    }
+    const upside = new Uint8Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.frame);
+    // The frame's rows go up from the bottom of the canvas.
+    gl.readPixels(x0, this.frameHeight - y1, w, h, gl.RGBA, gl.UNSIGNED_BYTE, upside);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const rows = new Uint8Array(upside.length);
+    const stride = w * 4;
+    for (let row = 0; row < h; row++) {
+      rows.set(upside.subarray((h - 1 - row) * stride, (h - row) * stride), row * stride);
+    }
+    return rows;
+  }
+
+  /**
    * Draws everything pushed since the last call: the tiles in the order pushed, into the frame
    * texture; then the copy of that texture to the screen and the marks over it.
    */

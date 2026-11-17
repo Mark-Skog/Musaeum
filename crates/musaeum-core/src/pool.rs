@@ -23,7 +23,9 @@ use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::outline::{self, OUTLINE_PAGE, OutlineEntry};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::MAX_WORKERS;
-use musaeum_shm::tile::{THUMBNAIL_EDGE, page_pixels, thumbnail_scale};
+use musaeum_shm::tile::{
+    SCALE_ONE, THUMBNAIL_EDGE, lines_edge, lines_scale, page_pixels, thumbnail_scale, tile_grid,
+};
 use musaeum_shm::wire::{
     AnalyzeJob, FatalCode, HostMessage, InitParams, PROTOCOL_VERSION, RenderJob, TextJob,
     WorkerMessage, read_frame, write_frame,
@@ -67,6 +69,20 @@ pub struct BackgroundWork {
     pub analyze: Vec<u32>,
     /// Pages to render a thumbnail of, in this order.
     pub thumbnails: Vec<u32>,
+    /// Pages to draw for the line detector, in this order: a gray picture of each, its longest
+    /// edge [`musaeum_shm::tile::lines_edge`] pixels.
+    pub lines: Vec<u32>,
+}
+
+/// One of the things background work does to a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundTask {
+    /// Measuring what the page is made of.
+    Classify,
+    /// Drawing its thumbnail.
+    Thumbnail,
+    /// Drawing the picture the line detector looks at.
+    Lines,
 }
 
 /// What background work produced, one result at a time.
@@ -90,12 +106,25 @@ pub enum BackgroundResult {
         /// The pixels.
         pixels: Vec<u8>,
     },
-    /// A page could not be classified, or its thumbnail drawn.
+    /// The picture of a page for the line detector: gray, one byte per pixel, rows packed, the
+    /// page's longest edge [`musaeum_shm::tile::lines_edge`] pixels (1500 for a page in portrait),
+    /// as the page is shown (its `/Rotate` applied).
+    Lines {
+        /// The page.
+        page: u32,
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+        /// The pixels, 0 black and 255 white.
+        gray: Vec<u8>,
+    },
+    /// A page could not be classified, or its thumbnail or its picture drawn.
     Failed {
         /// The page.
         page: u32,
-        /// Whether it was the thumbnail that failed.
-        thumbnail: bool,
+        /// What failed.
+        task: BackgroundTask,
     },
     /// Everything asked for so far is done or given up.
     Finished,
@@ -103,6 +132,31 @@ pub enum BackgroundResult {
 
 /// Receives background results, on the pool's thread: it should hand them on, not work on them.
 pub type BackgroundSink = Box<dyn FnMut(BackgroundResult) + Send + 'static>;
+
+/// A stretch of a page asked for as a gray picture, as the OCR reads it: pixels at `scale`, of
+/// the page as shown (its `/Rotate` applied), from `left`, `top`, `width` × `height` of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionRequest {
+    pub page: u32,
+    pub scale: u32,
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The most pixels one region may have.
+pub const MAX_REGION_PIXELS: u64 = 48 << 20;
+
+/// A region of a page as drawn: what was asked, clamped to the page, and its gray pixels, one byte
+/// each, rows packed, 0 black.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionPicture {
+    pub request: RegionRequest,
+    pub gray: Vec<u8>,
+}
+
+type RegionReply = Sender<Result<RegionPicture, TextError>>;
 
 /// Why a page's text layer could not be read.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -233,12 +287,59 @@ enum Event {
         instance: u64,
     },
     Background(BackgroundWork, BackgroundSink),
+    MoreBackground {
+        work: BackgroundWork,
+        first: bool,
+    },
     Text(u32, TextReply),
     Chars(u32, CharsReply),
+    Region(RegionRequest, RegionReply),
     Stats(Sender<PoolStats>),
     Pids(Sender<Vec<Option<u32>>>),
     KillWorker(usize),
     Shutdown,
+}
+
+/// What another thread keeps of a pool to hand it more background work and ask it for a
+/// page's characters, as the thread that stores what the background makes does. It does not
+/// keep the pool running: once the pool stops, its requests go nowhere.
+#[derive(Clone)]
+pub struct PoolHandle {
+    events: Sender<Event>,
+}
+
+impl std::fmt::Debug for PoolHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolHandle").finish_non_exhaustive()
+    }
+}
+
+impl PoolHandle {
+    /// Adds work to the background started with [`RenderPool::start_background`], for the same
+    /// sink, which hears [`BackgroundResult::Finished`] again once this is done too. Without a
+    /// background started, it does nothing.
+    pub fn add_background(&self, work: BackgroundWork) {
+        let _ = self
+            .events
+            .send(Event::MoreBackground { work, first: false });
+    }
+
+    /// As [`RenderPool::request_chars`].
+    pub fn request_chars(&self, page: u32) -> Receiver<Result<CharLayer, TextError>> {
+        let (reply, answer) = mpsc::channel();
+        let _ = self.events.send(Event::Chars(page, reply));
+        answer
+    }
+
+    /// As [`RenderPool::request_region`].
+    pub fn request_region(
+        &self,
+        request: RegionRequest,
+    ) -> Receiver<Result<RegionPicture, TextError>> {
+        let (reply, answer) = mpsc::channel();
+        let _ = self.events.send(Event::Region(request, reply));
+        answer
+    }
 }
 
 /// A running pool. Dropping it stops the workers and releases the slab's writers.
@@ -317,6 +418,8 @@ impl RenderPool {
             background: None,
             text_waiters: HashMap::new(),
             chars_waiters: HashMap::new(),
+            lines: HashMap::new(),
+            regions: Vec::new(),
         };
         let thread = thread::Builder::new()
             .name("render-pool".into())
@@ -387,6 +490,22 @@ impl RenderPool {
         let _ = self.events.send(Event::Background(work, sink));
     }
 
+    /// Adds work to the background, as [`PoolHandle::add_background`], but ahead of what waits:
+    /// for a page the reader is looking at. A page whose picture for the line detector is
+    /// already waiting has its tiles moved ahead instead.
+    pub fn add_background_first(&self, work: BackgroundWork) {
+        let _ = self
+            .events
+            .send(Event::MoreBackground { work, first: true });
+    }
+
+    /// A handle for another thread, to add background work and ask for characters.
+    pub fn handle(&self) -> PoolHandle {
+        PoolHandle {
+            events: self.events.clone(),
+        }
+    }
+
     /// Asks for a page's text layer, ahead of every tile. The answer arrives on the receiver; if
     /// the pool stops first, the receiver reports a disconnection.
     pub fn request_text(&self, page: u32) -> Receiver<Result<TextLayer, TextError>> {
@@ -399,6 +518,18 @@ impl RenderPool {
     pub fn request_chars(&self, page: u32) -> Receiver<Result<CharLayer, TextError>> {
         let (reply, answer) = mpsc::channel();
         let _ = self.events.send(Event::Chars(page, reply));
+        answer
+    }
+
+    /// Asks for a stretch of a page as a gray picture at a scale of its own, for the OCR: the tiles
+    /// it covers are drawn ahead of the rest of the background and put together. What lies past
+    /// the page is cut off; a region of no pixels or of more than [`MAX_REGION_PIXELS`] is refused.
+    pub fn request_region(
+        &self,
+        request: RegionRequest,
+    ) -> Receiver<Result<RegionPicture, TextError>> {
+        let (reply, answer) = mpsc::channel();
+        let _ = self.events.send(Event::Region(request, reply));
         answer
     }
 
@@ -859,6 +990,31 @@ struct EventLoop {
     /// Who is waiting for each page's text layer.
     text_waiters: HashMap<u32, Vec<TextReply>>,
     chars_waiters: HashMap<u32, Vec<CharsReply>>,
+    /// The pictures for the line detector being put together from their tiles, by page.
+    lines: HashMap<u32, LinesAssembly>,
+    /// Regions asked for, being put together from their tiles.
+    regions: Vec<RegionAssembly>,
+}
+
+/// A region of a page being put together tile by tile.
+struct RegionAssembly {
+    request: RegionRequest,
+    gray: Vec<u8>,
+    /// Tiles still to come, by column and row.
+    remaining: std::collections::HashSet<(u16, u16)>,
+    reply: RegionReply,
+}
+
+/// The picture of a page for the line detector, being put together tile by tile.
+struct LinesAssembly {
+    /// The scale its tiles are drawn at: a region of the same page may ask for others.
+    scale: u32,
+    width: u32,
+    height: u32,
+    /// One byte per pixel, rows packed; white until a tile lands.
+    gray: Vec<u8>,
+    /// Tiles still to come.
+    remaining: usize,
 }
 
 impl EventLoop {
@@ -931,6 +1087,7 @@ impl EventLoop {
                 | Event::Background(..)
                 | Event::Text(..)
                 | Event::Chars(..)
+                | Event::Region(..)
         ) {
             self.trimmed = false;
         }
@@ -957,6 +1114,7 @@ impl EventLoop {
                 }
             }
             Event::Background(work, sink) => self.on_background(work, sink),
+            Event::MoreBackground { work, first } => self.on_more_background(work, first),
             Event::Text(page, reply) => {
                 // The outline asks for the text of a page no document has; see musaeum_shm::outline.
                 if page != OUTLINE_PAGE && page as usize >= self.pages.len() {
@@ -980,6 +1138,7 @@ impl EventLoop {
                     waiters.push(reply);
                 }
             }
+            Event::Region(request, reply) => self.on_region(request, reply),
             Event::Stats(reply) => {
                 self.stats.totals.results_discarded = self.scheduler.discarded_results();
                 let _ = reply.send(self.stats.snapshot());
@@ -1039,6 +1198,23 @@ impl EventLoop {
     }
 
     fn on_background(&mut self, work: BackgroundWork, sink: BackgroundSink) {
+        self.queue_background(work, false);
+        self.background = Some((sink, false));
+    }
+
+    fn on_more_background(&mut self, work: BackgroundWork, first: bool) {
+        if self.background.is_none() {
+            return;
+        }
+        self.queue_background(work, first);
+        if let Some((_, finished)) = &mut self.background {
+            *finished = false;
+        }
+        // With nothing of it left to do (pages out of range, or already being traced), the
+        // pump that follows every event tells the sink the background is finished again.
+    }
+
+    fn queue_background(&mut self, work: BackgroundWork, first: bool) {
         let pages = &self.pages;
         let analyze = work
             .analyze
@@ -1054,8 +1230,243 @@ impl EventLoop {
                 y: 0,
             }))
         });
-        self.scheduler.add_background(analyze.chain(thumbnails));
-        self.background = Some((sink, false));
+        // A page for the line detector is every tile of it at the detector's scale; the tiles of
+        // one page come one after another, so its picture is finished before the next page's.
+        let mut assemblies = Vec::new();
+        let mut lines = Vec::new();
+        for page in work.lines {
+            let Some(&size) = pages.get(page as usize) else {
+                continue;
+            };
+            // A page already being put together is not asked for twice: its count of tiles
+            // left would no longer match. Asked for first, what of it still waits goes ahead.
+            if self.lines.contains_key(&page) {
+                if first {
+                    self.scheduler.promote_background(
+                        |work| matches!(work, Work::Lines(tile) if tile.page == page),
+                    );
+                }
+                continue;
+            }
+            if assemblies.iter().any(|(queued, _)| *queued == page) {
+                continue;
+            }
+            let scale = lines_scale(size);
+            let (columns, rows) = tile_grid(size, scale);
+            let edge = u64::from(lines_edge(size));
+            let width = page_pixels(size.width_pt, scale).min(edge) as u32;
+            let height = page_pixels(size.height_pt, scale).min(edge) as u32;
+            assemblies.push((
+                page,
+                LinesAssembly {
+                    scale,
+                    width,
+                    height,
+                    gray: vec![255; width as usize * height as usize],
+                    remaining: (columns * rows) as usize,
+                },
+            ));
+            for y in 0..rows {
+                for x in 0..columns {
+                    lines.push(Work::Lines(TileKey {
+                        page,
+                        scale,
+                        x: x as u16,
+                        y: y as u16,
+                    }));
+                }
+            }
+        }
+        let work = analyze.chain(thumbnails).chain(lines);
+        if first {
+            self.scheduler.add_background_first(work);
+        } else {
+            self.scheduler.add_background(work);
+        }
+        for (page, assembly) in assemblies {
+            self.lines.insert(page, assembly);
+        }
+    }
+
+    /// A region asked for: its tiles go ahead of the rest of the background.
+    fn on_region(&mut self, request: RegionRequest, reply: RegionReply) {
+        let Some(&size) = self.pages.get(request.page as usize) else {
+            let _ = reply.send(Err(TextError::NoSuchPage(request.page)));
+            return;
+        };
+        let scale = request
+            .scale
+            .clamp(musaeum_shm::tile::MIN_SCALE, SCALE_ONE * 32);
+        let page_width = page_pixels(size.width_pt, scale);
+        let page_height = page_pixels(size.height_pt, scale);
+        let left = u64::from(request.left).min(page_width);
+        let top = u64::from(request.top).min(page_height);
+        let width = u64::from(request.width).min(page_width - left);
+        let height = u64::from(request.height).min(page_height - top);
+        if width == 0 || height == 0 || width * height > MAX_REGION_PIXELS {
+            let _ = reply.send(Err(TextError::Failed));
+            return;
+        }
+        let request = RegionRequest {
+            page: request.page,
+            scale,
+            left: left as u32,
+            top: top as u32,
+            width: width as u32,
+            height: height as u32,
+        };
+        let tile = u64::from(TILE_SIZE);
+        let mut remaining = std::collections::HashSet::new();
+        for y in top / tile..(top + height).div_ceil(tile) {
+            for x in left / tile..(left + width).div_ceil(tile) {
+                remaining.insert((x as u16, y as u16));
+            }
+        }
+        let work: Vec<Work> = remaining
+            .iter()
+            .map(|&(x, y)| {
+                Work::Lines(TileKey {
+                    page: request.page,
+                    scale,
+                    x,
+                    y,
+                })
+            })
+            .collect();
+        self.scheduler.add_background_first(work);
+        self.regions.push(RegionAssembly {
+            request,
+            gray: vec![255; (width * height) as usize],
+            remaining,
+            reply,
+        });
+    }
+
+    /// One tile of a page's picture for the line detector has landed in `slot`.
+    fn on_lines_tile(&mut self, slot: u32, tile: TileKey) {
+        let size = self.pages[tile.page as usize];
+        let full_width = page_pixels(size.width_pt, tile.scale);
+        let full_height = page_pixels(size.height_pt, tile.scale);
+        let x0 = u64::from(tile.x) * u64::from(TILE_SIZE);
+        let y0 = u64::from(tile.y) * u64::from(TILE_SIZE);
+        let width = full_width.saturating_sub(x0).min(u64::from(TILE_SIZE)) as u32;
+        let height = full_height.saturating_sub(y0).min(u64::from(TILE_SIZE)) as u32;
+        let pixels = self.slab.copy_slot_rect(slot, width, height);
+        self.release_side_slot(slot);
+        let Ok(pixels) = pixels else {
+            self.fail_lines(tile);
+            return;
+        };
+        self.region_tile(tile, (x0, y0), (width, height), &pixels);
+        let Some(assembly) = self
+            .lines
+            .get_mut(&tile.page)
+            .filter(|assembly| assembly.scale == tile.scale)
+        else {
+            // Asked for again meanwhile, given up, or a region's: this tile is nobody else's.
+            return;
+        };
+        let (x0, y0) = (x0 as usize, y0 as usize);
+        let fits = x0 + width as usize <= assembly.width as usize
+            && y0 + height as usize <= assembly.height as usize;
+        if fits {
+            let stride = assembly.width as usize;
+            for row in 0..height as usize {
+                let source = &pixels[row * width as usize * 4..(row + 1) * width as usize * 4];
+                let target = &mut assembly.gray
+                    [(y0 + row) * stride + x0..(y0 + row) * stride + x0 + width as usize];
+                for (gray, px) in target.iter_mut().zip(source.as_chunks::<4>().0) {
+                    // Rec. 601 weights, in integers: the sum of the weights is 256.
+                    *gray =
+                        ((77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2]))
+                            >> 8) as u8;
+                }
+            }
+        }
+        assembly.remaining = assembly.remaining.saturating_sub(1);
+        if assembly.remaining == 0 {
+            let assembly = self.lines.remove(&tile.page).expect("just found");
+            self.send_background(BackgroundResult::Lines {
+                page: tile.page,
+                width: assembly.width,
+                height: assembly.height,
+                gray: assembly.gray,
+            });
+        }
+    }
+
+    /// Copies a landed tile into every region waiting for it, and answers those it finishes.
+    fn region_tile(&mut self, tile: TileKey, at: (u64, u64), size: (u32, u32), rgba: &[u8]) {
+        if self.regions.is_empty() {
+            return;
+        }
+        let (x0, y0) = at;
+        let (width, height) = (u64::from(size.0), u64::from(size.1));
+        let mut finished = Vec::new();
+        for (index, region) in self.regions.iter_mut().enumerate() {
+            let r = region.request;
+            if r.page != tile.page
+                || r.scale != tile.scale
+                || !region.remaining.remove(&(tile.x, tile.y))
+            {
+                continue;
+            }
+            // The part of the tile inside the region.
+            let (left, top) = (u64::from(r.left), u64::from(r.top));
+            let from_x = x0.max(left);
+            let to_x = (x0 + width).min(left + u64::from(r.width));
+            let from_y = y0.max(top);
+            let to_y = (y0 + height).min(top + u64::from(r.height));
+            for y in from_y..to_y {
+                let source_row = ((y - y0) * width) as usize;
+                let target_row = ((y - top) * u64::from(r.width)) as usize;
+                for x in from_x..to_x {
+                    let px = &rgba[(source_row + (x - x0) as usize) * 4..][..4];
+                    region.gray[target_row + (x - left) as usize] =
+                        ((77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2]))
+                            >> 8) as u8;
+                }
+            }
+            if region.remaining.is_empty() {
+                finished.push(index);
+            }
+        }
+        for index in finished.into_iter().rev() {
+            let region = self.regions.remove(index);
+            let _ = region.reply.send(Ok(RegionPicture {
+                request: region.request,
+                gray: region.gray,
+            }));
+        }
+    }
+
+    /// A tile of a page's picture for the line detector could not be drawn: the picture is given
+    /// up, once, and so is every region that needed it.
+    fn fail_lines(&mut self, tile: TileKey) {
+        if self
+            .lines
+            .get(&tile.page)
+            .is_some_and(|assembly| assembly.scale == tile.scale)
+        {
+            self.lines.remove(&tile.page);
+            self.send_background(BackgroundResult::Failed {
+                page: tile.page,
+                task: BackgroundTask::Lines,
+            });
+        }
+        let mut index = 0;
+        while index < self.regions.len() {
+            let r = self.regions[index].request;
+            if r.page == tile.page
+                && r.scale == tile.scale
+                && self.regions[index].remaining.contains(&(tile.x, tile.y))
+            {
+                let region = self.regions.remove(index);
+                let _ = region.reply.send(Err(TextError::Failed));
+            } else {
+                index += 1;
+            }
+        }
     }
 
     fn on_worker_message(&mut self, worker: usize, message: WorkerMessage) {
@@ -1068,13 +1479,10 @@ impl EventLoop {
             } => {
                 // Pairs with the worker's release fence: its pixel writes are visible now.
                 fence(Ordering::Acquire);
-                if matches!(
-                    self.scheduler.job_work(worker, job_seq),
-                    Some(Work::Thumbnail(_))
-                ) {
-                    self.stats.thumbnail_done(render_us);
-                } else {
-                    self.stats.tile_done(render_us, load_us);
+                match self.scheduler.job_work(worker, job_seq) {
+                    Some(Work::Thumbnail(_)) => self.stats.thumbnail_done(render_us),
+                    Some(Work::Lines(_)) => self.stats.lines_tile_done(render_us),
+                    _ => self.stats.tile_done(render_us, load_us),
                 }
                 self.cancel_times.remove(&job_seq);
                 let done_us = self.started.elapsed().as_micros() as u32;
@@ -1226,6 +1634,7 @@ impl EventLoop {
                         });
                     }
                 }
+                SideResult::Lines { slot, tile } => self.on_lines_tile(slot, tile),
                 SideResult::Text { slot, page, len } if chars_page(page).is_some() => {
                     let bytes = self.slab.copy_slot_prefix(slot, len as usize);
                     self.release_side_slot(slot);
@@ -1252,11 +1661,12 @@ impl EventLoop {
                 SideResult::Failed(work) => match work {
                     Work::Thumbnail(tile) => self.send_background(BackgroundResult::Failed {
                         page: tile.page,
-                        thumbnail: true,
+                        task: BackgroundTask::Thumbnail,
                     }),
+                    Work::Lines(tile) => self.fail_lines(tile),
                     Work::Analyze(page) => self.send_background(BackgroundResult::Failed {
                         page,
-                        thumbnail: false,
+                        task: BackgroundTask::Classify,
                     }),
                     Work::Text(page) => match chars_page(page) {
                         Some(page) => self.answer_chars(page, &Err(TextError::Failed)),
@@ -1390,12 +1800,14 @@ impl EventLoop {
                 continue;
             };
             let job = match order.work {
-                Work::Tile(tile) | Work::Thumbnail(tile) => HostMessage::Render(RenderJob {
-                    job_seq: order.job_seq,
-                    slot: order.slot,
-                    tile,
-                    background: matches!(order.work, Work::Thumbnail(_)),
-                }),
+                Work::Tile(tile) | Work::Thumbnail(tile) | Work::Lines(tile) => {
+                    HostMessage::Render(RenderJob {
+                        job_seq: order.job_seq,
+                        slot: order.slot,
+                        tile,
+                        background: !matches!(order.work, Work::Tile(_)),
+                    })
+                }
                 Work::Analyze(page) => HostMessage::Analyze(AnalyzeJob {
                     job_seq: order.job_seq,
                     page,

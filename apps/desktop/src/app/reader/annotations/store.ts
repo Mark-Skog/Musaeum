@@ -24,6 +24,14 @@ export interface Backend {
 
 let provisional = 0;
 
+/** `annotation` with the quote `learned` has, if it had none. */
+function withQuote(annotation: Annotation, learned: Annotation): Annotation {
+  if (annotation.quote !== null && annotation.quote !== '') {
+    return annotation;
+  }
+  return { ...annotation, quote: learned.quote, quoteSource: learned.quoteSource };
+}
+
 /** A UUID-shaped name for an annotation not written yet, which no written one can have. */
 export function provisionalUuid(): string {
   provisional++;
@@ -54,6 +62,8 @@ export function draft(documentId: number, kind: AnnotationKind, color: string, n
 
 export class AnnotationStore {
   private entries = new Map<string, Entry>();
+  /** Quotes learned of annotations whose writing has not come back yet. */
+  private readonly early = new Map<string, Annotation>();
   private readonly listeners = new Set<() => void>();
   private snapshot: Entry[] = [];
 
@@ -98,7 +108,10 @@ export class AnnotationStore {
     try {
       const written = await write();
       this.entries.delete(shown.annotation.uuid);
-      this.entries.set(written.annotation.uuid, { ...written, pending: false });
+      const learned = this.early.get(written.annotation.uuid);
+      this.early.delete(written.annotation.uuid);
+      const annotation = learned === undefined ? written.annotation : withQuote(written.annotation, learned);
+      this.entries.set(written.annotation.uuid, { ...written, annotation, pending: false });
       this.changed();
       return written;
     } catch (error) {
@@ -128,6 +141,23 @@ export class AnnotationStore {
       this.changed();
       this.onError(`A mudança não foi guardada: ${String(error)}`);
     }
+  }
+
+  /**
+   * What the library learned of an annotation by itself: the quote the OCR read under a mark on a
+   * scan, after it was made. Only the quote is taken, so an edit on its way is not undone.
+   */
+  learned(annotation: Annotation): void {
+    const now = this.entries.get(annotation.uuid);
+    if (now === undefined) {
+      // Read before the writing came back: kept for when it does.
+      if (this.early.size < 64) {
+        this.early.set(annotation.uuid, annotation);
+      }
+      return;
+    }
+    this.entries.set(annotation.uuid, { ...now, annotation: withQuote(now.annotation, annotation) });
+    this.changed();
   }
 
   /** Takes an annotation away from the reader; the library keeps it, deleted logically. */

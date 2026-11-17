@@ -408,3 +408,240 @@ fn a_phase_1_note_survives_the_upgrade_with_a_uuid_from_when_it_was_made() {
     );
     assert_eq!(found[0].annotation.id, 5);
 }
+
+#[test]
+fn a_phase_4_library_keeps_its_selectors_and_learns_marks_on_pictures() {
+    use musaeum_library::anchoring::region::{self, Region, RegionLine, RegionTool};
+
+    let directory = TempDir::new();
+    let paths = LibraryPaths::in_directory(&directory.0.join("library"));
+    std::fs::create_dir_all(&paths.data_dir).unwrap();
+    let connection = rusqlite::Connection::open(paths.library_db()).unwrap();
+    for migration in [
+        include_str!("../migrations/library/0001_initial.sql"),
+        include_str!("../migrations/library/0002_reading.sql"),
+        include_str!("../migrations/library/0003_flow_reading.sql"),
+        include_str!("../migrations/library/0004_annotations.sql"),
+    ] {
+        connection.execute_batch(migration).unwrap();
+    }
+    connection
+        .execute_batch(
+            r#"PRAGMA user_version = 4;
+             PRAGMA application_id = 1297437516;
+             INSERT INTO work (id, title, created_at, updated_at) VALUES (1, 'Os Lusíadas', 1, 1);
+             INSERT INTO document (id, work_id, layout, format, created_at) VALUES (1, 1, 'fixed', 'pdf', 1);
+             INSERT INTO revision (id, document_id, size, origin, created_at) VALUES (1, 1, 10, 'import', 1);
+             INSERT INTO annotation (id, uuid, document_id, revision_id, kind, color, note, quote,
+                     quote_source, progression, anchor_state, resolved_revision_id, resolved_version,
+                     created_at, updated_at)
+                 VALUES (3, x'019a6f0e8c007000800000000000abcd', 1, 1, 'highlight', 'yellow', '',
+                     'as armas e os barões', 'text_layer', 0.0, 'exact', 1, 1, 1, 1);
+             INSERT INTO annotation_segment (id, annotation_id, ordinal, page, anchor_state)
+                 VALUES (8, 3, 0, 0, 'exact');
+             INSERT INTO anchor_selector (id, segment_id, kind, data, priority, normalizer_version, revision_id)
+                 VALUES (21, 8, 'page_char_range', '{"page":0,"start":0,"end":20}', 0, 1, 1),
+                        (22, 8, 'text_quote', '{"exact":"as armas e os barões","prefix":"","suffix":""}', 2, NULL, NULL);"#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let library = Library::open(paths.clone(), options()).unwrap();
+    let kept = library.annotations(1, false).unwrap();
+    assert_eq!(kept.len(), 1);
+    let kinds: Vec<SelectorKind> = kept[0].segments[0]
+        .selectors
+        .iter()
+        .map(|selector| selector.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [SelectorKind::PageCharRange, SelectorKind::TextQuote]
+    );
+
+    // A mark along two lines of a scan, on the same document.
+    let lines = Region {
+        page: 0,
+        tool: RegionTool::Lines,
+        quads: vec![
+            [0.12, 0.30, 0.88, 0.30, 0.88, 0.33, 0.12, 0.33],
+            [0.12, 0.34, 0.47, 0.34, 0.47, 0.37, 0.12, 0.37],
+        ],
+        clip: [0.12, 0.30, 0.88, 0.37],
+        lines: vec![
+            RegionLine {
+                index: 6,
+                from: 0.0,
+                to: 1.0,
+            },
+            RegionLine {
+                index: 7,
+                from: 0.0,
+                to: 0.46,
+            },
+        ],
+        path: Vec::new(),
+        page_hash: Some(region::hash_text(u64::MAX - 1)),
+        region_hash: Some(region::hash_text(42)),
+    };
+    let made = library
+        .create_annotation(musaeum_library::NewAnnotation {
+            document_id: 1,
+            revision_id: 1,
+            kind: AnnotationKind::Highlight,
+            color: "pink".to_owned(),
+            note: String::new(),
+            quote: None,
+            quote_source: musaeum_library::QuoteSource::None,
+            progression: Some(0.3),
+            anchor_state: AnchorState::Exact,
+            resolved_version: Some(1),
+            pdf_nm: None,
+            segments: vec![lines.segment(0, 1, 1)],
+        })
+        .unwrap();
+    drop(library);
+    let library = Library::open(paths.clone(), options()).unwrap();
+    let again = library.annotation(&made.uuid).unwrap();
+    assert_eq!(region::region_of(&again.segments[0]), Some(lines));
+    assert_eq!(again.segments[0].clip, made.segments[0].clip);
+    drop(library);
+
+    // The triggers came back with the table.
+    let connection = rusqlite::Connection::open(paths.library_db()).unwrap();
+    for (sql, why) in [
+        (
+            "DELETE FROM anchor_selector WHERE id = 21",
+            "a selector is never deleted",
+        ),
+        (
+            "UPDATE anchor_selector SET data = '{\"exact\":\"outra\"}' WHERE id = 22",
+            "a quote keeps what it quoted",
+        ),
+        (
+            "UPDATE anchor_selector SET kind = 'page_pixels' WHERE id = 21",
+            "a kind that does not exist",
+        ),
+    ] {
+        assert!(connection.execute(sql, []).is_err(), "{why}");
+    }
+}
+
+#[test]
+fn a_mark_on_a_scan_learns_its_quote_once_and_is_found_by_it() {
+    use musaeum_library::QuoteSource;
+    use musaeum_library::anchoring::region::{self, Region, RegionLine, RegionTool};
+
+    let fixture = Fixture::new();
+    let identity = book(&fixture);
+    let library = fixture.library();
+    let lines = Region {
+        page: 0,
+        tool: RegionTool::Lines,
+        quads: vec![[0.12, 0.30, 0.88, 0.30, 0.88, 0.33, 0.12, 0.33]],
+        clip: [0.12, 0.30, 0.88, 0.33],
+        lines: vec![RegionLine {
+            index: 2,
+            from: 0.0,
+            to: 1.0,
+        }],
+        path: Vec::new(),
+        page_hash: Some(region::hash_text(7)),
+        region_hash: Some(region::hash_text(8)),
+    };
+    let made = library
+        .create_annotation(musaeum_library::NewAnnotation {
+            document_id: identity.document,
+            revision_id: identity.revision,
+            kind: AnnotationKind::Highlight,
+            color: "yellow".to_owned(),
+            note: String::new(),
+            quote: None,
+            quote_source: QuoteSource::None,
+            progression: Some(0.0),
+            anchor_state: AnchorState::Exact,
+            resolved_version: Some(1),
+            pdf_nm: None,
+            segments: vec![lines.segment(0, identity.revision, 2)],
+        })
+        .unwrap();
+    let found = |query: &str| -> Vec<String> {
+        library
+            .search_annotations(Some(identity.document), query, 10)
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.annotation.uuid)
+            .collect()
+    };
+    assert!(found("baroes").is_empty(), "nothing read yet");
+
+    let read = "As armas e os barões assinalados";
+    let quote_selector = |exact: &str| Selector {
+        kind: SelectorKind::TextQuote,
+        data: json!({"exact": exact, "prefix": "", "suffix": ""}),
+        priority: 2,
+        normalizer_version: None,
+        revision_id: None,
+    };
+    let filled = library
+        .fill_quote(
+            &made.uuid,
+            read,
+            QuoteSource::Ocr,
+            // A segment the annotation does not have is passed over.
+            vec![(0, quote_selector(read)), (5, quote_selector("nada"))],
+        )
+        .unwrap();
+    assert_eq!(filled.quote.as_deref(), Some(read));
+    assert_eq!(filled.quote_source, QuoteSource::Ocr);
+    let kinds: Vec<SelectorKind> = filled.segments[0]
+        .selectors
+        .iter()
+        .map(|selector| selector.kind)
+        .collect();
+    assert_eq!(kinds, [SelectorKind::PageRegion, SelectorKind::TextQuote]);
+    assert_eq!(region::region_of(&filled.segments[0]), Some(lines));
+    assert_eq!(found("baroes"), vec![made.uuid.clone()], "found at once");
+    assert_eq!(found("assinal"), vec![made.uuid.clone()]);
+
+    // Read again, by another OCR: what it quoted stays.
+    let again = library
+        .fill_quote(
+            &made.uuid,
+            "As armas e os varões",
+            QuoteSource::Ocr,
+            vec![(0, quote_selector("As armas e os varões"))],
+        )
+        .unwrap();
+    assert_eq!(again, filled);
+    assert!(found("varoes").is_empty());
+
+    // A change of color leaves the search as it was; deleting takes it out.
+    library
+        .edit_annotation(
+            &made.uuid,
+            AnnotationEdit {
+                color: Some("blue".to_owned()),
+                ..AnnotationEdit::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(found("baroes"), vec![made.uuid.clone()]);
+
+    for empty in ["", "   "] {
+        assert!(matches!(
+            library.fill_quote(&made.uuid, empty, QuoteSource::Ocr, Vec::new()),
+            Err(musaeum_library::Error::Refused(_))
+        ));
+    }
+    let connection = rusqlite::Connection::open(fixture.paths.library_db()).unwrap();
+    assert!(
+        connection
+            .execute(
+                "UPDATE annotation SET quote = 'outra' WHERE quote IS NOT NULL",
+                []
+            )
+            .is_err(),
+        "a quote once filled keeps what it quoted"
+    );
+}

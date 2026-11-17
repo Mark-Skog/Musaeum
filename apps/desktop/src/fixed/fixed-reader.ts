@@ -8,6 +8,7 @@
  * the reader goes back to the library; the benchmarks and the tests of Phase 2 open one at start.
  */
 
+import type { RegionSelection, Tool } from '../compositor/annotator';
 import { invoke } from '@tauri-apps/api/core';
 
 import { Samples } from '../bench/metrics';
@@ -91,6 +92,8 @@ export interface FixedReaderConfig {
   onSelection?(selection: FixedSelection): void;
   /** A click on a mark, which opens it. */
   onMarkClick?(id: string, rect: CssRect): void;
+  /** A region drawn on the picture of a page, or none any more. */
+  onRegion?(region: RegionSelection | null, rect: CssRect | null): void;
 }
 
 /** A box in CSS pixels, relative to the canvas. */
@@ -106,6 +109,12 @@ export interface FixedSelection {
   text: string;
   rect: CssRect | null;
 }
+
+const CURSORS = { text: 'text', mark: 'pointer', crosshair: 'crosshair', default: '' } as const;
+
+/** How often the host is asked again for a page's lines while it traces them, and for how long. */
+const LINES_RETRY_MS = 500;
+const LINES_TRIES = 60;
 
 const toCss = (rect: { x: number; y: number; width: number; height: number }): CssRect => ({
   x: rect.x / devicePixelRatio,
@@ -460,7 +469,15 @@ export class FixedReader {
           config.onMarkClick?.(message.id, toCss(message.rect));
           break;
         case 'cursor':
-          canvas.style.cursor = message.cursor === 'text' ? 'text' : message.cursor === 'mark' ? 'pointer' : '';
+          canvas.style.cursor = CURSORS[message.cursor];
+          break;
+        case 'need-lines':
+          for (const page of message.pages) {
+            void this.sendLines(page);
+          }
+          break;
+        case 'region':
+          config.onRegion?.(message.region, message.rect === null ? null : toCss(message.rect));
           break;
       }
     });
@@ -593,6 +610,43 @@ export class FixedReader {
       console.warn(`page ${page}'s characters`, error);
       this.send({ type: 'chars', page, buffer: null });
     }
+  }
+
+  /**
+   * Sends the compositor a page's lines. The host traces a page it has none of ahead of the rest
+   * of the background and answers empty meanwhile, so an empty answer is asked again a moment
+   * later; after a while the compositor is told to ask again when it wants them.
+   */
+  private async sendLines(page: number): Promise<void> {
+    for (let tries = 0; tries < LINES_TRIES; tries++) {
+      const session = this.session;
+      if (session === null || this.finished) {
+        return;
+      }
+      try {
+        const bytes = await invoke<ArrayBuffer | number[]>('line_model', { session: session.id, page });
+        const buffer = bytes instanceof ArrayBuffer ? bytes : new Uint8Array(bytes).buffer;
+        if (buffer.byteLength > 0) {
+          this.send({ type: 'lines', page, buffer, retry: false }, [buffer]);
+          return;
+        }
+      } catch (error) {
+        console.warn(`page ${page}'s lines`, error);
+        this.send({ type: 'lines', page, buffer: null, retry: false });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, LINES_RETRY_MS));
+    }
+    this.send({ type: 'lines', page, buffer: null, retry: true });
+  }
+
+  /** What a press on a page does: select text, or draw on the picture along lines, a box or a stroke. */
+  setTool(tool: Tool): void {
+    this.send({ type: 'set-tool', tool });
+  }
+
+  setSnap(on: boolean): void {
+    this.send({ type: 'set-snap', on });
   }
 
   /** Every mark to draw, replacing the ones before. */

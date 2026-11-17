@@ -6,6 +6,11 @@
  * after a triple one and by paragraph after a fourth), and one that starts anywhere else pans, as
  * before. A selection can run across pages, each page a segment of it. Marks and the selection are
  * drawn in the same frame as the tiles under them, so they never lag behind a scroll or a zoom.
+ *
+ * On the picture of a page, a scan, there are three more tools: along the lines the host's
+ * detector found on it (the first line from where the drag starts, those between whole, the last
+ * to where it ends, the ends on the edges of words unless snapping is off), a box, and a stroke
+ * drawn by hand. Each makes a region of one page, which the main page turns into an annotation.
  */
 
 import {
@@ -17,9 +22,44 @@ import {
   paragraphAt,
   textOf,
   toShown,
+  toStored,
   wordAt,
 } from './chars';
+import {
+  boxQuad,
+  clipOf,
+  decodeLines,
+  dhashRgba,
+  type LinePage,
+  type LinePiece,
+  pieceQuads,
+  snapRange,
+  storedQuads,
+  strokeQuads,
+} from './lines';
 import type { PlacedPages } from './view';
+
+/** What a press on a page does: select text, or draw on the picture. */
+export type Tool = 'text' | 'lines' | 'rect' | 'free';
+
+/** A mark drawn on the picture of one page, before it is an annotation. */
+export interface RegionSelection {
+  page: number;
+  tool: 'lines' | 'rect' | 'free';
+  /** What it is drawn with, in the frame the host stores: the crop box before its rotation. */
+  quads: number[][];
+  /** Its box: left, top, right, bottom. */
+  clip: [number, number, number, number];
+  /** The detector's lines it covers. */
+  lines: LinePiece[];
+  /** A stroke's points, u and v in turn. */
+  path: number[];
+  /** The 64-bit difference hash of the region as the frame shows it, as sixteen hex digits. */
+  regionHash: string | null;
+}
+
+/** Reads pixels of the frame under the marks: RGBA rows, top first, in device pixels. */
+export type FrameReader = (x: number, y: number, width: number, height: number) => Uint8Array | null;
 
 /** A mark as the main page describes it: one annotation's stretch of one page. */
 export interface FixedMark {
@@ -50,8 +90,13 @@ export type AnnotatorMessage =
       rect: { x: number; y: number; width: number; height: number } | null;
     }
   | { type: 'mark-click'; id: string; rect: { x: number; y: number; width: number; height: number } }
-  /** What the pointer is over: text to select, a mark to open, or neither. */
-  | { type: 'cursor'; cursor: 'text' | 'mark' | 'default' };
+  /** What the pointer is over: text to select, a mark to open, a page to draw on, or neither. */
+  | { type: 'cursor'; cursor: Cursor }
+  | { type: 'need-lines'; pages: number[] }
+  /** A region drawn on a page, or none when it goes. */
+  | { type: 'region'; region: RegionSelection | null; rect: { x: number; y: number; width: number; height: number } | null };
+
+type Cursor = 'text' | 'mark' | 'default' | 'crosshair';
 
 type Granularity = 'char' | 'word' | 'line' | 'paragraph';
 
@@ -89,6 +134,16 @@ const dimmed = (color: readonly [number, number, number]): [number, number, numb
 ];
 const SELECTION: [number, number, number] = [0.7, 0.83, 1.0];
 const SELECTION_DARK: [number, number, number] = [0.25, 0.42, 0.75];
+/** The edge of a box being drawn, so it reads as a box over a white page too. */
+const BOX_EDGE: [number, number, number] = [0.25, 0.45, 0.85];
+const BOX_EDGE_DARK: [number, number, number] = [0.5, 0.7, 1.0];
+/** A stroke's width, in points, as a highlighter's. */
+export const STROKE_PT = 9;
+/** Points of a stroke closer than this to the last one, in points, are not kept. */
+const STROKE_STEP_PT = 1.5;
+const MAX_STROKE_POINTS = 4096;
+/** A box smaller than this, as a fraction of the page, is a click, not a box. */
+const MIN_BOX = 0.004;
 /** Two presses this close in time and place are one double click. */
 const MULTI_CLICK_MS = 450;
 const MULTI_CLICK_PX = 8;
@@ -117,12 +172,88 @@ export class Annotator {
   private down = { x: 0, y: 0, time: -Infinity, clicks: 0 };
   /** A mark pressed on, which a click without a drag opens. */
   private pressedMark: FixedMark | null = null;
+  private tool: Tool = 'text';
+  private snap = true;
+  private readonly linePages = new Map<number, LinePage>();
+  private readonly askedLines = new Set<number>();
+  /** A region being drawn, as shown on its page. */
+  private gesture: { page: number; start: { x: number; y: number }; end: { x: number; y: number }; path: number[] } | null = null;
+  /** The region drawn, kept on the screen until it becomes an annotation or goes. */
+  private region: { selection: RegionSelection; shown: number[][] } | null = null;
 
   constructor(
     private readonly widths: Float32Array,
     private readonly heights: Float32Array,
     private readonly post: (message: AnnotatorMessage) => void,
+    private readonly readFrame: FrameReader | null = null,
   ) {}
+
+  /** Changes what a press on a page does. Whatever is selected or drawn goes. */
+  setTool(tool: Tool): void {
+    if (tool === this.tool) {
+      return;
+    }
+    this.clear(true);
+    this.tool = tool;
+  }
+
+  /** Whether a drag along lines snaps its ends to words and follows the lines as they curve. */
+  setSnap(on: boolean): void {
+    this.snap = on;
+  }
+
+  get currentTool(): Tool {
+    return this.tool;
+  }
+
+  get snapping(): boolean {
+    return this.snap;
+  }
+
+  /** A page's lines as the host sent them, or null when it has none to send. */
+  setLines(page: number, buffer: ArrayBuffer | null): void {
+    if (buffer === null) {
+      return;
+    }
+    try {
+      // In one unit along and across, the page's height: its width is this many of them.
+      this.linePages.set(page, decodeLines(buffer, this.widths[page] / this.heights[page]));
+    } catch (error) {
+      console.warn(`page ${page}'s lines were refused`, error);
+    }
+  }
+
+  /** The pages whose lines are here. */
+  get linePageList(): number[] {
+    return [...this.linePages.keys()].sort((a, b) => a - b);
+  }
+
+  /** How many lines a page has, or -1 if they are not here. */
+  lineCount(page: number): number {
+    return this.linePages.get(page)?.lines.length ?? -1;
+  }
+
+  /** The region drawn and not yet made an annotation. */
+  get regionSelection(): RegionSelection | null {
+    return this.region?.selection ?? null;
+  }
+
+  /** The rotation a page is shown with, from its lines or its characters. */
+  private rotationOf(page: number): number {
+    return this.linePages.get(page)?.rotation ?? this.pages.get(page)?.rotation ?? 0;
+  }
+
+  private askLines(page: number, into: number[]): void {
+    if (!this.linePages.has(page) && !this.askedLines.has(page)) {
+      this.askedLines.add(page);
+      into.push(page);
+    }
+  }
+
+  /** Lets a page's lines be asked for again, as when the host had none yet. */
+  forgetAskedLines(page: number): void {
+    this.askedLines.delete(page);
+  }
 
   /** Asks for the characters of pages that have stayed on the screen a moment and have none yet. */
   want(placed: PlacedPages, now: number): void {
@@ -148,6 +279,15 @@ export class Annotator {
     if (missing.length > 0) {
       this.post({ type: 'need-chars', pages: missing });
     }
+    if (this.tool === 'lines') {
+      const lines: number[] = [];
+      for (let at = 0; at < placed.count; at++) {
+        this.askLines(placed.pages[at], lines);
+      }
+      if (lines.length > 0) {
+        this.post({ type: 'need-lines', pages: lines });
+      }
+    }
   }
 
   private ask(page: number, into: number[]): void {
@@ -172,7 +312,7 @@ export class Annotator {
 
   /** A point of a page as stored, as a point of the page as shown. */
   shownPoint(page: number, u: number, v: number): [number, number] {
-    return toShown(u, v, this.pages.get(page)?.rotation ?? 0);
+    return toShown(u, v, this.rotationOf(page));
   }
 
   setMarks(marks: FixedMark[]): void {
@@ -233,10 +373,18 @@ export class Annotator {
     return { start: { page, index: range[0] }, end: { page, index: range[1] } };
   }
 
-  private cursor: 'text' | 'mark' | 'default' = 'default';
+  private cursor: Cursor = 'default';
 
   /** The pointer moved with no button down: tells the main page when what is under it changes. */
   hover(x: number, y: number, placed: PlacedPages): void {
+    if (this.tool !== 'text') {
+      const cursor = this.shownAt(x, y, placed, null) !== null ? 'crosshair' : 'default';
+      if (cursor !== this.cursor) {
+        this.cursor = cursor;
+        this.post({ type: 'cursor', cursor });
+      }
+      return;
+    }
     const at = this.pageAt(x, y, placed, false);
     const layer = at === null ? undefined : this.pages.get(at.page);
     const hit = at === null || layer === undefined ? null : hitTest(layer, at.u, at.v);
@@ -248,8 +396,144 @@ export class Annotator {
     }
   }
 
+  /**
+   * Where a point of the canvas is on a page as shown, in fractions: on the page under it, or with
+   * `page` on that page wherever it is, clamped to it. Null when there is no such page placed.
+   */
+  private shownAt(x: number, y: number, placed: PlacedPages, page: number | null): { page: number; x: number; y: number } | null {
+    for (let at = 0; at < placed.count; at++) {
+      const candidate = placed.pages[at];
+      if (page !== null && candidate !== page) {
+        continue;
+      }
+      const width = this.widths[candidate] * placed.scales[at];
+      const height = this.heights[candidate] * placed.scales[at];
+      const sx = (x - placed.x[at]) / width;
+      const sy = (y - placed.y[at]) / height;
+      const inside = sx >= 0 && sx <= 1 && sy >= 0 && sy <= 1;
+      if (page !== null || inside) {
+        return { page: candidate, x: Math.min(1, Math.max(0, sx)), y: Math.min(1, Math.max(0, sy)) };
+      }
+    }
+    return null;
+  }
+
+  /** The region the gesture makes now, as shown, or null if it makes none. */
+  private gestureQuads(): { shown: number[][]; lines: LinePiece[] } | null {
+    const gesture = this.gesture;
+    if (gesture === null) {
+      return null;
+    }
+    switch (this.tool) {
+      case 'lines': {
+        const model = this.linePages.get(gesture.page);
+        if (model === undefined) {
+          return null;
+        }
+        const lines = snapRange(model, gesture.start, gesture.end, this.snap);
+        const shown = lines.flatMap((piece) => pieceQuads(model, model.lines[piece.index], piece, this.snap));
+        return shown.length > 0 ? { shown, lines } : null;
+      }
+      case 'rect': {
+        const quad = boxQuad(gesture.start, gesture.end);
+        return quad[2] - quad[0] >= MIN_BOX && quad[5] - quad[1] >= MIN_BOX ? { shown: [quad], lines: [] } : null;
+      }
+      case 'free': {
+        const shown = strokeQuads(gesture.path, STROKE_PT, this.widths[gesture.page], this.heights[gesture.page]);
+        return gesture.path.length >= 4 ? { shown, lines: [] } : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private drawDown(x: number, y: number, placed: PlacedPages): boolean {
+    const at = this.shownAt(x, y, placed, null);
+    this.clear(true);
+    if (at === null) {
+      return false;
+    }
+    if (this.tool === 'lines' && !this.linePages.has(at.page)) {
+      const missing: number[] = [];
+      this.askLines(at.page, missing);
+      if (missing.length > 0) {
+        this.post({ type: 'need-lines', pages: missing });
+      }
+    }
+    const point = { x: at.x, y: at.y };
+    this.gesture = { page: at.page, start: point, end: point, path: [at.x, at.y] };
+    this.pressing = true;
+    return true;
+  }
+
+  private drawMove(x: number, y: number, placed: PlacedPages): void {
+    const gesture = this.gesture;
+    if (gesture === null) {
+      return;
+    }
+    const at = this.shownAt(x, y, placed, gesture.page);
+    if (at === null) {
+      return;
+    }
+    gesture.end = { x: at.x, y: at.y };
+    if (this.tool === 'free' && gesture.path.length < MAX_STROKE_POINTS * 2) {
+      const width = this.widths[gesture.page];
+      const height = this.heights[gesture.page];
+      const lastX = gesture.path[gesture.path.length - 2];
+      const lastY = gesture.path[gesture.path.length - 1];
+      if (Math.hypot((at.x - lastX) * width, (at.y - lastY) * height) >= STROKE_STEP_PT) {
+        gesture.path.push(at.x, at.y);
+      }
+    }
+  }
+
+  private drawUp(placed: PlacedPages): void {
+    const gesture = this.gesture;
+    const made = this.gestureQuads();
+    this.gesture = null;
+    if (gesture === null || made === null || this.tool === 'text') {
+      return;
+    }
+    const rotation = this.rotationOf(gesture.page);
+    const quads = storedQuads(made.shown, rotation);
+    const path: number[] = [];
+    if (this.tool === 'free') {
+      for (let at = 0; at < gesture.path.length; at += 2) {
+        path.push(...toStored(gesture.path[at], gesture.path[at + 1], rotation));
+      }
+    }
+    const rect = this.boundsOf(gesture.page, quads, placed);
+    const selection: RegionSelection = {
+      page: gesture.page,
+      tool: this.tool,
+      quads,
+      clip: clipOf(quads),
+      lines: made.lines,
+      path,
+      regionHash: rect === null ? null : this.hashOf(rect),
+    };
+    this.region = { selection, shown: made.shown };
+    this.post({ type: 'region', region: selection, rect });
+  }
+
+  /** The hash of the frame's pixels under a box of the canvas, if it is big enough to mean anything. */
+  private hashOf(rect: { x: number; y: number; width: number; height: number }): string | null {
+    if (this.readFrame === null || rect.width < 8 || rect.height < 8) {
+      return null;
+    }
+    const x = Math.floor(rect.x);
+    const y = Math.floor(rect.y);
+    const width = Math.ceil(rect.x + rect.width) - x;
+    const height = Math.ceil(rect.y + rect.height) - y;
+    const pixels = this.readFrame(x, y, width, height);
+    return pixels === null || pixels.length < width * height * 4 ? null : dhashRgba(pixels, width, height);
+  }
+
   /** A press. Returns whether it starts a selection; if not, the reader pans as before. */
   pointerDown(x: number, y: number, now: number, placed: PlacedPages): boolean {
+    if (this.tool !== 'text') {
+      return this.drawDown(x, y, placed);
+    }
     const near = Math.hypot(x - this.down.x, y - this.down.y) <= MULTI_CLICK_PX;
     const clicks = near && now - this.down.time <= MULTI_CLICK_MS ? this.down.clicks + 1 : 1;
     this.down = { x, y, time: now, clicks };
@@ -281,6 +565,10 @@ export class Annotator {
     if (!this.pressing) {
       return false;
     }
+    if (this.gesture !== null) {
+      this.drawMove(x, y, placed);
+      return true;
+    }
     if (!this.moved && Math.hypot(x - this.down.x, y - this.down.y) < DRAG_PX) {
       return true;
     }
@@ -299,6 +587,10 @@ export class Annotator {
       return false;
     }
     this.pressing = false;
+    if (this.gesture !== null) {
+      this.drawUp(placed);
+      return true;
+    }
     if (!this.moved && this.granularity === 'char') {
       // A click on text: a mark under it opens; otherwise any selection goes.
       const mark = this.pressedMark;
@@ -373,14 +665,20 @@ export class Annotator {
     this.post({ type: 'selection', spans, text, rect: this.boundsOf(first.page, quads.slice(0, 1), placed) });
   }
 
-  /** Forgets the selection, telling the main page if there was one. */
+  /** Forgets the selection and any region drawn, telling the main page if there was one. */
   clear(tell: boolean): void {
     const had = this.anchor !== null;
+    const hadRegion = this.region !== null;
     this.anchor = null;
     this.focus = null;
+    this.gesture = null;
+    this.region = null;
     this.pressing = false;
     if (had && tell) {
       this.post({ type: 'selection', spans: [], text: '', rect: null });
+    }
+    if (hadRegion && tell) {
+      this.post({ type: 'region', region: null, rect: null });
     }
   }
 
@@ -405,7 +703,7 @@ export class Annotator {
       if (placed.pages[at] !== page) {
         continue;
       }
-      const rotation = this.pages.get(page)?.rotation ?? 0;
+      const rotation = this.rotationOf(page);
       const width = this.widths[page] * placed.scales[at];
       const height = this.heights[page] * placed.scales[at];
       let left = Infinity;
@@ -432,14 +730,18 @@ export class Annotator {
   draw(sink: { mark(corners: ArrayLike<number>, light: ArrayLike<number>, dark: ArrayLike<number>): void }, placed: PlacedPages): void {
     const corners = new Float32Array(8);
     const spans = this.anchor === null ? [] : this.spans();
+    const drawing = this.gesture !== null ? this.gestureQuads() : null;
+    const drawnPage = this.gesture?.page ?? this.region?.selection.page ?? -1;
+    const drawn = drawing?.shown ?? this.region?.shown ?? null;
     for (let at = 0; at < placed.count; at++) {
       const page = placed.pages[at];
       const marks = this.marksByPage.get(page);
       const span = spans.find((candidate) => candidate.page === page);
-      if (marks === undefined && span === undefined) {
+      const region = page === drawnPage ? drawn : null;
+      if (marks === undefined && span === undefined && region === null) {
         continue;
       }
-      const rotation = this.pages.get(page)?.rotation ?? 0;
+      const rotation = this.rotationOf(page);
       const width = this.widths[page] * placed.scales[at];
       const height = this.heights[page] * placed.scales[at];
       const x0 = placed.x[at];
@@ -475,6 +777,21 @@ export class Annotator {
         for (const quad of lineQuads(layer, span.start, span.end)) {
           place(quad);
           sink.mark(corners, SELECTION, SELECTION_DARK);
+        }
+      }
+      if (region !== null) {
+        // As shown already: placed without turning.
+        for (const quad of region) {
+          for (let corner = 0; corner < 4; corner++) {
+            corners[corner * 2] = x0 + quad[corner * 2] * width;
+            corners[corner * 2 + 1] = y0 + quad[corner * 2 + 1] * height;
+          }
+          sink.mark(corners, SELECTION, SELECTION_DARK);
+          if (this.tool === 'rect') {
+            for (const edge of boxEdges(corners)) {
+              sink.mark(edge, BOX_EDGE, BOX_EDGE_DARK);
+            }
+          }
         }
       }
     }
@@ -542,4 +859,15 @@ function noteTab(c: Float32Array): void {
   const x = ax - rx * size * 0.5 - dx * size * 1.1;
   const y = ay - ry * size * 0.5 - dy * size * 1.1;
   c.set([x, y, x + rx * size, y + ry * size, x + rx * size + dx * size, y + ry * size + dy * size, x + dx * size, y + dy * size]);
+}
+
+/** The four edges of an upright box in device pixels, each a band a pixel and a half wide. */
+function boxEdges(c: Float32Array): Float32Array[] {
+  const left = Math.min(c[0], c[6]);
+  const right = Math.max(c[2], c[4]);
+  const top = Math.min(c[1], c[3]);
+  const bottom = Math.max(c[5], c[7]);
+  const w = 1.5;
+  const band = (l: number, t: number, r: number, b: number): Float32Array => new Float32Array([l, t, r, t, r, b, l, b]);
+  return [band(left, top, right, top + w), band(left, bottom - w, right, bottom), band(left, top, left + w, bottom), band(right - w, top, right, bottom)];
 }

@@ -76,6 +76,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
             color: entry.annotation.color,
             note: entry.annotation.note,
             quote: entry.annotation.quote,
+            quoteSource: entry.annotation.quoteSource,
             anchorState: entry.annotation.anchorState,
             progression: entry.annotation.progression,
             pending: entry.pending,
@@ -100,6 +101,8 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         };
       },
       inspectFixed: () => probe.current?.fixed?.inspect() ?? null,
+      /** Shows a page of the open fixed document, as an entry of its outline does. */
+      goToPage: (page: number) => probe.current?.fixed?.send({ type: 'go-to-page', page }),
       resizeWindow: (width: number, height: number) => invoke('e2e_resize_window', { width, height }),
       openedLinks: () => invoke<string[]>('e2e_opened_links'),
       /** A page's characters as the compositor gets them, as bytes, for a test to aim a drag with. */
@@ -109,6 +112,15 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
           return null;
         }
         const bytes = await invoke<ArrayBuffer>('page_chars', { session: session.id, page });
+        return Array.from(new Uint8Array(bytes));
+      },
+      /** A page's line model as the host has it now: empty while it is being traced. */
+      lineModel: async (page: number) => {
+        const session = probe.current?.fixed?.session;
+        if (session === null || session === undefined) {
+          return null;
+        }
+        const bytes = await invoke<ArrayBuffer>('line_model', { session: session.id, page });
         return Array.from(new Uint8Array(bytes));
       },
       rects: () => ({

@@ -463,12 +463,15 @@ name = "corpus-check"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "gen-fixtures",
  "musaeum-core",
  "musaeum-flow",
  "musaeum-ingest",
  "musaeum-library",
+ "musaeum-ocr",
  "musaeum-sandbox",
  "musaeum-shm",
+ "musaeum-vision",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -2157,8 +2160,10 @@ dependencies = [
  "musaeum-fs",
  "musaeum-ingest",
  "musaeum-library",
+ "musaeum-ocr",
  "musaeum-sandbox",
  "musaeum-shm",
+ "musaeum-vision",
  "serde",
  "serde_json",
  "tauri",
@@ -2236,6 +2241,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "musaeum-ocr"
+version = "0.0.1"
+dependencies = [
+ "musaeum-sandbox",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "musaeum-ocr-worker"
+version = "0.0.1"
+dependencies = [
+ "gen-fixtures",
+ "musaeum-ocr",
+ "musaeum-render-pdf",
+ "musaeum-sandbox",
+ "musaeum-tesseract",
+]
+
+[[package]]
 name = "musaeum-render-djvu"
 version = "0.0.1"
 dependencies = [
@@ -2257,6 +2282,7 @@ dependencies = [
  "musaeum-ingest",
  "musaeum-sandbox",
  "musaeum-shm",
+ "musaeum-vision",
  "musaeum-worker",
  "pdfium-render",
  "thiserror 2.0.21",
@@ -2291,6 +2317,20 @@ version = "0.0.1"
 dependencies = [
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "musaeum-tesseract"
+version = "0.0.1"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "musaeum-vision"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -14,17 +14,19 @@ use musaeum_core::FixedFormat;
 use musaeum_flow::NORMALIZER_VERSION;
 use musaeum_flow::cfi;
 use musaeum_flow::locator;
+use musaeum_library::anchoring::region::{self, Region, RegionLine, RegionTool};
 use musaeum_library::anchoring::{self, fixed, flow as flow_anchor};
 use musaeum_library::{
     AnchorState, Annotation, AnnotationEdit, AnnotationHit, AnnotationKind, Library, NewAnnotation,
     QuoteSource, Reanchoring, Segment, SegmentUpdate, SelectorKind,
 };
-use musaeum_shm::chars::line_quads;
+use musaeum_shm::chars::{chars_in_quads, line_quads};
 use musaeum_shm::{CHARS_VERSION, CharLayer};
+use musaeum_vision::LINES_VERSION;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::State;
 use tauri::ipc::Response;
+use tauri::{AppHandle, State};
 
 use crate::book::{self, BookState};
 use crate::flow::{FlowBook, on_large_stack};
@@ -47,7 +49,8 @@ type KeptPage = ((u32, u32), Arc<CharLayer>);
 pub struct CharCache(Mutex<VecDeque<KeptPage>>);
 
 impl CharCache {
-    fn get(&self, session: &Session, page: u32) -> Option<Arc<CharLayer>> {
+    /// A page's characters, read by the pool the first time they are asked for.
+    pub fn get(&self, session: &Session, page: u32) -> Option<Arc<CharLayer>> {
         let key = (session.id, page);
         if let Some((_, layer)) = self
             .0
@@ -177,12 +180,37 @@ fn quads_of(data: &Value) -> Vec<[f32; 8]> {
         .unwrap_or_default()
 }
 
+fn region_mark(region: Region) -> PageMark {
+    PageMark {
+        page: region.page,
+        start: 0,
+        end: 0,
+        quads: region.quads,
+    }
+}
+
+/// The hash of a page of the open document's picture, as the line detector's model keeps it.
+fn page_hash_of(library: &Library, session: &Session, page: u32) -> Option<u64> {
+    let blake3 = session.blake3?;
+    match library.line_model(&blake3, page, LINES_VERSION) {
+        Ok(record) => record.map(|record| record.page_hash),
+        Err(error) => {
+            eprintln!("page {page}'s lines: {error}");
+            None
+        }
+    }
+}
+
 /// Where a fixed annotation's segments are on `revision`, worked out again if they were found on
-/// another revision or text layer, and what to record if they were.
+/// another revision or text layer, and what to record if they were. A mark on the picture of a
+/// page is checked against `page_hash`, the hash of that page now; while a page it needs has
+/// none yet, the annotation shows where it was and nothing is recorded, so it is checked again
+/// next time.
 fn anchor_fixed(
     annotation: &Annotation,
     pages: &mut dyn fixed::Pages,
     revision: i64,
+    page_hash: &dyn Fn(u32) -> Option<u64>,
 ) -> (Vec<PageMark>, Option<Reanchoring>) {
     if annotation.segments.is_empty() {
         return (Vec::new(), None);
@@ -195,6 +223,9 @@ fn anchor_fixed(
             .iter()
             .filter(|segment| segment.anchor_state != AnchorState::Orphan)
             .filter_map(|segment| {
+                if let Some(found) = region::region_of(segment) {
+                    return Some(region_mark(found));
+                }
                 let range = selector_data(segment, SelectorKind::PageCharRange)?;
                 let quads = selector_data(segment, SelectorKind::PageQuads).map(quads_of)?;
                 Some(PageMark {
@@ -210,7 +241,35 @@ fn anchor_fixed(
     let count = pages.count().max(1);
     let mut marks = Vec::new();
     let mut updates = Vec::new();
+    let mut undecided = false;
     for segment in &annotation.segments {
+        if let Some(found) = region::region_of(segment) {
+            let now = page_hash(found.page);
+            match region::resolve(found, pages.count(), now) {
+                region::Resolution::Found(found, state) => {
+                    updates.push(SegmentUpdate {
+                        ordinal: segment.ordinal,
+                        page: Some(found.page),
+                        href: None,
+                        anchor_state: state,
+                        selectors: vec![found.selector(revision, LINES_VERSION)],
+                    });
+                    marks.push(region_mark(found));
+                }
+                region::Resolution::Orphan => updates.push(SegmentUpdate {
+                    ordinal: segment.ordinal,
+                    page: segment.page,
+                    href: None,
+                    anchor_state: AnchorState::Orphan,
+                    selectors: Vec::new(),
+                }),
+                region::Resolution::Undecided(found) => {
+                    undecided = true;
+                    marks.push(region_mark(found));
+                }
+            }
+            continue;
+        }
         match fixed::resolve(segment, pages, revision) {
             Some(place) => {
                 updates.push(SegmentUpdate {
@@ -235,6 +294,9 @@ fn anchor_fixed(
                 selectors: Vec::new(),
             }),
         }
+    }
+    if undecided {
+        return (marks, None);
     }
     let progression = marks
         .first()
@@ -272,9 +334,11 @@ fn record(library: &Library, outcomes: Vec<Reanchoring>) {
     }
 }
 
-/// The open fixed document's annotations, with their marks on the pages as they are now.
+/// The open fixed document's annotations, with their marks on the pages as they are now. Marks on
+/// pictures that quote nothing yet are read in the background.
 #[tauri::command(async)]
 pub fn fixed_annotations(
+    app: AppHandle,
     state: State<'_, AppState>,
     cache: State<'_, CharCache>,
     session: u32,
@@ -295,12 +359,18 @@ pub fn fixed_annotations(
     };
     let mut views = Vec::with_capacity(annotations.len());
     let mut outcomes = Vec::new();
+    let page_hash = |page: u32| page_hash_of(&library, &session, page);
     for mut annotation in annotations {
-        let (marks, outcome) = anchor_fixed(&annotation, &mut pages, revision);
+        let (marks, outcome) = anchor_fixed(&annotation, &mut pages, revision, &page_hash);
         if let Some(outcome) = outcome {
             annotation.anchor_state = outcome.anchor_state;
             annotation.progression = outcome.progression.or(annotation.progression);
             outcomes.push(outcome);
+        }
+        if awaits_quote(&annotation) {
+            state
+                .ocr
+                .enqueue(&app, Arc::clone(&session), annotation.uuid.clone());
         }
         views.push(FixedAnnotationView { annotation, marks });
     }
@@ -405,6 +475,128 @@ pub fn create_fixed_annotation(
         })
         .map_err(|error| error.to_string())?;
     Ok(FixedAnnotationView { annotation, marks })
+}
+
+/// A mark on the picture of a page, as the compositor drew it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionArgs {
+    page: u32,
+    tool: RegionTool,
+    quads: Vec<[f32; 8]>,
+    clip: [f32; 4],
+    #[serde(default)]
+    lines: Vec<RegionLine>,
+    #[serde(default)]
+    path: Vec<f32>,
+    #[serde(default)]
+    region_hash: Option<String>,
+}
+
+/// A region drawn on a page of the open document, checked, with the hash of the page's picture
+/// when the background has traced it.
+pub fn found_region(
+    library: Option<&Library>,
+    session: &Session,
+    region: RegionArgs,
+) -> Result<Region, String> {
+    if region.page as usize >= session.pool.pages().len() {
+        return Err(format!("there is no page {}", region.page));
+    }
+    let found = Region {
+        page: region.page,
+        tool: region.tool,
+        quads: region.quads,
+        clip: region.clip,
+        lines: region.lines,
+        path: region.path,
+        page_hash: library
+            .and_then(|library| page_hash_of(library, session, region.page))
+            .map(region::hash_text),
+        region_hash: region.region_hash,
+    };
+    match found.problem() {
+        Some(problem) => Err(problem),
+        None => Ok(found),
+    }
+}
+
+/// Whether an annotation is a mark on a picture that quotes nothing yet.
+fn awaits_quote(annotation: &Annotation) -> bool {
+    annotation.quote.is_none()
+        && annotation.deleted_at.is_none()
+        && annotation
+            .segments
+            .first()
+            .is_some_and(|segment| selector_data(segment, SelectorKind::PageRegion).is_some())
+}
+
+/// Makes an annotation from a mark on the picture of a page of the open fixed document: along the
+/// lines the detector found, a box, or a stroke. The page's hash comes from its line model, when
+/// the background has traced it. Its quote, what search finds it by, is the text under it: on a
+/// page that is no picture, its characters; on a scan, with or without a text layer over it, what
+/// the OCR reads on the lines under it, afterwards, in the background (see [`crate::ocr`]).
+#[tauri::command(async)]
+pub fn create_region_annotation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cache: State<'_, CharCache>,
+    session: u32,
+    region: RegionArgs,
+    mark: MarkArgs,
+) -> Result<FixedAnnotationView, String> {
+    let session = state
+        .session(session)
+        .ok_or("that document is no longer open")?;
+    let (document, revision) = session
+        .document
+        .ok_or("este documento não está na biblioteca, e só os da biblioteca guardam anotações")?;
+    let count = session.pool.pages().len() as u32;
+    let library = library(&state)?;
+    let found = found_region(Some(&library), &session, region)?;
+    // On a picture, the OCR reads the mark, in the background; the text layer of a scan stands
+    // in only when it has nothing (`crate::ocr::region_reading`).
+    let picture = crate::ocr::picture_page(&state, &session, found.page) == Some(true);
+    let quote = cache
+        .get(&session, found.page)
+        .filter(|_| !picture)
+        .and_then(|layer| {
+            let (start, end) = chars_in_quads(&layer.chars, &found.quads)?;
+            let quote = fixed::quote_at(&layer, start, end).exact;
+            (!quote.trim().is_empty()).then_some(quote)
+        });
+    let quote_source = match (&quote, session.format) {
+        (None, _) => QuoteSource::None,
+        (Some(_), FixedFormat::Djvu) => QuoteSource::Ocr,
+        (Some(_), _) => QuoteSource::TextLayer,
+    };
+    let progression = fixed_progression(found.page, &found.quads, count);
+    let segment = found.segment(0, revision, LINES_VERSION);
+    let annotation = library
+        .create_annotation(NewAnnotation {
+            document_id: document,
+            revision_id: revision,
+            kind: mark.kind,
+            color: mark.color,
+            note: mark.note,
+            quote,
+            quote_source,
+            progression: Some(progression),
+            anchor_state: AnchorState::Exact,
+            resolved_version: Some(CHARS_VERSION),
+            pdf_nm: None,
+            segments: vec![segment],
+        })
+        .map_err(|error| error.to_string())?;
+    if awaits_quote(&annotation) {
+        state
+            .ocr
+            .enqueue(&app, Arc::clone(&session), annotation.uuid.clone());
+    }
+    Ok(FixedAnnotationView {
+        annotation,
+        marks: vec![region_mark(found)],
+    })
 }
 
 /// Where a flowing book's annotation is now, worked out again if it was found on another revision or

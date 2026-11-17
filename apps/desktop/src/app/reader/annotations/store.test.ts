@@ -80,3 +80,34 @@ describe('the annotations shown', () => {
     expect(library.written).toEqual(['edit a {"note":"# nota"}', 'remove a', 'restore a']);
   });
 });
+
+describe('a mark on a scan', () => {
+  const unread = (uuid: string): Entry => {
+    const shown = entry(uuid, 0.2);
+    return { ...shown, annotation: { ...shown.annotation, quote: null, quoteSource: 'none' } };
+  };
+  const read = (uuid: string): Entry['annotation'] => ({ ...unread(uuid).annotation, quote: 'As armas e os barões', quoteSource: 'ocr', color: 'stale' });
+
+  it('learns the quote the OCR read after it was made, and only the quote', () => {
+    const store = new AnnotationStore(backend(new Set()), () => {});
+    store.load([unread('scan')]);
+    store.learned(read('scan'));
+    const [shown] = store.list();
+    expect(shown.annotation.quote).toBe('As armas e os barões');
+    expect(shown.annotation.quoteSource).toBe('ocr');
+    expect(shown.annotation.color).toBe('yellow');
+    // A quote, once there, stays.
+    store.learned({ ...read('scan'), quote: 'outra' });
+    expect(store.list()[0].annotation.quote).toBe('As armas e os barões');
+  });
+
+  it('keeps what was read before its writing came back', async () => {
+    const store = new AnnotationStore(backend(new Set()), () => {});
+    let release: (value: Entry) => void = () => {};
+    const created = store.create(entry('provisional', 0.2), () => new Promise((resolve) => (release = resolve)));
+    store.learned(read('scan'));
+    release(unread('scan'));
+    expect((await created)?.annotation.uuid).toBe('scan');
+    expect(store.list()[0].annotation.quote).toBe('As armas e os barões');
+  });
+});

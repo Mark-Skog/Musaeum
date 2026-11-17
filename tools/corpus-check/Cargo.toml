@@ -9,12 +9,15 @@ publish.workspace = true
 
 [dependencies]
 blake3.workspace = true
+gen-fixtures.workspace = true
 musaeum-core.workspace = true
+musaeum-ocr.workspace = true
 musaeum-flow.workspace = true
 musaeum-ingest.workspace = true
 musaeum-library.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true
+musaeum-vision.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

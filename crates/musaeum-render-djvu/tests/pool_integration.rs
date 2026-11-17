@@ -75,6 +75,7 @@ fn background_work_classifies_and_draws_every_page() {
         BackgroundWork {
             analyze: pages.clone(),
             thumbnails: pages,
+            lines: Vec::new(),
         },
         Box::new(move |result| {
             let _ = sender.send(result);

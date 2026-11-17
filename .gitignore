@@ -15,6 +15,9 @@ npm-debug.log*
 
 # Pinned binaries that tools/fetch-pdfium.ps1 downloads and verifies
 /vendor/pdfium/*/
+# Sources and models that tools/fetch-ocr.ps1 downloads and verifies
+/vendor/tesseract/*
+!/vendor/tesseract/README.md
 
 # Test artifacts: everything here can be generated again
 /fixtures/

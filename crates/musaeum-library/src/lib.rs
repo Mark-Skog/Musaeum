@@ -23,6 +23,7 @@ mod indexer;
 mod ingest;
 mod journal;
 mod library;
+mod lines;
 mod model;
 mod probe;
 mod reading;
@@ -50,6 +51,9 @@ pub use ingest::{
 };
 pub use journal::RecoveryReport;
 pub use library::{Library, LibraryOptions, LibraryPaths};
+pub use lines::{
+    LineModelRecord, MAX_LINE_MODEL_BYTES, MAX_OCR_LINE_BYTES, OcrLineRecord, OcrReading,
+};
 pub use model::{
     AnnotationId, AnnotationInfo, DocumentId, DocumentInfo, FolderId, InstanceId, InstanceInfo,
     InstanceState, LibraryStatus, OperationId, OperationInfo, RevisionId, RevisionInfo,

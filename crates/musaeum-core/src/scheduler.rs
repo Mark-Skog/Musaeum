@@ -37,6 +37,8 @@ pub enum Work {
     Tile(TileKey),
     /// A page's thumbnail: the one tile at the page's thumbnail scale. Background work.
     Thumbnail(TileKey),
+    /// One tile of the picture of a page the line detector looks at. Background work.
+    Lines(TileKey),
     /// Measures what a page is made of. Background work.
     Analyze(u32),
     /// Reads a page's text layer, for a reader who is waiting.
@@ -49,7 +51,7 @@ impl Work {
     }
 
     fn is_background(self) -> bool {
-        matches!(self, Self::Thumbnail(_) | Self::Analyze(_))
+        matches!(self, Self::Thumbnail(_) | Self::Lines(_) | Self::Analyze(_))
     }
 }
 
@@ -98,6 +100,14 @@ pub enum SideResult {
         /// Slot holding the pixels.
         slot: u32,
         /// The thumbnail's tile.
+        tile: TileKey,
+    },
+    /// The slot holds one tile of the picture of a page for the line detector. It stays taken
+    /// until [`Scheduler::release_side_slot`].
+    Lines {
+        /// Slot holding the pixels.
+        slot: u32,
+        /// The tile.
         tile: TileKey,
     },
     /// The slot holds a page's text layer, `len` bytes long. It stays taken until
@@ -345,6 +355,26 @@ impl Scheduler {
             .extend(work.into_iter().filter(|work| work.is_background()));
     }
 
+    /// Adds background work ahead of whatever is already waiting, in the order given.
+    pub fn add_background_first(&mut self, work: impl IntoIterator<Item = Work>) {
+        let first: Vec<Work> = work
+            .into_iter()
+            .filter(|work| work.is_background())
+            .collect();
+        for work in first.into_iter().rev() {
+            self.background.push_front(work);
+        }
+    }
+
+    /// Moves the waiting background work that is `wanted` ahead of the rest, keeping the order
+    /// within each.
+    pub fn promote_background(&mut self, wanted: impl Fn(&Work) -> bool) {
+        let (mut moved, rest): (VecDeque<Work>, VecDeque<Work>) =
+            self.background.drain(..).partition(|work| wanted(work));
+        moved.extend(rest);
+        self.background = moved;
+    }
+
     /// Whether background work is waiting or running.
     pub fn has_background_work(&self) -> bool {
         !self.background.is_empty() || self.running(Work::is_background) > 0
@@ -371,12 +401,16 @@ impl Scheduler {
         }
         let tile = match job.work {
             Work::Tile(tile) => tile,
-            Work::Thumbnail(tile) => {
+            Work::Thumbnail(tile) | Work::Lines(tile) => {
                 self.workers[worker] = WorkerState::Idle;
                 match outcome {
                     TileOutcome::Done { .. } => {
                         self.side_ready
-                            .push_back(SideResult::Thumbnail { slot, tile });
+                            .push_back(if matches!(job.work, Work::Lines(_)) {
+                                SideResult::Lines { slot, tile }
+                            } else {
+                                SideResult::Thumbnail { slot, tile }
+                            });
                     }
                     // Preempted for a wanted tile; it is still wanted later.
                     TileOutcome::Cancelled => {
@@ -556,7 +590,7 @@ impl Scheduler {
                 break;
             }
             if let WorkerState::Busy(job) = state
-                && matches!(job.work, Work::Thumbnail(_))
+                && matches!(job.work, Work::Thumbnail(_) | Work::Lines(_))
                 && !job.cancelled
             {
                 job.cancelled = true;
@@ -658,7 +692,10 @@ impl Scheduler {
     /// [`release_side_slot`](Self::release_side_slot).
     pub fn next_side_result(&mut self) -> Option<SideResult> {
         let result = self.side_ready.pop_front()?;
-        if let SideResult::Thumbnail { slot, .. } | SideResult::Text { slot, .. } = result {
+        if let SideResult::Thumbnail { slot, .. }
+        | SideResult::Lines { slot, .. }
+        | SideResult::Text { slot, .. } = result
+        {
             self.side_held.insert(slot);
         }
         Some(result)
@@ -737,7 +774,9 @@ mod tests {
             .side_ready
             .iter()
             .filter_map(|result| match result {
-                SideResult::Thumbnail { slot, .. } | SideResult::Text { slot, .. } => Some(*slot),
+                SideResult::Thumbnail { slot, .. }
+                | SideResult::Lines { slot, .. }
+                | SideResult::Text { slot, .. } => Some(*slot),
                 _ => None,
             });
         let mut seen = HashSet::new();
@@ -1204,6 +1243,25 @@ mod tests {
     }
 
     #[test]
+    fn background_work_asked_for_first_goes_ahead_of_what_waits() {
+        let mut s = Scheduler::new(1, 8);
+        s.add_background([Work::Analyze(0), Work::Analyze(1), thumbnail(2)]);
+        s.add_background_first([Work::Analyze(7), Work::Analyze(8)]);
+        s.promote_background(|work| matches!(work, Work::Thumbnail(tile) if tile.page == 2));
+        let order: Vec<Work> = s.background.iter().copied().collect();
+        assert_eq!(
+            order,
+            [
+                thumbnail(2),
+                Work::Analyze(7),
+                Work::Analyze(8),
+                Work::Analyze(0),
+                Work::Analyze(1)
+            ]
+        );
+    }
+
+    #[test]
     fn a_single_worker_does_background_work_when_idle() {
         let mut s = scheduler(1, 8);
         s.add_background([Work::Analyze(3)]);
@@ -1428,7 +1486,7 @@ mod tests {
                             Work::Text(_) => s
                                 .on_outcome(job.worker, job.job_seq, job.slot, TileOutcome::Failed)
                                 .unwrap(),
-                            Work::Tile(_) | Work::Thumbnail(_) => {
+                            Work::Tile(_) | Work::Thumbnail(_) | Work::Lines(_) => {
                                 let outcome = match rng.below(4) {
                                     0 if state.cancelled => TileOutcome::Cancelled,
                                     1 => TileOutcome::Failed,
@@ -1444,7 +1502,9 @@ mod tests {
                             out_for_delivery.push(ready.slot);
                         }
                         if let Some(
-                            SideResult::Thumbnail { slot, .. } | SideResult::Text { slot, .. },
+                            SideResult::Thumbnail { slot, .. }
+                            | SideResult::Lines { slot, .. }
+                            | SideResult::Text { slot, .. },
                         ) = s.next_side_result()
                         {
                             held.push(slot);

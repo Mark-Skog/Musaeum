@@ -88,6 +88,7 @@ pub fn classify(
             } else {
                 Vec::new()
             },
+            lines: Vec::new(),
         },
         Box::new(move |result| {
             let _ = sender.send(result);
@@ -137,6 +138,7 @@ pub fn classify(
                 run.thumbnail_bytes += jpeg.len() as u64;
             }
             BackgroundResult::Failed { .. } => run.failed += 1,
+            BackgroundResult::Lines { .. } => {}
             BackgroundResult::Finished => break,
         }
     }

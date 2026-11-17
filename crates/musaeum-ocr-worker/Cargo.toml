@@ -1,0 +1,24 @@
+[package]
+name = "musaeum-ocr-worker"
+description = "Isolated worker process that reads the text on pictures of pages with Tesseract."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "musaeum-ocr"
+path = "src/main.rs"
+
+[dependencies]
+musaeum-ocr.workspace = true
+musaeum-sandbox.workspace = true
+musaeum-tesseract.workspace = true
+
+[dev-dependencies]
+gen-fixtures.workspace = true
+musaeum-render-pdf = { path = "../musaeum-render-pdf" }
+
+[lints]
+workspace = true

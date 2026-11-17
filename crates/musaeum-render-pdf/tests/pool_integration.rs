@@ -565,6 +565,147 @@ fn start_background(pool: &RenderPool, work: BackgroundWork) -> Receiver<Backgro
 }
 
 #[test]
+fn background_lines_put_each_page_together_in_gray_and_the_handle_adds_more() {
+    let path = temp_dir("lines").join("scan.pdf");
+    gen_fixtures::write_scan_fixture(&path, 3).unwrap();
+    let (pool, _tiles) = start_pull(path, 2, 8);
+    let results = start_background(
+        &pool,
+        BackgroundWork {
+            lines: vec![0],
+            ..BackgroundWork::default()
+        },
+    );
+    let mut pictures = collect_background(&results);
+    // More work for the same sink, from another thread, as the desktop's keeper does; the page
+    // out of range is skipped, and the sink hears Finished once more.
+    let handle = pool.handle();
+    std::thread::spawn(move || {
+        handle.add_background(BackgroundWork {
+            lines: vec![1, 2, 99],
+            ..BackgroundWork::default()
+        });
+    })
+    .join()
+    .unwrap();
+    pictures.extend(collect_background(&results));
+
+    let mut pages = Vec::new();
+    for result in pictures {
+        let BackgroundResult::Lines {
+            page,
+            width,
+            height,
+            gray,
+        } = result
+        else {
+            panic!("{result:?}");
+        };
+        // A portrait A4 page, its height the detector's edge.
+        assert_eq!(
+            (width.max(height), width < height),
+            (1500, true),
+            "page {page}"
+        );
+        assert_eq!(gray.len(), (width * height) as usize);
+        // The scan's words are dark on a light paper, every tile of the page in place.
+        let dark = gray.iter().filter(|&&value| value < 100).count();
+        let share = dark as f64 / gray.len() as f64;
+        assert!((0.05..0.5).contains(&share), "page {page}: {share}");
+        let bottom = &gray[(height as usize - 10) * width as usize..];
+        assert!(
+            bottom.iter().all(|&value| value > 200),
+            "page {page}: the bottom is paper"
+        );
+        let found = musaeum_vision::detect(
+            &musaeum_vision::Gray {
+                width,
+                height,
+                pixels: gray,
+            },
+            &musaeum_vision::DetectOptions::default(),
+        );
+        // 35 rows of words, and the "Page N" label at the foot.
+        assert!(
+            (34..=37).contains(&found.stats.lines),
+            "page {page}: {:?}",
+            found.stats
+        );
+        pages.push(page);
+    }
+    assert_eq!(pages, [0, 1, 2]);
+    let stats = pool.stats().unwrap();
+    assert_eq!(stats.lines_tiles_done, 27, "three pages of nine tiles");
+}
+
+#[test]
+fn a_region_comes_put_together_from_its_tiles_as_the_page_draws_it_whole() {
+    use musaeum_core::RegionRequest;
+    use musaeum_render_pdf::engine::{Document, Pdfium};
+    let path = temp_dir("region").join("ocr.pdf");
+    let book = gen_fixtures::ocr::ocr_book().unwrap();
+    fs::write(&path, &book.pdf).unwrap();
+    let (pool, _tiles) = start_pull(path, 2, 16);
+    // 300 dpi, a stretch across tile seams in both directions.
+    let scale = (4096.0f32 * 300.0 / 72.0).round() as u32;
+    let request = RegionRequest {
+        page: 0,
+        scale,
+        left: 400,
+        top: 700,
+        width: 1300,
+        height: 900,
+    };
+    let picture = pool
+        .request_region(request)
+        .recv_timeout(WAIT)
+        .unwrap()
+        .unwrap();
+    assert_eq!(picture.request, request);
+    assert_eq!(picture.gray.len(), 1300 * 900);
+    // A region past the page is cut to it; one of no pixels is refused.
+    let edge = pool
+        .request_region(RegionRequest {
+            left: 2500,
+            width: 1000,
+            ..request
+        })
+        .recv_timeout(WAIT)
+        .unwrap()
+        .unwrap();
+    assert_eq!(edge.request.width, 2550 - 2500);
+    assert!(
+        pool.request_region(RegionRequest {
+            width: 0,
+            ..request
+        })
+        .recv_timeout(WAIT)
+        .unwrap()
+        .is_err()
+    );
+    pool.shutdown();
+    let pdfium = Pdfium::load(
+        &PathBuf::from(env!("CARGO_BIN_EXE_musaeum-render-pdf")).with_file_name("pdfium.dll"),
+    )
+    .unwrap();
+    let mut document = Document::open(&pdfium, &book.pdf).unwrap();
+    let (width, _, whole) = document.render_page(0, scale).unwrap();
+    let mut worst = 0u8;
+    for y in 0..900usize {
+        for x in 0..1300usize {
+            let at = ((700 + y) * width as usize + 400 + x) * 4;
+            let px = &whole[at..at + 4];
+            let gray = ((77 * u32::from(px[0]) + 150 * u32::from(px[1]) + 29 * u32::from(px[2]))
+                >> 8) as u8;
+            worst = worst.max(gray.abs_diff(picture.gray[y * 1300 + x]));
+        }
+    }
+    assert!(worst <= 2, "a pixel differs by {worst}");
+    let dark = picture.gray.iter().filter(|&&v| v < 100).count();
+    assert!(dark > 10_000, "the region has text: {dark}");
+}
+
+#[test]
 fn background_work_classifies_every_page_and_draws_its_thumbnail() {
     let path = temp_dir("background").join("content.pdf");
     gen_fixtures::write_content_fixture(&path).unwrap();
@@ -575,6 +716,7 @@ fn background_work_classifies_every_page_and_draws_its_thumbnail() {
         BackgroundWork {
             analyze: pages.clone(),
             thumbnails: pages,
+            lines: Vec::new(),
         },
     );
 
@@ -633,6 +775,7 @@ fn wanted_tiles_go_first_while_background_work_runs() {
         BackgroundWork {
             analyze: all.clone(),
             thumbnails: all,
+            lines: Vec::new(),
         },
     );
 
@@ -747,6 +890,7 @@ fn background_work_finishes_even_when_its_worker_is_killed() {
         BackgroundWork {
             analyze: all.clone(),
             thumbnails: all,
+            lines: Vec::new(),
         },
     );
     for _ in 0..3 {

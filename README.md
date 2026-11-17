@@ -2,14 +2,20 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 3 do Plano Diretor**, o layout fluido, e chegou ao **marco Alpha**: uma
-biblioteca de uso diário com o leitor integrado. O que existe hoje: a biblioteca, que segue as pastas
+O projeto está na **Fase 5 do Plano Diretor**, as anotações sobre livros escaneados, depois do **marco
+Alpha** (uma biblioteca de uso diário com o leitor integrado) e das anotações de texto da Fase 4. O que
+existe hoje: a biblioteca, que segue as pastas
 escolhidas e lista os livros em capas ou em lista, com busca instantânea e filtro por pasta; o leitor
 fluido para EPUB 2 e 3, MOBI, AZW3, FB2, TXT e Markdown, que lê cada livro normalizado num processo isolado
 e mostra em páginas, com a virada animada, ou numa rolagem contínua própria, com fonte, tamanho,
 entrelinha, margens e tema; o leitor de layout fixo da Fase 2 para PDF, quadrinhos (CBZ e CBR) e DjVu; a
 mesma barra, o mesmo sumário e os mesmos atalhos para os dois; e a posição de cada livro guardada na
-biblioteca, exata ao fechar e reabrir. Por baixo, o normalizador e o motor de posição (EPUB CFI e
+biblioteca, exata ao fechar e reabrir; realces, sublinhados e notas em Markdown, em livros fixos com
+texto e em fluidos, ancorados de três jeitos e achados de novo depois de renomear, mover ou editar o
+arquivo, com o Inspetor de Anotações e busca; e, nos livros escaneados, as linhas de texto achadas na
+imagem da página, retas, curvas ou giradas a 45° e 90°, para selecionar por elas, ou marcar uma caixa
+ou um traço à mão, e o texto sob cada marca lido por OCR (Tesseract, num processo isolado), para
+copiar e buscar como num livro digital. Por baixo, o normalizador e o motor de posição (EPUB CFI e
 Locator) da Fase 3, o pipeline de tiles da Fase 2 e a biblioteca da Fase 1, com SQLite, identidade de
 arquivos, indexador, diário de operações em disco e uma CLI.
 
@@ -18,8 +24,11 @@ As decisões e os números de cada fase estão em
 [`docs/adr/0002-fase-1.md`](docs/adr/0002-fase-1.md),
 [`docs/adr/0003-fase-2-parte-1.md`](docs/adr/0003-fase-2-parte-1.md),
 [`docs/adr/0004-fase-2-parte-2.md`](docs/adr/0004-fase-2-parte-2.md),
-[`docs/adr/0005-fase-3-parte-1.md`](docs/adr/0005-fase-3-parte-1.md) e
-[`docs/adr/0006-fase-3-parte-2.md`](docs/adr/0006-fase-3-parte-2.md).
+[`docs/adr/0005-fase-3-parte-1.md`](docs/adr/0005-fase-3-parte-1.md),
+[`docs/adr/0006-fase-3-parte-2.md`](docs/adr/0006-fase-3-parte-2.md),
+[`docs/adr/0007-fase-4.md`](docs/adr/0007-fase-4.md),
+[`docs/adr/0008-fase-5-parte-1.md`](docs/adr/0008-fase-5-parte-1.md) e
+[`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -48,7 +57,16 @@ crates/
                        catálogo de um PDF pede (`/PageLayout`, `/Direction`), e normaliza os
                        livros fluidos
   musaeum-library/     SQLite, reconhecimento de arquivos, indexador, diário de operações,
-                       posição de leitura, geometria das páginas e o cache dos livros normalizados
+                       posição de leitura, geometria das páginas, anotações e a re-ancoragem, o
+                       cache dos livros normalizados e os modelos de linhas
+  musaeum-vision/      As linhas de texto na imagem de uma página escaneada: Sauvola, componentes,
+                       inclinação, colunas por faixas, linhas de base como polilinhas, texto girado,
+                       a máscara de fotografias, gráficos e tabelas, hash perceptual; e um corpus
+                       rotulado para medi-lo
+  musaeum-tesseract/   Tesseract e Leptonica compilados do fonte, atrás de uma ponte em C++
+  musaeum-ocr-worker/  Processo isolado que lê com o Tesseract uma linha endireitada de cada vez
+  musaeum-ocr/         A conversa com esse worker, o lado do host e a geometria das linhas
+                       endireitadas ao longo da linha de base
 apps/cli/              O binário `musaeum`: a biblioteca pela linha de comando
 apps/desktop/
   src-tauri/           Ponte Tauri: protocolos tile://, book:// e thumb://, a biblioteca do app
@@ -63,9 +81,12 @@ vendor/
   foliate-js/          Parte do foliate-js, fixada em um commit, com uma alteração documentada
   libarchive/          libarchive 3.8.11, o lado de leitura, com origem e config.h documentados
   djvulibre/           DjVuLibre 3.5.30, a biblioteca libdjvu
+  tesseract/           Tesseract 5.5.4, Leptonica 1.87.0 e os modelos por e eng (baixados pelo
+                       fetch-ocr.ps1; só o README está no repositório)
   third-party.json     Licenças do que entra no app sem passar por um gerenciador de pacotes
 tools/
   fetch-pdfium.ps1     Baixa a build fixada do PDFium e confere o SHA-256
+  fetch-ocr.ps1        Baixa o Tesseract, o Leptonica e os modelos fixados e confere o SHA-256
   gen-fixtures/        Gera os PDFs, quadrinhos, DjVu e EPUBs de teste, um EPUB hostil e um mesmo
                        livro em EPUB 3, EPUB 2, MOBI, AZW3, FB2, TXT e Markdown
   pool-bench/          Mede o pool de render sem WebView
@@ -77,6 +98,7 @@ tools/
   e2e-alpha.mjs        Testa o Alpha na janela real: biblioteca, leitor e a posição em cada formato
   reader-check.mjs     Testa o leitor fluido sem janela, num Chrome headless, em livros normalizados
   lib/cdp.mjs          O que os testes de janela usam para falar com o WebView2 pelo CDP
+  lib/clipboard.mjs    A área de transferência nos testes de janela, guardada antes e reposta depois
   lib/seam-oracle.mjs  Onde o texto depois de um corte deve cair, pelo documento inteiro
   run-bench.mjs        Roda a matriz dos Experimentos A e B
   run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
@@ -93,6 +115,7 @@ com C++, Node.js e o runtime do WebView2, que já vem no Windows 11.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\fetch-pdfium.ps1
+powershell -ExecutionPolicy Bypass -File tools\fetch-ocr.ps1
 
 cd apps\desktop
 npm install
@@ -208,6 +231,25 @@ Três regras valem para tudo isso:
   imagem da página, sem camada de texto) ou híbrida (a imagem com o texto de um OCR por cima). A classe,
   as medidas que a decidiram e o resumo do documento ficam em `page_geometry` e `document_geometry`,
   no `cache.db`.
+- **Livros escaneados.** Nas páginas escaneadas e híbridas, o worker desenha em segundo plano uma
+  imagem de 1500 px de altura, e o processo principal acha as linhas de texto dela (em ≈ 20 ms) e guarda
+  o modelo no `cache.db`. Na barra do leitor, *Linhas* seleciona da palavra onde o arrasto começa até a
+  palavra onde termina, seguindo a curva das linhas perto da lombada (*Ajustar às palavras* desliga o
+  ajuste); *Caixa* marca um retângulo translúcido; *Traço*, à mão livre. Cada marca é uma anotação.
+  O detector acha também blocos de texto girados (legendas a 90° ao lado de uma figura, rótulos a 45°
+  de um gráfico, linhas tortas) e deixa de fora fotografias, retículas, gráficos e as grades de
+  tabelas, para que nem o *snap* nem o OCR peguem algo que não é texto. Uma página impressa de lado
+  (uma tabela, a última página de um manual) é lida girada um quarto de volta, como uma página comum;
+  traços de lápis, sublinhados e rabiscos na margem não desviam as linhas; e um arrasto segue só as
+  linhas que correm no mesmo sentido da primeira, sem misturar o texto a 90° com uma marca a 0°.
+- **O texto de um escaneado.** Ao desenhar uma marca com *Linhas*, *Caixa* ou *Traço*, o texto sob ela
+  é lido da imagem pelo OCR, linha a linha, cada linha endireitada ao longo da sua base e lida pelo
+  Tesseract num processo isolado (`musaeum-ocr.exe`, no mesmo sandbox dos workers). Numa página
+  híbrida, a camada de texto do arquivo só entra quando o OCR não tem nada ali; a ferramenta *Texto*
+  seleciona os caracteres dessa camada, como num livro digital. *Copiar*
+  e Ctrl+C põem na área de transferência as linhas lidas, como numa seleção de um livro digital; o que
+  cada linha diz fica no `cache.db` (`ocr_line`), e não é lido de novo. A anotação recebe o texto como
+  citação em segundo plano, uma vez, e a busca do Inspetor passa a achá-la.
 - **Miniaturas.** Na menor prioridade do agendador, nunca em todos os workers e canceladas assim que um
   tile visível precisa do worker, cada página ganha uma miniatura de até 256 px em
   `cache\thumbnails\v1\ab\<hash>\<página>.jpg`, pelo hash BLAKE3 do arquivo (`ab` são os dois
@@ -233,6 +275,24 @@ EPUB contra o documento original:
 .\target\release\corpus-check.exe --corpus D:\Livros --work D:\Temp\fluido --flow-only
 node tools\cfi-browser-check.mjs --cache D:\Temp\fluido\cache
 .\target\release\musaeum.exe normalize livro.mobi D:\Temp\livro-normalizado.epub
+```
+
+Com `--lines`, ela mede o detector de linhas da Fase 5 numa amostra das páginas escaneadas e híbridas,
+também só lendo o acervo; `--dump PASTA` desenha as linhas achadas (vermelho), as do OCR (verde) e as
+faixas e colunas (laranja) sobre cada página. Com `--lines-synthetic`, mede o detector no corpus
+rotulado, que não precisa de acervo:
+
+```powershell
+.\target\release\corpus-check.exe --lines --corpus D:\Livros --work D:\Temp\linhas --sample 60 --out linhas.json
+.\target\release\corpus-check.exe --lines-synthetic --pages 30 --out sintetico.json
+```
+
+Com `--inspect`, olha páginas escolhidas de um livro do acervo, numeradas como o leitor as mostra: o
+detector acha as linhas delas, `--ocr` lê cada uma, e a imagem de cada página fica na pasta de trabalho
+(PGM, que o exemplo `dump` do `musaeum-vision` relê, e JPEG com as linhas desenhadas). Também só lê:
+
+```powershell
+.\target\release\corpus-check.exe --inspect "D:\Livros\Manual.pdf" --at 14+79+100-120 --corpus D:\Livros --work D:\Temp\paginas --ocr --out paginas.json
 ```
 
 ## A janela real e a comparação visual
@@ -287,6 +347,32 @@ As anotações têm o seu teste de janela:
 ```powershell
 node tools\e2e-annotations.mjs --phase fixtures
 node tools\e2e-annotations.mjs --phase corpus --corpus D:\Livros
+node tools\e2e-annotations.mjs --phase lines
+node tools\e2e-annotations.mjs --phase ocr
+```
+
+Com `--phase lines`, escreve um livro escaneado sem camada de texto e confere, na janela, as linhas que
+o segundo plano acha na imagem contra as desenhadas, a seleção por linhas com e sem o ajuste às
+palavras, a caixa e o traço, cada um desenhado na tela e achado de novo ao reabrir.
+
+Com `--phase real` e os relatórios de `corpus-check --inspect --ocr` (`--real a.json+b.json`), abre as
+pastas de dois livros do acervo numa biblioteca nova, só lendo, e confere na janela, nas páginas reais
+em que a ferramenta Linhas falhava à mão, o que um arrasto copia: um sumário com pontilhado e uma linha
+curta em itálico, uma linha sublinhada a lápis com rabiscos na margem e uma página impressa de lado.
+
+Com `--phase ocr`, põe na mesma biblioteca um livro com camada de texto (`gen-fixtures --only ocr`) e o
+seu gêmeo escaneado (`visual-check scan`) e confere, pela área de transferência do sistema, que copiar
+três linhas do gêmeo com a ferramenta Linhas dá o mesmo que copiá-las do original, palavra por palavra e
+linha por linha; que uma caixa copia as linhas dentro dela; que o texto a 90°, 45° e −30° sai como se
+lê; que uma caixa sobre a fotografia não copia nada e um arrasto nela não seleciona nada; que a marca no
+gêmeo recebe a citação do original, é achada pela busca sem acentos e a mantém ao reabrir; e que nenhum
+worker de OCR fica rodando depois. A área de transferência é guardada antes e reposta depois.
+
+O detector e o OCR também se medem sem janela, no mesmo livro e em três gêmeos (limpo, girado 1,5° e
+curvado na lombada):
+
+```powershell
+.\target\release\corpus-check.exe --ocr-book --work D:\Temp\ocr --out ocr.json
 ```
 
 Com as fixtures, escreve um PDF e um EPUB em duas edições (`tools/lib/test-books.mjs`) e usa o DjVu das

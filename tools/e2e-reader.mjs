@@ -157,9 +157,13 @@ let nextPort = 9340;
 /** Starts the reader with its debugging port open, and connects to its page. */
 async function launch(app, args) {
   const port = nextPort++;
+  // The WebView2's profile beside the run's library, as tools/lib/cdp.mjs keeps it.
+  const library = args[args.indexOf('--library') + 1];
+  const profile = args.includes('--library') && library !== undefined ? { WEBVIEW2_USER_DATA_FOLDER: `${library}-webview2` } : {};
   const child = spawn(app, args, {
     env: {
       ...process.env,
+      ...profile,
       // Only for this run: the WebView answers DevTools on this port and draws in sRGB whatever the
       // monitor's profile, so colors can be compared. The app's own arguments are repeated, with
       // the ones its benchmarks use so that a covered window is not slowed down.

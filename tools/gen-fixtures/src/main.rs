@@ -1,7 +1,7 @@
 //! Command line for the fixture generator.
 //!
 //! ```text
-//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow]
+//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow|ocr]
 //! ```
 
 use std::error::Error;
@@ -39,6 +39,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         Ok(())
     };
+
+    if only.as_deref() == Some("ocr") {
+        // The native book for the OCR, and its answers; `visual-check scan` makes its twins.
+        let started = Instant::now();
+        let book = gen_fixtures::ocr::ocr_book()?;
+        let path = out.join("ocr-native.pdf");
+        fs::write(&path, &book.pdf)?;
+        fs::write(
+            out.join("ocr-native.json"),
+            gen_fixtures::ocr::truth_json(&book),
+        )?;
+        report(&path, started)?;
+        return Ok(());
+    }
 
     if only.as_deref() == Some("flow") {
         let started = Instant::now();

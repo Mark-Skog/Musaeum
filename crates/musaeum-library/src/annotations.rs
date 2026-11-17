@@ -81,6 +81,9 @@ pub enum SelectorKind {
     /// `{"page", "quads"}`, each quad `[x0, y0, x1, y1, x2, y2, x3, y3]` as fractions of the
     /// unrotated crop box: top left, top right, bottom right, bottom left.
     PageQuads,
+    /// A mark on the picture of a page: lines found on a scan, a box or a stroke. See
+    /// [`crate::anchoring::region`].
+    PageRegion,
 }
 
 macro_rules! sql_names {
@@ -116,6 +119,7 @@ sql_names!(SelectorKind {
     TextQuote => "text_quote",
     PageCharRange => "page_char_range",
     PageQuads => "page_quads",
+    PageRegion => "page_region",
 });
 
 /// One way of finding a segment again, with what it counts in.
@@ -577,6 +581,73 @@ impl Library {
                 insert_segment(transaction, id, segment)?;
             }
             load_one(transaction, &uuid)
+        })
+    }
+
+    /// Fills the quote of an annotation that had none, once: what the OCR read under a mark on a
+    /// scanned page. Each segment named by its ordinal gets the selectors given, a quote of the text
+    /// under it among them; a selector of a kind the segment already has is left as it was. An
+    /// annotation that already quotes something is returned unchanged: its quote never changes.
+    pub fn fill_quote(
+        &self,
+        uuid: &str,
+        quote: &str,
+        source: QuoteSource,
+        selectors: Vec<(u32, Selector)>,
+    ) -> Result<Annotation> {
+        let bytes = uuid_bytes(uuid)?;
+        if quote.trim().is_empty() || quote.len() > MAX_QUOTE_BYTES {
+            return Err(Error::Refused(
+                "a quote is some text, and not too long".to_owned(),
+            ));
+        }
+        for (_, selector) in &selectors {
+            if serde_json::to_string(&selector.data)?.len() > MAX_SELECTOR_BYTES {
+                return Err(Error::Refused("a selector is too large".to_owned()));
+            }
+        }
+        let quote = quote.to_owned();
+        self.database().write(move |transaction| {
+            let (id, _) = id_of(transaction, &bytes)?;
+            let current: Option<String> = transaction
+                .prepare_cached("SELECT quote FROM annotation WHERE id = ?1")?
+                .query_row([id], |row| row.get(0))?;
+            if current.is_some() {
+                return load_one(transaction, &bytes);
+            }
+            transaction
+                .prepare_cached(
+                    "UPDATE annotation SET quote = ?2, quote_source = ?3, updated_at = ?4
+                     WHERE id = ?1",
+                )?
+                .execute(params![id, quote, source.as_str(), now_ms()])?;
+            for (ordinal, selector) in &selectors {
+                let segment: Option<i64> = transaction
+                    .prepare_cached(
+                        "SELECT id FROM annotation_segment
+                         WHERE annotation_id = ?1 AND ordinal = ?2",
+                    )?
+                    .query_row(params![id, ordinal], |row| row.get(0))
+                    .optional()?;
+                let Some(segment) = segment else {
+                    continue;
+                };
+                transaction
+                    .prepare_cached(
+                        "INSERT OR IGNORE INTO anchor_selector
+                             (segment_id, kind, data, priority, normalizer_version, revision_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )?
+                    .execute(params![
+                        segment,
+                        selector.kind.as_str(),
+                        serde_json::to_string(&selector.data)?,
+                        selector.priority,
+                        selector.normalizer_version,
+                        selector.revision_id,
+                    ])?;
+            }
+            load_one(transaction, &bytes)
         })
     }
 

@@ -119,7 +119,7 @@ export interface SessionInfo {
   documentId: number | null;
   readingState: SavedReadingState | null;
   /** Pages left to classify and to draw thumbnails of, in the background, when it opened. */
-  background: { toClassify: number; toDraw: number };
+  background: { toClassify: number; toDraw: number; toTrace: number };
 }
 
 export interface BenchOptions {

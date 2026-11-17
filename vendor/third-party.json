@@ -1,5 +1,5 @@
 {
-  "comment": "What is in the app without a package manager to report it. tools/check-licenses.mjs checks each entry against the same list of licenses as everything else. A build that ships these has to carry the notices in the files named here. `fetched` means the file comes from tools/fetch-pdfium.ps1 and is not in the repository.",
+  "comment": "What is in the app without a package manager to report it. tools/check-licenses.mjs checks each entry against the same list of licenses as everything else. A build that ships these has to carry the notices in the files named here. `fetched` means the file comes from tools/fetch-pdfium.ps1 or tools/fetch-ocr.ps1 and is not in the repository.",
   "components": [
     {
       "name": "foliate-js",
@@ -122,6 +122,24 @@
       "name": "DjVuLibre 3.5.30, libdjvu",
       "license": "GPL-2.0-or-later",
       "file": "vendor/djvulibre/COPYING"
+    },
+    {
+      "name": "Tesseract 5.5.4, the OCR engine, in musaeum-ocr.exe",
+      "license": "Apache-2.0",
+      "file": "vendor/tesseract/tesseract-5.5.4/LICENSE",
+      "fetched": true
+    },
+    {
+      "name": "Leptonica 1.87.0, Tesseract's image library, in musaeum-ocr.exe",
+      "license": "BSD-2-Clause",
+      "file": "vendor/tesseract/leptonica-1.87.0/leptonica-license.txt",
+      "fetched": true
+    },
+    {
+      "name": "tessdata_fast 4.1.0, the por and eng models, in tessdata/",
+      "license": "Apache-2.0",
+      "file": "vendor/tesseract/tessdata/LICENSE",
+      "fetched": true
     }
   ]
 }

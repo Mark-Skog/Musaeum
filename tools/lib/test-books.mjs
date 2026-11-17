@@ -1,6 +1,9 @@
 // Small books written for the annotation tests, each in two revisions: a text PDF and an EPUB whose
 // second edition has something added before the marked text, a sentence edited and a passage gone.
-// Nothing here needs a library: PDF and ZIP are written by hand, with stored (uncompressed) entries.
+// Nothing here needs a library: PDF and ZIP are written by hand, with stored (uncompressed) entries;
+// only the pictures of a scanned book are compressed, by node:zlib.
+
+import { deflateSync } from 'node:zlib';
 
 /**
  * A PDF of text pages in Helvetica, one string per line, WinAnsi-encoded so accents come through.
@@ -196,4 +199,105 @@ export function annotatedEpub() {
   revised[2].paragraphs[4] = revised[2].paragraphs[4].replace('o farol', 'o moinho');
   const v2 = epub({ title: 'Livro para anotar', identifier: 'urn:musaeum:test:anotar', chapters: revised });
   return { v1, v2, targets };
+}
+
+/**
+ * A scanned book: pages that are only a picture of letters, with no text layer, as a scan without
+ * OCR is. Returns the PDF and where its lines are: for each page, each line's baseline as a fraction
+ * of the page's height and its words as fractions of its width.
+ */
+export function scanPdf(pageCount = 2) {
+  const width = 1224;
+  const height = 1584;
+  const xHeight = 18;
+  const pitch = 44;
+  const stroke = 3;
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  const pages = [];
+  const images = [];
+  for (let page = 0; page < pageCount; page++) {
+    const pixels = new Uint8Array(width * height);
+    for (let at = 0; at < pixels.length; at++) {
+      pixels[at] = 228 + Math.floor(random() * 10);
+    }
+    const ink = (x0, y0, x1, y1) => {
+      for (let y = Math.max(0, Math.floor(y0)); y < Math.min(height, Math.ceil(y1)); y++) {
+        for (let x = Math.max(0, Math.floor(x0)); x < Math.min(width, Math.ceil(x1)); x++) {
+          pixels[y * width + x] = 30 + Math.floor(random() * 30);
+        }
+      }
+    };
+    const lines = [];
+    for (let baseline = 170; baseline + pitch < height - 120; baseline += pitch) {
+      const words = [];
+      let x = 120;
+      while (x < width - 220) {
+        const letters = 2 + Math.floor(random() * 7);
+        const start = x;
+        for (let letter = 0; letter < letters; letter++) {
+          // An n: two stems and an arch; every fourth letter an l, with an ascender.
+          const tall = letter % 4 === 3;
+          ink(x, baseline - (tall ? xHeight * 1.5 : xHeight), x + stroke, baseline);
+          ink(x, baseline - xHeight, x + 10, baseline - xHeight + stroke);
+          ink(x + 10 - stroke, baseline - xHeight, x + 10, baseline);
+          x += 13;
+        }
+        words.push([start / width, (x - 3) / width]);
+        x += 16;
+      }
+      lines.push({ v: baseline / height, words });
+    }
+    pages.push(lines);
+    images.push(Buffer.from(pixels));
+  }
+
+  const parts = [];
+  const offsets = [];
+  let length = 0;
+  const push = (chunk) => {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'latin1') : chunk;
+    parts.push(buffer);
+    length += buffer.length;
+  };
+  const objects = [];
+  const add = (body) => {
+    objects.push(body);
+    return objects.length;
+  };
+  const catalog = add(null);
+  const pagesNode = add(null);
+  const kids = [];
+  images.forEach((pixels) => {
+    const compressed = deflateSync(pixels);
+    const image = add({ head: `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${compressed.length} >>`, stream: compressed });
+    const content = 'q 612 0 0 792 0 0 cm /Im0 Do Q';
+    const contents = add(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`);
+    kids.push(add(`<< /Type /Page /Parent ${pagesNode} 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im0 ${image} 0 R >> >> /Contents ${contents} 0 R >>`));
+  });
+  objects[catalog - 1] = `<< /Type /Catalog /Pages ${pagesNode} 0 R >>`;
+  objects[pagesNode - 1] = `<< /Type /Pages /Kids [${kids.map((kid) => `${kid} 0 R`).join(' ')}] /Count ${kids.length} >>`;
+  push('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n');
+  objects.forEach((object, index) => {
+    offsets.push(length);
+    push(`${index + 1} 0 obj\n`);
+    if (typeof object === 'string') {
+      push(object);
+    } else {
+      push(`${object.head}\nstream\n`);
+      push(object.stream);
+      push('\nendstream');
+    }
+    push('\nendobj\n');
+  });
+  const xref = length;
+  push(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`);
+  for (const offset of offsets) {
+    push(`${String(offset).padStart(10, '0')} 00000 n \n`);
+  }
+  push(`trailer\n<< /Size ${objects.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return { pdf: Buffer.concat(parts), pages, xHeight: xHeight / height };
 }
