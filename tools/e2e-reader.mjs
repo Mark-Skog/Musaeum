@@ -600,7 +600,8 @@ async function main() {
     report.finishedAt = new Date().toISOString();
     writeFileSync(out, JSON.stringify(report, null, 2));
     console.error(`report: ${out}`);
-    rmSync(work, { recursive: true, force: true });
+    // The WebView2 under its profile may still be closing (EPERM): tried again for about 16 s.
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
   const failed = report.reading.filter((entry) => !entry.passed).length;
   console.error(`reading position: ${report.reading.length - failed} of ${report.reading.length} documents passed`);

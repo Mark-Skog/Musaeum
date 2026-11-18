@@ -339,23 +339,6 @@ pub struct LibraryStatus {
     pub roots: Vec<RootInfo>,
 }
 
-/// What a user may change about a work. `None` leaves a field as it is.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct WorkEdit {
-    /// Its title.
-    pub title: Option<String>,
-    /// Its rating, from 1 to 5.
-    pub rating: Option<i64>,
-    /// `unread`, `reading`, `read` or `abandoned`.
-    pub status: Option<String>,
-    /// Its series.
-    pub series: Option<String>,
-    /// Its position in that series.
-    pub series_position: Option<f64>,
-    /// Its authors, in order.
-    pub creators: Option<Vec<String>>,
-}
-
 /// A work.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WorkInfo {

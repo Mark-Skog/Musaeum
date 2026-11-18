@@ -1571,8 +1571,8 @@ fn notes_made_before_the_hash_arrives_follow_the_file() {
         .edit_work(
             provisional.work,
             musaeum_library::WorkEdit {
-                series: Some("A Series".to_owned()),
-                rating: Some(1),
+                series: Some(Some("A Series".to_owned())),
+                rating: Some(Some(1)),
                 ..musaeum_library::WorkEdit::default()
             },
         )

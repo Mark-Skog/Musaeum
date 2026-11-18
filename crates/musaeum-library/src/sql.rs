@@ -74,9 +74,141 @@ pub(crate) fn file_id_from_sql(value: Option<Vec<u8>>) -> Option<FileId> {
     Some(FileId(bytes))
 }
 
+/// Text as a person compares it: lower case, without the accents of the Latin alphabets, and one
+/// space between words. "  História  da Arte" and "historia da arte" fold alike. Other scripts are
+/// lowered and kept.
+pub(crate) fn fold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut space = false;
+    for character in text.chars().flat_map(char::to_lowercase) {
+        if character.is_whitespace() {
+            space = !out.is_empty();
+            continue;
+        }
+        if space {
+            out.push(' ');
+            space = false;
+        }
+        let plain = match character {
+            'á' | 'à' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => 'c',
+            'ď' | 'đ' => 'd',
+            'é' | 'è' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+            'ğ' | 'ĝ' | 'ġ' | 'ģ' => 'g',
+            'í' | 'ì' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+            'ñ' | 'ń' | 'ň' | 'ņ' => 'n',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+            'ŕ' | 'ř' => 'r',
+            'ś' | 'š' | 'ş' | 'ŝ' | 'ș' => 's',
+            'ť' | 'ţ' | 'ț' => 't',
+            'ú' | 'ù' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+            'ý' | 'ÿ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            'ß' => {
+                out.push('s');
+                's'
+            }
+            other => other,
+        };
+        out.push(plain);
+    }
+    out
+}
+
+/// A date written `YYYY-MM-DD`, at midnight UTC, in milliseconds since the Unix epoch. None if it
+/// is no such date.
+pub(crate) fn date_ms(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        let part = &text[range];
+        part.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| part.parse().ok())
+            .flatten()
+    };
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=12).contains(&month) || day < 1 || day > days_in_month[(month - 1) as usize] {
+        return None;
+    }
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let m = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * m + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400_000)
+}
+
+/// The functions the library's SQL uses beyond SQLite's own: `fold(text)`, as [`fold`].
+pub(crate) fn register_functions(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    connection.create_scalar_function(
+        "fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            Ok(match context.get_raw(0) {
+                ValueRef::Text(bytes) => Some(fold(&String::from_utf8_lossy(bytes))),
+                ValueRef::Null => None,
+                ValueRef::Integer(number) => Some(number.to_string()),
+                ValueRef::Real(number) => Some(number.to_string()),
+                ValueRef::Blob(_) => None,
+            })
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_folds_as_a_person_compares_it() {
+        assert_eq!(fold("  História  da\tARTE "), "historia da arte");
+        assert_eq!(fold("Ação, Coração e Ñandú"), "acao, coracao e nandu");
+        assert_eq!(fold("Straße"), "strasse");
+        assert_eq!(fold("日本語"), "日本語");
+    }
+
+    #[test]
+    fn dates_are_days_since_the_epoch() {
+        assert_eq!(date_ms("1970-01-01"), Some(0));
+        assert_eq!(date_ms("2000-03-01"), Some(951_868_800_000));
+        assert_eq!(date_ms("2024-02-29"), Some(1_709_164_800_000));
+        assert_eq!(date_ms("2023-02-29"), None);
+        assert_eq!(date_ms("2023-13-01"), None);
+        assert_eq!(date_ms("2023-1-01"), None);
+    }
+
+    #[test]
+    fn sql_can_fold_too() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        register_functions(&connection).unwrap();
+        let folded: String = connection
+            .query_row("SELECT fold('Física Quântica')", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(folded, "fisica quantica");
+    }
 
     fn round_trip(name: &OsStr) -> OsString {
         let value = name_to_sql(name);

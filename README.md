@@ -2,10 +2,15 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 5 do Plano Diretor**, as anotações sobre livros escaneados, depois do **marco
-Alpha** (uma biblioteca de uso diário com o leitor integrado) e das anotações de texto da Fase 4. O que
-existe hoje: a biblioteca, que segue as pastas
-escolhidas e lista os livros em capas ou em lista, com busca instantânea e filtro por pasta; o leitor
+O projeto está na **Fase 6 do Plano Diretor**, a organização da biblioteca, depois do **marco Alpha**
+(uma biblioteca de uso diário com o leitor integrado), das anotações de texto da Fase 4 e das anotações
+sobre livros escaneados da Fase 5. O que existe hoje: a biblioteca, que segue as pastas escolhidas e
+lista os livros em capas ou em lista, com busca instantânea, e os filtra por pasta, por uma árvore de
+categorias e subcategorias, por etiquetas, por coleções feitas à mão (na ordem que a pessoa dá) e por
+coleções inteligentes (uma regra, como "autor contém Sagan e ano entre 1980 e 1999"); um painel de
+detalhes que edita o título, as pessoas e os seus papéis, a série, o ano, o idioma, os identificadores,
+a avaliação, o estado de leitura e campos personalizados, sem que uma releitura do arquivo escreva por
+cima do que a pessoa editou; o leitor
 fluido para EPUB 2 e 3, MOBI, AZW3, FB2, TXT e Markdown, que lê cada livro normalizado num processo isolado
 e mostra em páginas, com a virada animada, ou numa rolagem contínua própria, com fonte, tamanho,
 entrelinha, margens e tema; o leitor de layout fixo da Fase 2 para PDF, quadrinhos (CBZ e CBR) e DjVu; a
@@ -27,8 +32,9 @@ As decisões e os números de cada fase estão em
 [`docs/adr/0005-fase-3-parte-1.md`](docs/adr/0005-fase-3-parte-1.md),
 [`docs/adr/0006-fase-3-parte-2.md`](docs/adr/0006-fase-3-parte-2.md),
 [`docs/adr/0007-fase-4.md`](docs/adr/0007-fase-4.md),
-[`docs/adr/0008-fase-5-parte-1.md`](docs/adr/0008-fase-5-parte-1.md) e
-[`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md).
+[`docs/adr/0008-fase-5-parte-1.md`](docs/adr/0008-fase-5-parte-1.md),
+[`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md) e
+[`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -134,7 +140,8 @@ Abrir o app:
 
 Sem biblioteca, o app pede a pasta dos livros, ou a pasta de uma biblioteca feita antes; ele cria a
 biblioteca em `%LOCALAPPDATA%\Musaeum`, ou na pasta que `--library` der, e nunca escreve na pasta dos
-livros. Um clique ou Enter abre o livro; `← Biblioteca` (ou Alt+←) volta. No leitor, `C` alterna entre
+livros. Um clique escolhe um livro e mostra os seus detalhes; o duplo clique ou Enter o abre, e
+`← Biblioteca` (ou Alt+←) volta. No leitor, `C` alterna entre
 paginado e contínuo e `A` liga e desliga a animação da virada, nos dois tipos de livro; `Aa` muda a
 tipografia de um livro fluido e `Sumário` mostra o sumário (o de um PDF vem dos seus marcadores).
 
@@ -211,6 +218,25 @@ Três regras valem para tudo isso:
 3. **Parser só em sandbox.** Ler `/ID[0]` ou `dc:identifier` é interpretar bytes hostis, então quem faz
    isso é `musaeum-ingest`, sem rede e sem acesso a arquivos por caminho, recebendo cada livro como um
    handle. O que ele responde é tratado como vindo de um atacante.
+
+## A organização da biblioteca
+
+- **O lado da biblioteca.** *Todos os livros*, as *Pastas* do disco, as *Categorias* (uma árvore de até
+  16 níveis), as *Etiquetas*, as *Coleções* e as *Coleções inteligentes*. Escolher um deles mostra os
+  livros dele, com a busca por cima; uma categoria mostra também os das subcategorias, e uma coleção, na
+  ordem dela. Cada item tem um menu "⋯" (renomear, mover, subir, descer, excluir) e cada seção um "+".
+  Mover uma categoria leva as subcategorias junto e nunca a põe dentro de si mesma.
+- **Coleções inteligentes.** Uma regra por campos e condições (título, autor, série, idioma,
+  identificador, ano, avaliação, lido %, estado, formato, datas, etiqueta, categoria, coleção, pasta e os
+  campos personalizados), com "todas" ou "qualquer", sem diferença de maiúsculas e acentos. O diálogo
+  diz quantos livros a regra acha enquanto ela é escrita.
+- **Detalhes.** Um clique num livro o seleciona e abre o painel à direita; o duplo clique ou Enter o
+  abre, e Esc guarda o painel. O painel edita a obra e diz de onde veio cada campo ("do arquivo", "editado"). Só *Salvar*
+  grava, e só o que mudou; o que a pessoa editou é dela, e nenhuma leitura do arquivo depois (uma
+  reimportação, uma nova edição do arquivo) escreve por cima. Um ISBN é conferido pelo dígito
+  verificador.
+- **Campos personalizados.** Definidos uma vez (*Campos personalizados…*, no pé do lado), de um tipo:
+  texto, número, data, sim/não, lista de opções ou endereço web; cada livro tem o seu valor.
 
 ## O leitor de layout fixo
 
@@ -320,7 +346,7 @@ node tools\e2e-alpha.mjs --phase corpus --corpus D:\Livros
 ```
 
 Com as fixtures, cria uma biblioteca numa pasta temporária com um livro em cada formato, busca, filtra
-por pasta, abre cada livro com um clique e volta. Em cada formato fluido, vai ao meio do livro e muda
+por pasta, abre cada livro (um clique o escolhe, Enter o abre) e volta. Em cada formato fluido, vai ao meio do livro e muda
 fonte, entrelinha, margens, família, tema e janela, e alterna paginado e contínuo, conferindo depois de
 cada mudança que a âncora é o mesmo caractere e que está na página mostrada (paginado) ou a até uma linha
 do topo (contínuo); depois fecha e reabre o livro nos dois modos e confere a posição exata. Com um

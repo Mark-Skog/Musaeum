@@ -323,8 +323,10 @@ fn the_schema_refuses_what_would_lose_an_annotation() {
         "UPDATE annotation SET quote = NULL",
         "UPDATE anchor_selector SET data = '{}' WHERE kind = 'text_quote'",
         "UPDATE anchor_selector SET kind = 'cfi' WHERE kind = 'text_quote'",
+        // A UUID of another version than 7 (a 4). Not `randomblob(16)`: one time in 16 its version
+        // digit is a 7, the row is a valid annotation, and the test failed by chance.
         "INSERT INTO annotation (uuid, document_id, revision_id, kind, color, quote_source, anchor_state, created_at, updated_at)
-             VALUES (randomblob(16), 1, 1, 'highlight', 'yellow', 'none', 'exact', 0, 0)",
+             VALUES (X'0190A1B2C3D44E5F8A0B1C2D3E4F5061', 1, 1, 'highlight', 'yellow', 'none', 'exact', 0, 0)",
         "INSERT INTO annotation_segment (annotation_id, ordinal, page, href, anchor_state)
              VALUES (1, 9, 1, 'chapter.xhtml', 'exact')",
     ] {

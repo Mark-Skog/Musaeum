@@ -1134,6 +1134,9 @@ pub(crate) fn merge_empty_document(
         .query_row([from_work], |row| row.get(0))?;
     if documents_left == 0 && from_work != into_work {
         merge_empty_work(transaction, from_work, into_work, now)?;
+    } else if from_work != into_work {
+        // The work the document left keeps others, whose identifiers are now all it has.
+        crate::metadata::refresh_identifiers(transaction, from_work)?;
     }
     Ok(())
 }
@@ -1183,6 +1186,16 @@ fn merge_empty_work(
                 set_provenance(transaction, into, &field, "user", now)?;
                 continue;
             }
+            "identifiers" => {
+                transaction
+                    .prepare_cached("DELETE FROM work_identifier WHERE work_id = ?1")?
+                    .execute([into])?;
+                transaction
+                    .prepare_cached("UPDATE work_identifier SET work_id = ?2 WHERE work_id = ?1")?
+                    .execute(params![from, into])?;
+                set_provenance(transaction, into, &field, "user", now)?;
+                continue;
+            }
             _ => continue,
         };
         // The column comes from the list above, not from the database, so this cannot be injected.
@@ -1198,12 +1211,14 @@ fn merge_empty_work(
     transaction
         .prepare_cached("DELETE FROM work_creator WHERE work_id = ?1")?
         .execute([from])?;
+    crate::metadata::move_placement(transaction, from, into)?;
     transaction
         .prepare_cached("DELETE FROM field_provenance WHERE work_id = ?1")?
         .execute([from])?;
     transaction
         .prepare_cached("DELETE FROM work WHERE id = ?1")?
         .execute([from])?;
+    crate::metadata::refresh_identifiers(transaction, into)?;
     Ok(())
 }
 
@@ -1257,7 +1272,10 @@ pub(crate) fn apply_extraction(
         (document, work, origin) = identity(transaction)?;
     }
 
-    // The direction is the newest file's word, unlike identifiers, which are the first one's.
+    // The newest file has the word on the direction and on the identifiers it gives (the ISBN, the
+    // dc:identifier): a new edition with another ISBN brings it, and the work's list follows unless
+    // the person edited it. A file that gives none leaves the ones before. The PDF /ID[0] stays the
+    // first file's: it only tells files apart, and PDF keeps that half of the /ID across revisions.
     let orientation = extracted.direction.map(|direction| match direction {
         Direction::L2R => "ltr",
         Direction::R2L => "rtl",
@@ -1265,7 +1283,7 @@ pub(crate) fn apply_extraction(
     transaction
         .prepare_cached(
             "UPDATE document SET pdf_id0 = coalesce(pdf_id0, ?2),
-                 dc_identifier = coalesce(dc_identifier, ?3), isbn = coalesce(isbn, ?4),
+                 dc_identifier = coalesce(?3, dc_identifier), isbn = coalesce(?4, isbn),
                  orientation = coalesce(?5, orientation)
              WHERE id = ?1",
         )?
@@ -1345,6 +1363,8 @@ pub(crate) fn apply_extraction(
     if creators_changed && !title_changes {
         crate::search::refresh_entry(transaction, work)?;
     }
+    // The identifiers the files give, unless the person set them.
+    crate::metadata::refresh_identifiers(transaction, work)?;
     Ok(())
 }
 

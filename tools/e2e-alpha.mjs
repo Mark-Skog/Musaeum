@@ -826,7 +826,8 @@ async function main() {
       report.corpus = await runCorpus(work);
     }
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    // The WebView2 under its profile may still be closing (EPERM): tried again for about 16 s.
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
 }
 

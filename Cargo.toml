@@ -57,7 +57,7 @@ memmap2 = "0.9"
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_7881"] }
 quick-xml = "0.42"
 # SQLite is compiled in, so the build decides its version and that FTS5 is there.
-rusqlite = { version = "0.41", features = ["backup", "bundled"] }
+rusqlite = { version = "0.41", features = ["backup", "bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

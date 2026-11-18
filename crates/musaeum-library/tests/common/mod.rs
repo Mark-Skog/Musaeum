@@ -180,7 +180,7 @@ impl Fixture {
             .edit_work(
                 identity.work,
                 musaeum_library::WorkEdit {
-                    rating: Some(5),
+                    rating: Some(Some(5)),
                     ..musaeum_library::WorkEdit::default()
                 },
             )

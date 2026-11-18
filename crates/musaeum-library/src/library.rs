@@ -13,9 +13,7 @@ use musaeum_ingest::parse::Extracted;
 use musaeum_ingest::protocol::Format;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::content::{
-    self, ContentReport, apply_extraction, merge_empty_document, set_creators, set_provenance,
-};
+use crate::content::{self, ContentReport, apply_extraction, merge_empty_document};
 use crate::db::backup::{self, BackupInfo, BackupPolicy};
 use crate::db::migrate;
 use crate::db::{CACHE_SPEC, Database, LIBRARY_APPLICATION_ID, LIBRARY_MIGRATIONS, LIBRARY_SPEC};
@@ -27,8 +25,8 @@ use crate::journal::{self, RecoveryReport};
 use crate::model::{
     AnnotationId, AnnotationInfo, DocumentId, DocumentInfo, FolderId, InstanceId, InstanceInfo,
     InstanceState, LibraryStatus, OperationId, OperationInfo, RevisionId, RevisionInfo,
-    RevisionOrigin, RootId, RootInfo, SuggestionId, SuggestionInfo, SuggestionKind, WorkEdit,
-    WorkId, WorkInfo, hex_of,
+    RevisionOrigin, RootId, RootInfo, SuggestionId, SuggestionInfo, SuggestionKind, WorkId,
+    WorkInfo, hex_of,
 };
 use crate::probe::{FsProbe, RealFileSystem};
 use crate::reconcile::{self, Context, ReconcileScope};
@@ -598,68 +596,6 @@ impl Library {
                 .execute(params![from, into])?;
             merge_empty_document(transaction, from, into, now_ms())?;
             Ok(into)
-        })
-    }
-
-    /// Changes a work. Everything set here is the user's from now on: nothing read from a file will
-    /// ever write over it.
-    pub fn edit_work(&self, id: WorkId, edit: WorkEdit) -> Result<()> {
-        if let Some(rating) = edit.rating
-            && !(1..=5).contains(&rating)
-        {
-            return Err(Error::Refused("a rating goes from 1 to 5".to_owned()));
-        }
-        if let Some(status) = &edit.status
-            && !["unread", "reading", "read", "abandoned"].contains(&status.as_str())
-        {
-            return Err(Error::Refused(format!("{status} is not a status")));
-        }
-        self.database.write(move |transaction| {
-            let now = now_ms();
-            let exists: Option<i64> = transaction
-                .prepare_cached("SELECT 1 FROM work WHERE id = ?1")?
-                .query_row([id], |row| row.get(0))
-                .optional()?;
-            if exists.is_none() {
-                return Err(Error::NotFound(format!("there is no work {id}")));
-            }
-            if let Some(creators) = &edit.creators {
-                set_creators(transaction, id, creators)?;
-                set_provenance(transaction, id, "creators", "user", now)?;
-            }
-            transaction
-                .prepare_cached(
-                    "UPDATE work SET
-                         title = coalesce(?2, title), rating = coalesce(?3, rating),
-                         status = coalesce(?4, status), series = coalesce(?5, series),
-                         series_position = coalesce(?6, series_position), updated_at = ?7
-                     WHERE id = ?1",
-                )?
-                .execute(params![
-                    id,
-                    edit.title,
-                    edit.rating,
-                    edit.status,
-                    edit.series,
-                    edit.series_position,
-                    now,
-                ])?;
-            let fields = [
-                ("title", edit.title.is_some()),
-                ("rating", edit.rating.is_some()),
-                ("status", edit.status.is_some()),
-                ("series", edit.series.is_some()),
-                ("series_position", edit.series_position.is_some()),
-            ];
-            for (field, changed) in fields {
-                if changed {
-                    set_provenance(transaction, id, field, "user", now)?;
-                }
-            }
-            if edit.creators.is_some() {
-                search::refresh_entry(transaction, id)?;
-            }
-            Ok(())
         })
     }
 

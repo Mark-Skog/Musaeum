@@ -145,7 +145,7 @@ fn a_failed_write_leaves_no_trace() {
     let result = fixture.library().edit_work(
         identity.work,
         musaeum_library::WorkEdit {
-            rating: Some(9),
+            rating: Some(Some(9)),
             title: Some("should not stick".to_owned()),
             ..musaeum_library::WorkEdit::default()
         },

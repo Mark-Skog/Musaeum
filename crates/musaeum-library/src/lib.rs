@@ -24,13 +24,17 @@ mod ingest;
 mod journal;
 mod library;
 mod lines;
+mod metadata;
 mod model;
+pub mod order;
 mod probe;
 mod reading;
 mod reconcile;
 mod scan;
 mod search;
+pub mod smart;
 mod sql;
+mod taxonomy;
 mod thumbnails;
 
 pub use annotations::{
@@ -54,11 +58,14 @@ pub use library::{Library, LibraryOptions, LibraryPaths};
 pub use lines::{
     LineModelRecord, MAX_LINE_MODEL_BYTES, MAX_OCR_LINE_BYTES, OcrLineRecord, OcrReading,
 };
+pub use metadata::{
+    Credit, CustomValue, Identifier, ROLES, SCHEMES, WorkEdit, WorkMetadata, isbn, language_tag,
+};
 pub use model::{
     AnnotationId, AnnotationInfo, DocumentId, DocumentInfo, FolderId, InstanceId, InstanceInfo,
     InstanceState, LibraryStatus, OperationId, OperationInfo, RevisionId, RevisionInfo,
-    RevisionOrigin, RootId, RootInfo, SuggestionId, SuggestionInfo, SuggestionKind, WorkEdit,
-    WorkId, WorkInfo,
+    RevisionOrigin, RootId, RootInfo, SuggestionId, SuggestionInfo, SuggestionKind, WorkId,
+    WorkInfo,
 };
 pub use probe::{FsProbe, RealFileSystem};
 pub use reading::{
@@ -68,4 +75,9 @@ pub use reading::{
 };
 pub use reconcile::ReconcileScope;
 pub use search::{DEFAULT_SEARCH_LIMIT, MatchKind, SearchHit};
+pub use smart::{Match as SmartMatch, Rule as SmartRule, Rules as SmartRules};
+pub use taxonomy::{
+    Category, CategoryId, Collection, CollectionId, CustomField, CustomFieldId, FIELD_KINDS,
+    MAX_CATEGORY_DEPTH, Place, SmartCollection, SmartCollectionId, TAG_COLORS, Tag, TagId,
+};
 pub use thumbnails::ThumbnailStore;

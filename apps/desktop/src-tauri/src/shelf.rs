@@ -320,6 +320,14 @@ pub struct BrowseArgs {
     text: String,
     folder: Option<i64>,
     #[serde(default)]
+    category: Option<i64>,
+    #[serde(default)]
+    tag: Option<i64>,
+    #[serde(default)]
+    collection: Option<i64>,
+    #[serde(default)]
+    smart: Option<i64>,
+    #[serde(default)]
     offset: usize,
     limit: usize,
 }
@@ -385,6 +393,10 @@ pub fn library_browse(state: State<'_, AppState>, query: BrowseArgs) -> Result<B
         .browse(&BrowseQuery {
             text: query.text,
             folder: query.folder,
+            category: query.category,
+            tag: query.tag,
+            collection: query.collection,
+            smart: query.smart,
             offset: query.offset,
             limit: query.limit.min(MAX_BROWSE),
         })

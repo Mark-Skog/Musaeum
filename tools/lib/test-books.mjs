@@ -107,8 +107,8 @@ export function storedZip(files) {
 
 const xml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/** An EPUB 3 of chapters, each a title and paragraphs. */
-export function epub({ title, identifier, chapters }) {
+/** An EPUB 3 of chapters, each a title and paragraphs, by `creators` if given. */
+export function epub({ title, identifier, chapters, creators = [] }) {
   const items = chapters.map((_, index) => `<item id="c${index + 1}" href="c${index + 1}.xhtml" media-type="application/xhtml+xml"/>`).join('');
   const spine = chapters.map((_, index) => `<itemref idref="c${index + 1}"/>`).join('');
   const nav = chapters.map((chapter, index) => `<li><a href="c${index + 1}.xhtml">${xml(chapter.title)}</a></li>`).join('');
@@ -120,7 +120,7 @@ export function epub({ title, identifier, chapters }) {
     },
     {
       name: 'OEBPS/content.opf',
-      data: `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">${xml(identifier)}</dc:identifier><dc:title>${xml(title)}</dc:title><dc:language>pt</dc:language><meta property="dcterms:modified">2026-11-10T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${items}</manifest><spine>${spine}</spine></package>`,
+      data: `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">${xml(identifier)}</dc:identifier><dc:title>${xml(title)}</dc:title>${creators.map((name) => `<dc:creator>${xml(name)}</dc:creator>`).join('')}<dc:language>pt</dc:language><meta property="dcterms:modified">2026-11-10T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>${items}</manifest><spine>${spine}</spine></package>`,
     },
     {
       name: 'OEBPS/nav.xhtml',

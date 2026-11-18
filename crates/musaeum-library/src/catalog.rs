@@ -1,5 +1,6 @@
 //! What the library shows a person: its books, one per document, in a folder or everywhere, by
-//! title or as a search finds them; and its folders.
+//! title or as a search finds them, in a category, with a tag, in a collection (in its order) or
+//! as a smart collection's rule finds them; and its folders.
 //!
 //! A document can be in several places at once. The one listed, and the one opened, is the best of
 //! them: a file that is there before one only in the cloud, before one that could not be read, and
@@ -18,6 +19,7 @@ use crate::library::Library;
 use crate::model::{DocumentId, FolderId, InstanceId, RevisionId, RootId, WorkId, hex_of};
 use crate::search;
 use crate::sql::StoredName;
+use crate::taxonomy::{CategoryId, CollectionId, SmartCollectionId, TagId, smart_condition};
 
 /// Most books one listing returns.
 pub const MAX_BROWSE: usize = 5000;
@@ -31,6 +33,14 @@ pub struct BrowseQuery {
     pub text: String,
     /// Only books in this folder or below it.
     pub folder: Option<FolderId>,
+    /// Only books in this category or in one under it.
+    pub category: Option<CategoryId>,
+    /// Only books with this tag.
+    pub tag: Option<TagId>,
+    /// Only books in this collection, in its order.
+    pub collection: Option<CollectionId>,
+    /// Only books this smart collection's rule finds now.
+    pub smart: Option<SmartCollectionId>,
     /// Books to skip, for a listing read in pages.
     pub offset: usize,
     /// Books to return, at most [`MAX_BROWSE`].
@@ -124,6 +134,9 @@ const CANDIDATES: &str = "
     ),
     hits(work_id, rank) AS (
         SELECT CAST(value AS INTEGER), CAST(key AS INTEGER) FROM json_each(?2)
+    ),
+    chosen(work_id, rank) AS (
+        SELECT CAST(value AS INTEGER), CAST(key AS INTEGER) FROM json_each(?5)
     )";
 
 impl Library {
@@ -158,8 +171,70 @@ impl Library {
     }
 }
 
+/// The works the taxonomy's filters of `query` leave, in a collection's order if it names one;
+/// None if it names none.
+fn chosen_works(connection: &Connection, query: &BrowseQuery) -> Result<Option<Vec<WorkId>>> {
+    let mut sets: Vec<Vec<WorkId>> = Vec::new();
+    let list = |sql: &str, id: i64| -> Result<Vec<WorkId>> {
+        Ok(connection
+            .prepare_cached(sql)?
+            .query_map([id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    // The collection first: its order is the listing's.
+    if let Some(collection) = query.collection {
+        sets.push(list(
+            "SELECT work_id FROM collection_item WHERE collection_id = ?1
+             ORDER BY sort_key, work_id",
+            collection,
+        )?);
+    }
+    if let Some(category) = query.category {
+        sets.push(list(
+            "SELECT DISTINCT wc.work_id FROM category top
+             JOIN category c ON substr(c.path, 1, length(top.path)) = top.path
+             JOIN work_category wc ON wc.category_id = c.id
+             WHERE top.id = ?1",
+            category,
+        )?);
+    }
+    if let Some(tag) = query.tag {
+        sets.push(list("SELECT work_id FROM work_tag WHERE tag_id = ?1", tag)?);
+    }
+    if let Some(smart) = query.smart {
+        let (condition, values) = smart_condition(connection, smart)?;
+        sets.push(
+            connection
+                .prepare(&format!("SELECT w.id FROM work w WHERE {condition}"))?
+                .query_map(rusqlite::params_from_iter(values), |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?,
+        );
+    }
+    let mut sets = sets.into_iter();
+    let Some(mut works) = sets.next() else {
+        return Ok(None);
+    };
+    for other in sets {
+        let other: std::collections::HashSet<WorkId> = other.into_iter().collect();
+        works.retain(|work| other.contains(work));
+    }
+    Ok(Some(works))
+}
+
 fn browse(connection: &Connection, query: &BrowseQuery) -> Result<BrowsePage> {
     let limit = query.limit.min(MAX_BROWSE);
+    let chosen = match chosen_works(connection, query)? {
+        Some(works) if works.is_empty() => {
+            return Ok(BrowsePage {
+                total: 0,
+                offset: query.offset,
+                rows: Vec::new(),
+            });
+        }
+        Some(works) => Some(serde_json::to_string(&works).expect("numbers are JSON")),
+        None => None,
+    };
+    let in_order = query.collection.is_some();
     let text = query.text.trim();
     let hits = if text.is_empty() {
         None
@@ -182,9 +257,14 @@ fn browse(connection: &Connection, query: &BrowseQuery) -> Result<BrowsePage> {
              SELECT count(*) FROM candidates k
              JOIN document d ON d.id = k.document_id
              LEFT JOIN hits h ON h.work_id = d.work_id
-             WHERE k.choice = 1 AND (?2 IS NULL OR h.work_id IS NOT NULL)"
+             LEFT JOIN chosen c ON c.work_id = d.work_id
+             WHERE k.choice = 1 AND (?2 IS NULL OR h.work_id IS NOT NULL)
+                 AND (?5 IS NULL OR c.work_id IS NOT NULL)"
         ))?
-        .query_row(params![query.folder, hits], |row| row.get(0))?;
+        .query_row(
+            params![query.folder, hits, None::<i64>, None::<i64>, chosen],
+            |row| row.get(0),
+        )?;
 
     let mut statement = connection.prepare_cached(&format!(
         "{CANDIDATES}
@@ -200,13 +280,23 @@ fn browse(connection: &Connection, query: &BrowseQuery) -> Result<BrowsePage> {
          JOIN revision r ON r.id = i.revision_id
          LEFT JOIN reading_state s ON s.document_id = d.id
          LEFT JOIN hits h ON h.work_id = d.work_id
+         LEFT JOIN chosen c ON c.work_id = d.work_id
          WHERE k.choice = 1 AND (?2 IS NULL OR h.work_id IS NOT NULL)
-         ORDER BY CASE WHEN ?2 IS NULL THEN 0 ELSE h.rank END, w.title COLLATE NOCASE, d.id
+             AND (?5 IS NULL OR c.work_id IS NOT NULL)
+         ORDER BY CASE WHEN ?6 THEN c.rank ELSE 0 END,
+                  CASE WHEN ?2 IS NULL THEN 0 ELSE h.rank END, w.title COLLATE NOCASE, d.id
          LIMIT ?3 OFFSET ?4"
     ))?;
     let rows = statement
         .query_map(
-            params![query.folder, hits, limit as i64, query.offset as i64],
+            params![
+                query.folder,
+                hits,
+                limit as i64,
+                query.offset as i64,
+                chosen,
+                in_order
+            ],
             |row| {
                 Ok((
                     BookRow {
@@ -304,24 +394,33 @@ fn book_files(connection: &Connection, document: Option<DocumentId>) -> Result<V
          JOIN work w ON w.id = d.work_id
          JOIN file_instance i ON i.id = k.instance_id
          JOIN revision r ON r.id = i.revision_id
-         WHERE k.choice = 1 AND (?3 IS NULL OR d.id = ?3) AND ?2 IS NULL
+         WHERE k.choice = 1 AND (?3 IS NULL OR d.id = ?3) AND ?2 IS NULL AND ?5 IS NULL
          ORDER BY d.id"
     ))?;
     let rows = statement
-        .query_map(params![None::<FolderId>, None::<String>, document], |row| {
-            Ok((
-                row.get::<_, DocumentId>(0)?,
-                row.get::<_, RevisionId>(1)?,
-                row.get::<_, InstanceId>(2)?,
-                row.get::<_, FolderId>(3)?,
-                row.get::<_, StoredName>(4)?.0,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, Option<Vec<u8>>>(9)?,
-            ))
-        })?
+        .query_map(
+            params![
+                None::<FolderId>,
+                None::<String>,
+                document,
+                None::<i64>,
+                None::<String>
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, DocumentId>(0)?,
+                    row.get::<_, RevisionId>(1)?,
+                    row.get::<_, InstanceId>(2)?,
+                    row.get::<_, FolderId>(3)?,
+                    row.get::<_, StoredName>(4)?.0,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<Vec<u8>>>(9)?,
+                ))
+            },
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut folders: HashMap<FolderId, PathBuf> = HashMap::new();
     let mut files = Vec::with_capacity(rows.len());

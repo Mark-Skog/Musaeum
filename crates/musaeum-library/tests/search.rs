@@ -245,8 +245,8 @@ fn an_edit_is_searchable_right_away_and_what_it_replaced_is_not() {
             work,
             WorkEdit {
                 title: Some("Título Novo".to_owned()),
-                creators: Some(vec!["Autora Nova".to_owned()]),
-                series: Some("Uma Série".to_owned()),
+                creators: Some(vec![musaeum_library::Credit::author("Autora Nova")]),
+                series: Some(Some("Uma Série".to_owned())),
                 ..WorkEdit::default()
             },
         )

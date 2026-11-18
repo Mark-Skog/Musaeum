@@ -25,7 +25,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
   const opened = useRef(0);
 
   const onRows = useCallback(
-    (list: BookRow[], total: number, shown: { text: string; folder: number | null }) => {
+    (list: BookRow[], total: number, shown: { text: string; folder: number | null; filter: unknown }) => {
       rows.current = { rows: list, total, ...shown };
     },
     [],
@@ -101,6 +101,10 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         };
       },
       inspectFixed: () => probe.current?.fixed?.inspect() ?? null,
+      /** The categories, tags, collections, smart collections and custom fields, as the side has them. */
+      taxonomy: () => api.taxonomy(),
+      /** A work as the editor reads it. */
+      workMetadata: (work: number) => api.workMetadata(work),
       /** Shows a page of the open fixed document, as an entry of its outline does. */
       goToPage: (page: number) => probe.current?.fixed?.send({ type: 'go-to-page', page }),
       resizeWindow: (width: number, height: number) => invoke('e2e_resize_window', { width, height }),

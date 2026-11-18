@@ -52,6 +52,135 @@ export interface FolderEntry {
   books: number;
 }
 
+/** Where a person put books beside the folders, as the side of the library lists it. */
+export interface Category {
+  id: number;
+  parentId: number | null;
+  name: string;
+  depth: number;
+  /** Works put in it directly, and in it or under it. */
+  works: number;
+  total: number;
+}
+
+export interface Tag {
+  id: number;
+  name: string;
+  color: string | null;
+  works: number;
+}
+
+export interface Collection {
+  id: number;
+  name: string;
+  description: string;
+  works: number;
+}
+
+export interface SmartRule {
+  field: string;
+  op: string;
+  value: unknown;
+}
+
+export interface SmartRules {
+  match: 'all' | 'any';
+  rules: SmartRule[];
+}
+
+export interface SmartCollection {
+  id: number;
+  name: string;
+  rules: SmartRules;
+  works: number;
+  broken: string | null;
+}
+
+export type FieldKind = 'text' | 'number' | 'date' | 'boolean' | 'choice' | 'url';
+
+export interface CustomField {
+  id: number;
+  name: string;
+  kind: FieldKind;
+  choices: string[];
+}
+
+export interface Taxonomy {
+  categories: Category[];
+  tags: Tag[];
+  collections: Collection[];
+  smart: SmartCollection[];
+  fields: CustomField[];
+}
+
+/** Where an item goes among the others of its list. */
+export type Place = { at: 'first' } | { at: 'last' } | { at: 'before'; id: number } | { at: 'after'; id: number };
+
+export interface Credit {
+  name: string;
+  role: string;
+}
+
+export interface Identifier {
+  scheme: string;
+  value: string;
+}
+
+export interface CustomValue {
+  fieldId: number;
+  value: string | number | boolean | null;
+}
+
+/** A work, as the editor shows it. */
+export interface WorkMetadata {
+  id: number;
+  title: string;
+  creators: Credit[];
+  series: string | null;
+  seriesPosition: number | null;
+  year: number | null;
+  language: string | null;
+  identifiers: Identifier[];
+  rating: number | null;
+  status: 'unread' | 'reading' | 'read' | 'abandoned';
+  categories: number[];
+  tags: number[];
+  /** The tags' names, in the same order. */
+  tagNames: string[];
+  collections: number[];
+  custom: CustomValue[];
+  /** Where each field came from: `filename`, `embedded` (the file) or `user`. */
+  provenance: Record<string, string>;
+  documents: number[];
+  formats: string[];
+}
+
+/** What changes; a field left out stays, `null` clears it. */
+export interface WorkEdit {
+  title?: string;
+  creators?: Credit[];
+  series?: string | null;
+  seriesPosition?: number | null;
+  year?: number | null;
+  language?: string | null;
+  identifiers?: Identifier[];
+  rating?: number | null;
+  status?: string;
+  categories?: number[];
+  tags?: string[];
+  collections?: number[];
+  custom?: CustomValue[];
+}
+
+/** Which books to list besides the search: one folder, category, tag or collection, or a rule. */
+export interface BrowseFilter {
+  folder: number | null;
+  category: number | null;
+  tag: number | null;
+  collection: number | null;
+  smart: number | null;
+}
+
 export interface NavPoint {
   label: string;
   href: string | null;
@@ -172,8 +301,32 @@ export const api = {
   chooseRoot: () => invoke<LibraryInfo | null>('library_choose_root'),
   addRoot: (path: string) => invoke<LibraryInfo>('library_add_root', { path }),
   chooseExisting: () => invoke<LibraryInfo | null>('library_choose_existing'),
-  browse: (query: { text: string; folder: number | null; offset: number; limit: number }) =>
-    invoke<BrowsePage>('library_browse', { query }),
+  browse: (query: BrowseFilter & { text: string; offset: number; limit: number }) => invoke<BrowsePage>('library_browse', { query }),
+  taxonomy: () => invoke<Taxonomy>('taxonomy'),
+  createCategory: (parent: number | null, name: string, place: Place) => invoke<number>('category_create', { parent, name, place }),
+  renameCategory: (id: number, name: string) => invoke<void>('category_rename', { id, name }),
+  moveCategory: (id: number, parent: number | null, place: Place) => invoke<void>('category_move', { id, parent, place }),
+  deleteCategory: (id: number) => invoke<void>('category_delete', { id }),
+  createTag: (name: string, color: string | null) => invoke<number>('tag_create', { name, color }),
+  /** `color` left out keeps the tag's color; `null` takes it away. */
+  updateTag: (id: number, name: string | null, color?: string | null) =>
+    invoke<void>('tag_update', { id, name, color: color ?? null, clearColor: color === null }),
+  deleteTag: (id: number) => invoke<void>('tag_delete', { id }),
+  createCollection: (name: string, description: string, place: Place) => invoke<number>('collection_create', { name, description, place }),
+  updateCollection: (id: number, name: string | null, description: string | null) => invoke<void>('collection_update', { id, name, description }),
+  moveCollection: (id: number, place: Place) => invoke<void>('collection_move', { id, place }),
+  deleteCollection: (id: number) => invoke<void>('collection_delete', { id }),
+  addToCollection: (collection: number, works: number[], place: Place) => invoke<void>('collection_add', { collection, works, place }),
+  removeFromCollection: (collection: number, works: number[]) => invoke<void>('collection_remove', { collection, works }),
+  createSmart: (name: string, rules: SmartRules, place: Place) => invoke<number>('smart_create', { name, rules, place }),
+  updateSmart: (id: number, name: string | null, rules: SmartRules | null) => invoke<void>('smart_update', { id, name, rules }),
+  deleteSmart: (id: number) => invoke<void>('smart_delete', { id }),
+  previewSmart: (rules: SmartRules) => invoke<number>('smart_preview', { rules }),
+  createField: (name: string, kind: FieldKind, choices: string[]) => invoke<number>('field_create', { name, kind, choices }),
+  updateField: (id: number, name: string | null, choices: string[] | null) => invoke<void>('field_update', { id, name, choices }),
+  deleteField: (id: number) => invoke<void>('field_delete', { id }),
+  workMetadata: (work: number) => invoke<WorkMetadata>('work_metadata', { work }),
+  editWork: (work: number, edit: WorkEdit) => invoke<WorkMetadata>('work_edit', { work, edit }),
   folders: () => invoke<FolderEntry[]>('library_folders'),
   setting: <T>(key: string) => invoke<T | null>('reader_setting', { key }),
   setSetting: (key: string, value: unknown) => invoke<void>('set_reader_setting', { key, value }),

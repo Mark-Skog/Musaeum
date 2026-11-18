@@ -337,10 +337,15 @@ fn document_of(library: &Library, target: Target) -> Result<DocumentInfo> {
 fn work_edit(edit: Edit) -> WorkEdit {
     WorkEdit {
         title: edit.title,
-        rating: edit.rating,
+        rating: edit.rating.map(Some),
         status: edit.status,
-        series: edit.series,
-        creators: edit.creators,
+        series: edit.series.map(Some),
+        creators: edit.creators.map(|names| {
+            names
+                .into_iter()
+                .map(musaeum_library::Credit::author)
+                .collect()
+        }),
         ..WorkEdit::default()
     }
 }

@@ -1,9 +1,11 @@
 /**
  * The library: every book in the folders it follows, as covers or as a table, found by a search
- * as it is typed, or by the folder it is in. A book opens with a click, or Enter.
+ * as it is typed, or by what the side chooses: a folder, a category, a tag, a collection, a smart
+ * collection. A click chooses a book and shows its details beside the books, to edit; a double
+ * click or Enter opens it.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Cell,
@@ -24,16 +26,16 @@ import {
   TableLoadMoreItem,
   ToggleButton,
   ToggleButtonGroup,
-  Tree,
-  TreeItem,
-  TreeItemContent,
   Virtualizer,
   type Key,
   type Selection,
 } from 'react-aria-components';
 
 import { type BookRow, coverUrl, type FolderEntry, type LibraryInfo, api } from '../api';
-import { useBooks, useCoverVersions } from './use-books';
+import { type CollectionPlace, Inspector } from './Inspector';
+import { Sidebar } from './Sidebar';
+import type { Filter } from './taxonomy-model';
+import { type Shown, useBooks, useCoverVersions, useTaxonomy } from './use-books';
 
 /** How long typing has to pause before the search runs. Short: the search answers in milliseconds. */
 const SEARCH_AFTER_MS = 90;
@@ -102,73 +104,6 @@ function Progress({ value }: { value: number | null }): React.JSX.Element | null
   );
 }
 
-interface FolderNode {
-  entry: FolderEntry;
-  children: FolderNode[];
-  total: number;
-}
-
-function buildTree(folders: FolderEntry[]): FolderNode[] {
-  const nodes = new Map<number, FolderNode>();
-  for (const entry of folders) {
-    nodes.set(entry.id, { entry, children: [], total: entry.books });
-  }
-  const roots: FolderNode[] = [];
-  for (const node of nodes.values()) {
-    const parent = node.entry.parentId === null ? undefined : nodes.get(node.entry.parentId);
-    if (parent === undefined) {
-      roots.push(node);
-    } else {
-      parent.children.push(node);
-    }
-  }
-  const sum = (node: FolderNode): number => {
-    node.children.sort((a, b) => a.entry.name.localeCompare(b.entry.name, 'pt-BR'));
-    node.total = node.entry.books + node.children.reduce((total, child) => total + sum(child), 0);
-    return node.total;
-  };
-  roots.forEach(sum);
-  // Folders with no books anywhere below them are only noise in a filter.
-  const prune = (list: FolderNode[]): FolderNode[] =>
-    list.filter((node) => node.total > 0).map((node) => ({ ...node, children: prune(node.children) }));
-  return prune(roots);
-}
-
-/** A root's last folder name, which is what tells roots apart; the whole path is its tooltip. */
-function shortName(path: string): string {
-  const parts = path.split(/[\\/]/).filter((part) => part.length > 0);
-  return parts.at(-1) ?? path;
-}
-
-function FolderItems({ nodes }: { nodes: FolderNode[] }): React.JSX.Element {
-  return (
-    <>
-      {nodes.map((node) => (
-        <TreeItem key={node.entry.id} id={node.entry.id} textValue={node.entry.name} className="folder-item">
-          <TreeItemContent>
-            {({ hasChildItems, isExpanded }) => (
-              <div className="folder-row">
-                {hasChildItems ? (
-                  <Button slot="chevron" className="folder-chevron" aria-label={isExpanded ? 'Recolher' : 'Expandir'}>
-                    {isExpanded ? '▾' : '▸'}
-                  </Button>
-                ) : (
-                  <span className="folder-chevron" />
-                )}
-                <span className="folder-name" title={node.entry.name}>
-                  {node.entry.parentId === null ? shortName(node.entry.name) : node.entry.name}
-                </span>
-                <span className="folder-count">{node.total}</span>
-              </div>
-            )}
-          </TreeItemContent>
-          {node.children.length > 0 ? <FolderItems nodes={node.children} /> : null}
-        </TreeItem>
-      ))}
-    </>
-  );
-}
-
 function Welcome({ info, onChanged }: { info: LibraryInfo | null; onChanged(): void }): React.JSX.Element {
   const [error, setError] = useState<string | null>(info?.error ?? null);
   const run = (action: () => Promise<unknown>): void => {
@@ -201,39 +136,52 @@ export interface LibraryViewProps {
   onChanged(): void;
   onOpen(book: BookRow): void;
   /** For tests: the books shown, as they are listed. */
-  onRows?(rows: BookRow[], total: number, shown: { text: string; folder: number | null }): void;
+  onRows?(rows: BookRow[], total: number, shown: Shown): void;
 }
 
 export function LibraryView({ info, folders, generation, onChanged, onOpen, onRows }: LibraryViewProps): React.JSX.Element {
   const [typed, setTyped] = useState('');
   const [query, setQuery] = useState('');
-  const [folder, setFolder] = useState<number | null>(null);
+  const [filter, setFilter] = useState<Filter>({ kind: 'all' });
   const [view, setView] = useState<'grid' | 'table'>('grid');
-  const books = useBooks(query, folder, generation);
+  // Raised by every change made here, so the books and the side are read again.
+  const [version, setVersion] = useState(0);
+  const books = useBooks(query, filter, generation + version);
+  const { taxonomy, refresh: refreshTaxonomy } = useTaxonomy(generation);
   const versions = useCoverVersions();
-  const tree = useMemo(() => buildTree(folders), [folders]);
-  // The folders a root holds show from the start; deeper ones open on demand.
-  const [expanded, setExpanded] = useState<Set<Key>>(() => new Set());
-  useEffect(() => {
-    setExpanded((current) => {
-      const missing = tree.filter((node) => !current.has(node.entry.id));
-      if (missing.length === 0) {
-        return current;
-      }
-      const next = new Set(current);
-      for (const node of missing) {
-        next.add(node.entry.id);
-      }
-      return next;
-    });
-  }, [tree]);
+  // The chosen book is kept by itself, not looked up in the rows: a list read again after a save
+  // brings back only its first page, and the book being edited may be further down.
+  const [selected, setSelected] = useState<BookRow | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const byId = useMemo(() => new Map(books.rows.map((row) => [row.documentId, row])), [books.rows]);
+  const changed = useCallback(() => {
+    refreshTaxonomy();
+    setVersion((value) => value + 1);
+  }, [refreshTaxonomy]);
+  // Gone to another filter or search where the chosen book is not listed, it is no longer chosen,
+  // so it does not come back by itself on returning. The same list read again keeps it.
+  const shownKey = JSON.stringify([books.shown.text, books.shown.filter]);
+  const lastShown = useRef(shownKey);
+  useEffect(() => {
+    if (lastShown.current === shownKey) {
+      return;
+    }
+    lastShown.current = shownKey;
+    setSelected((current) => (current !== null && !books.rows.some((row) => row.documentId === current.documentId) ? null : current));
+  }, [shownKey, books.rows]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(typed), SEARCH_AFTER_MS);
     return () => clearTimeout(timer);
   }, [typed]);
   useEffect(() => onRows?.(books.rows, books.total, books.shown), [books.rows, books.total, books.shown, onRows]);
+  useEffect(() => {
+    if (notice === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   if (info === null) {
     return <div className="loading">Abrindo a biblioteca…</div>;
@@ -248,7 +196,34 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, onRo
       onOpen(book);
     }
   };
-  const selectedFolder: Selection = new Set<Key>(folder === null ? ['all'] : [folder]);
+  // The row as last read, when it is among those read, for what a save changed in it.
+  const chosen = selected === null ? undefined : (byId.get(selected.documentId) ?? selected);
+  const selection: Selection = new Set<Key>(chosen === undefined ? [] : [chosen.documentId]);
+  const select = (keys: Selection): void => {
+    const key = keys === 'all' ? undefined : [...keys][0];
+    setSelected(key === undefined ? null : (byId.get(Number(key)) ?? null));
+  };
+  // A click on the chosen book keeps it chosen, as in a file manager; Escape puts the details away.
+  const putAway = (event: React.KeyboardEvent): void => {
+    if (event.key === 'Escape' && selected !== null) {
+      setSelected(null);
+    }
+  };
+  const filtered = query !== '' || filter.kind !== 'all';
+  // In a collection, the books just before and after the chosen one, for moving it there.
+  let place: CollectionPlace | null = null;
+  if (chosen !== undefined && filter.kind === 'collection' && query === '') {
+    const at = books.rows.findIndex((row) => row.documentId === chosen.documentId);
+    const collection = taxonomy.collections.find((candidate) => candidate.id === filter.id);
+    if (at >= 0 && collection !== undefined) {
+      place = {
+        collection: collection.id,
+        name: collection.name,
+        before: books.rows[at - 1]?.workId ?? null,
+        after: books.rows[at + 1]?.workId ?? null,
+      };
+    }
+  }
 
   return (
     <div className="library">
@@ -285,43 +260,38 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, onRo
           Adicionar pasta…
         </Button>
         <span className="toolbar-status" aria-live="polite">
-          {books.total === info.books || query !== '' || folder !== null
+          {books.total === info.books || filtered
             ? `${books.total} ${books.total === 1 ? 'livro' : 'livros'}`
             : `${books.total} de ${info.books} livros`}
           {info.indexing ? ' · lendo a pasta…' : ''}
         </span>
       </header>
-      <div className="library-body">
-        <nav className="sidebar" aria-label="Pastas">
-          <Tree
-            aria-label="Filtrar por pasta"
-            className="folders"
-            selectionMode="single"
-            disallowEmptySelection
-            selectedKeys={selectedFolder}
-            expandedKeys={expanded}
-            onExpandedChange={setExpanded}
-            onSelectionChange={(keys) => {
-              const key = [...keys][0];
-              setFolder(key === undefined || key === 'all' ? null : Number(key));
-            }}
-          >
-            <TreeItem id="all" textValue="Todos os livros" className="folder-item">
-              <TreeItemContent>
-                <div className="folder-row">
-                  <span className="folder-chevron" />
-                  <span className="folder-name">Todos os livros</span>
-                  <span className="folder-count">{info.books}</span>
-                </div>
-              </TreeItemContent>
-            </TreeItem>
-            <FolderItems nodes={tree} />
-          </Tree>
-        </nav>
-        <main className="shelf">
+      {notice !== null ? (
+        <p className="library-notice" role="alert">
+          {notice}
+        </p>
+      ) : null}
+      <div className={chosen === undefined ? 'library-body' : 'library-body with-inspector'}>
+        <Sidebar
+          info={info}
+          folders={folders}
+          taxonomy={taxonomy}
+          filter={filter}
+          onFilter={setFilter}
+          onChanged={changed}
+          notice={setNotice}
+        />
+        {/* Caught on the way down: the items of a grid stop some keys before they reach the shelf. */}
+        <main className="shelf" onKeyDownCapture={putAway}>
           {books.rows.length === 0 && !books.loading ? (
             <p className="empty">
-              {query !== '' ? `Nada encontrado para “${query}”.` : info.indexing ? 'Lendo a pasta…' : 'Nenhum livro aqui.'}
+              {books.error !== null
+                ? `Esta coleção inteligente não pôde ser lida: ${books.error.replace(/^Error:\s*/, '')}`
+                : query !== ''
+                  ? `Nada encontrado para “${query}”.`
+                  : info.indexing
+                    ? 'Lendo a pasta…'
+                    : 'Nenhum livro aqui.'}
             </p>
           ) : view === 'grid' ? (
             <Virtualizer
@@ -337,6 +307,11 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, onRo
                 aria-label="Livros"
                 className="book-grid"
                 layout="grid"
+                selectionMode="single"
+                selectionBehavior="replace"
+                disallowEmptySelection
+                selectedKeys={selection}
+                onSelectionChange={select}
                 onAction={open}
               >
                 <Collection items={books.rows} dependencies={[versions]}>
@@ -365,7 +340,16 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, onRo
             </Virtualizer>
           ) : (
             <Virtualizer layout={TableLayout} layoutOptions={{ rowHeight: 36, headingHeight: 34 }}>
-              <Table aria-label="Livros" className="book-table" onRowAction={open}>
+              <Table
+                aria-label="Livros"
+                className="book-table"
+                selectionMode="single"
+                selectionBehavior="replace"
+                disallowEmptySelection
+                selectedKeys={selection}
+                onSelectionChange={select}
+                onRowAction={open}
+              >
                 <TableHeader>
                   <Column isRowHeader id="title" width="2fr">
                     Título
@@ -407,6 +391,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, onRo
             </Virtualizer>
           )}
         </main>
+        {chosen !== undefined ? <Inspector key={chosen.workId} book={chosen} taxonomy={taxonomy} place={place} onSaved={changed} onClose={() => setSelected(null)} /> : null}
       </div>
     </div>
   );

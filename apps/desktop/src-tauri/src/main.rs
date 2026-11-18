@@ -22,6 +22,7 @@ mod protocol;
 mod reading;
 mod session;
 mod shelf;
+mod taxonomy;
 mod webview2;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -108,6 +109,31 @@ fn main() {
             shelf::library_add_root,
             shelf::library_choose_existing,
             shelf::library_browse,
+            taxonomy::taxonomy,
+            taxonomy::category_create,
+            taxonomy::category_rename,
+            taxonomy::category_move,
+            taxonomy::category_delete,
+            taxonomy::category_set_works,
+            taxonomy::tag_create,
+            taxonomy::tag_update,
+            taxonomy::tag_delete,
+            taxonomy::tag_set_works,
+            taxonomy::collection_create,
+            taxonomy::collection_update,
+            taxonomy::collection_move,
+            taxonomy::collection_delete,
+            taxonomy::collection_add,
+            taxonomy::collection_remove,
+            taxonomy::smart_create,
+            taxonomy::smart_update,
+            taxonomy::smart_delete,
+            taxonomy::smart_preview,
+            taxonomy::field_create,
+            taxonomy::field_update,
+            taxonomy::field_delete,
+            taxonomy::work_metadata,
+            taxonomy::work_edit,
             shelf::library_folders,
             shelf::reader_setting,
             shelf::set_reader_setting,

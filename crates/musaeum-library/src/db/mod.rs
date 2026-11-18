@@ -57,6 +57,10 @@ pub(crate) const LIBRARY_MIGRATIONS: &[Migration] = &[
         version: 6,
         sql: include_str!("../../migrations/library/0006_ocr_quote.sql"),
     },
+    Migration {
+        version: 7,
+        sql: include_str!("../../migrations/library/0007_taxonomy.sql"),
+    },
 ];
 
 /// The migrations of `cache.db`, in order.
@@ -243,6 +247,7 @@ fn bring_a_long_log_to_an_end(connection: &Connection, log: &Path) {
 }
 
 fn configure_writer(connection: &Connection, spec: &DatabaseSpec) -> Result<()> {
+    crate::sql::register_functions(connection)?;
     connection.busy_timeout(BUSY_TIMEOUT)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", spec.synchronous)?;
@@ -382,6 +387,7 @@ impl Readers {
                 path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?;
+            crate::sql::register_functions(&connection)?;
             connection.busy_timeout(BUSY_TIMEOUT)?;
             connection.pragma_update(None, "query_only", true)?;
             connection.pragma_update(None, "temp_store", "MEMORY")?;
