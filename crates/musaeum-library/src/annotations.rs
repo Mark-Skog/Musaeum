@@ -200,6 +200,32 @@ pub struct Annotation {
     pub segments: Vec<Segment>,
 }
 
+/// An annotation that comes from outside the library: a PDF's own, or one in an XFDF file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedAnnotation {
+    /// What it is. Its `pdf_nm` is what tells it apart from the document's other annotations, and
+    /// must be set: the PDF's `/NM`, or a name made from what it is when it has none.
+    pub new: NewAnnotation,
+    /// The UUID it had where it came from, kept when no annotation of this library has it: an
+    /// annotation Musaeum exported comes back as itself.
+    pub uuid: Option<String>,
+    pub created_at: Option<i64>,
+    pub updated_at: Option<i64>,
+}
+
+/// What an import did.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOutcome {
+    pub added: Vec<Annotation>,
+    /// How many were already the document's, by their name or their UUID, deleted ones too.
+    pub already: usize,
+}
+
+/// The most annotations one import may bring.
+pub const MAX_IMPORTED: usize = 100_000;
+
 /// What a person can change in an annotation. `None` leaves a field as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -537,50 +563,154 @@ fn id_of(transaction: &Transaction<'_>, uuid: &[u8; 16]) -> Result<(AnnotationId
         .ok_or_else(|| Error::NotFound("there is no such annotation".to_owned()))
 }
 
+/// Refuses a revision that is not the document's.
+fn check_owner(
+    transaction: &Transaction<'_>,
+    revision: RevisionId,
+    document: DocumentId,
+) -> Result<()> {
+    let owner: Option<DocumentId> = transaction
+        .prepare_cached("SELECT document_id FROM revision WHERE id = ?1")?
+        .query_row([revision], |row| row.get(0))
+        .optional()?;
+    if owner != Some(document) {
+        return Err(Error::Refused(format!(
+            "revision {revision} is not one of document {document}'s"
+        )));
+    }
+    Ok(())
+}
+
+/// Writes an annotation and its segments, with the UUID and the dates given.
+fn insert_annotation(
+    transaction: &Transaction<'_>,
+    new: &NewAnnotation,
+    uuid: &[u8; 16],
+    created: i64,
+    updated: i64,
+) -> Result<()> {
+    transaction
+        .prepare_cached(
+            "INSERT INTO annotation (uuid, document_id, revision_id, kind, color, note, quote,
+                 quote_source, progression, anchor_state, resolved_revision_id,
+                 resolved_version, pdf_nm, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?3, ?11, ?12, ?13, ?14)",
+        )?
+        .execute(params![
+            uuid.as_slice(),
+            new.document_id,
+            new.revision_id,
+            new.kind.as_str(),
+            new.color,
+            new.note,
+            new.quote,
+            new.quote_source.as_str(),
+            new.progression,
+            new.anchor_state.as_str(),
+            new.resolved_version,
+            new.pdf_nm,
+            created,
+            updated,
+        ])?;
+    let id = transaction.last_insert_rowid();
+    for segment in &new.segments {
+        insert_segment(transaction, id, segment)?;
+    }
+    Ok(())
+}
+
 impl Library {
     /// Writes a new annotation and returns it as stored, with its UUID.
     pub fn create_annotation(&self, new: NewAnnotation) -> Result<Annotation> {
         check_new(&new)?;
         let uuid = uuid_bytes(&new_uuid())?;
         self.database().write(move |transaction| {
-            let owner: Option<DocumentId> = transaction
-                .prepare_cached("SELECT document_id FROM revision WHERE id = ?1")?
-                .query_row([new.revision_id], |row| row.get(0))
-                .optional()?;
-            if owner != Some(new.document_id) {
-                return Err(Error::Refused(format!(
-                    "revision {} is not one of document {}'s",
-                    new.revision_id, new.document_id
-                )));
-            }
+            check_owner(transaction, new.revision_id, new.document_id)?;
             let now = now_ms();
-            transaction
-                .prepare_cached(
-                    "INSERT INTO annotation (uuid, document_id, revision_id, kind, color, note, quote,
-                         quote_source, progression, anchor_state, resolved_revision_id,
-                         resolved_version, pdf_nm, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?3, ?11, ?12, ?13, ?13)",
-                )?
-                .execute(params![
-                    uuid.as_slice(),
-                    new.document_id,
-                    new.revision_id,
-                    new.kind.as_str(),
-                    new.color,
-                    new.note,
-                    new.quote,
-                    new.quote_source.as_str(),
-                    new.progression,
-                    new.anchor_state.as_str(),
-                    new.resolved_version,
-                    new.pdf_nm,
-                    now,
-                ])?;
-            let id = transaction.last_insert_rowid();
-            for segment in &new.segments {
-                insert_segment(transaction, id, segment)?;
-            }
+            insert_annotation(transaction, &new, &uuid, now, now)?;
             load_one(transaction, &uuid)
+        })
+    }
+
+    /// Brings annotations from outside into one document, in one transaction. One the document
+    /// already has, by its `pdf_nm` or by a UUID that is its `pdf_nm`, deleted ones included, is
+    /// left as it is, so importing the same file again adds nothing. Each keeps the UUID it came
+    /// with when that is a UUIDv7 no annotation of the library has, and its dates.
+    pub fn import_annotations(
+        &self,
+        document: DocumentId,
+        revision: RevisionId,
+        imported: Vec<ImportedAnnotation>,
+    ) -> Result<ImportOutcome> {
+        if imported.len() > MAX_IMPORTED {
+            return Err(Error::Refused(
+                "too many annotations for one import".to_owned(),
+            ));
+        }
+        for item in &imported {
+            check_new(&item.new)?;
+            if item.new.document_id != document || item.new.revision_id != revision {
+                return Err(Error::Refused(
+                    "an imported annotation of another document".to_owned(),
+                ));
+            }
+            if item
+                .new
+                .pdf_nm
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+            {
+                return Err(Error::Refused(
+                    "an imported annotation needs a name to be told apart".to_owned(),
+                ));
+            }
+        }
+        self.database().write(move |transaction| {
+            check_owner(transaction, revision, document)?;
+            let now = now_ms();
+            let mut seen = HashSet::new();
+            let mut added = Vec::new();
+            let mut already = 0;
+            for item in &imported {
+                let name = item.new.pdf_nm.clone().unwrap_or_default();
+                let as_uuid = uuid::Uuid::try_parse(&name)
+                    .ok()
+                    .map(|uuid| uuid.as_bytes().to_vec());
+                let known: bool = transaction
+                    .prepare_cached(
+                        "SELECT EXISTS (SELECT 1 FROM annotation
+                         WHERE document_id = ?1 AND (pdf_nm = ?2 OR uuid = ?3))",
+                    )?
+                    .query_row(params![document, name, as_uuid], |row| row.get(0))?;
+                if known || !seen.insert(name) {
+                    already += 1;
+                    continue;
+                }
+                let kept = match item.uuid.as_deref().and_then(|text| uuid_bytes(text).ok()) {
+                    Some(bytes) => {
+                        let taken: bool = transaction
+                            .prepare_cached(
+                                "SELECT EXISTS (SELECT 1 FROM annotation WHERE uuid = ?1)",
+                            )?
+                            .query_row([bytes.as_slice()], |row| row.get(0))?;
+                        (!taken).then_some(bytes)
+                    }
+                    None => None,
+                };
+                let uuid = match kept {
+                    Some(bytes) => bytes,
+                    None => uuid_bytes(&new_uuid())?,
+                };
+                let created = item.created_at.filter(|ms| *ms > 0).unwrap_or(now);
+                let updated = item
+                    .updated_at
+                    .filter(|ms| *ms > 0)
+                    .unwrap_or(created)
+                    .max(created);
+                insert_annotation(transaction, &item.new, &uuid, created, updated)?;
+                added.push(load_one(transaction, &uuid)?);
+            }
+            Ok(ImportOutcome { added, already })
         })
     }
 

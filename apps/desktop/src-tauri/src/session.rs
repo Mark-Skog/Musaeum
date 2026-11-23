@@ -53,6 +53,8 @@ pub struct Session {
     pub blake3: Option<Hash>,
     /// What kind of document it is.
     pub format: FixedFormat,
+    /// The file, as it was opened: only ever read.
+    pub path: PathBuf,
 }
 
 /// State shared by commands and the tile protocol.
@@ -343,6 +345,7 @@ pub fn open_session(
         document: known.file.map(|file| (file.document, file.revision)),
         blake3: known.file.and_then(|file| file.blake3),
         format,
+        path: args.document.clone(),
         pool,
     });
     let info = SessionInfo {

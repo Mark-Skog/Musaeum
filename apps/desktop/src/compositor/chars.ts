@@ -9,7 +9,8 @@
 
 /** `"MCHR"`, read as a little-endian word. */
 export const CHARS_MAGIC = 0x5248434d;
-export const CHARS_VERSION = 1;
+/** As `musaeum_shm::chars`: version 2 has the quads of characters drawn turned the right way round. */
+export const CHARS_VERSION = 2;
 export const LINE_END = 1;
 export const GENERATED = 2;
 

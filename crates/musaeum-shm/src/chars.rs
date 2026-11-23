@@ -24,8 +24,10 @@ use thiserror::Error;
 /// `"MCHR"`, the first word of an encoded character layer.
 pub const CHARS_MAGIC: u32 = u32::from_le_bytes(*b"MCHR");
 /// Version of this layout, and of how workers decide what a character and its quad are. Annotations
-/// anchored on one version are checked again on another.
-pub const CHARS_VERSION: u32 = 1;
+/// anchored on one version are checked again on another. Version 2 turns the quads of characters
+/// drawn turned the right way round: version 1 took PDFium's clockwise angle for a counterclockwise
+/// one, so such a quad's top was its bottom.
+pub const CHARS_VERSION: u32 = 2;
 /// A line ends after this character.
 pub const LINE_END: u16 = 1;
 /// The text layer made this character up: a space between words or a line break, with no glyph.

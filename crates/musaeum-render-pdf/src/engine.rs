@@ -97,6 +97,11 @@ impl Pdfium {
             _single_threaded: PhantomData,
         })
     }
+
+    /// The raw bindings, for the other readers of this crate.
+    pub(crate) fn bindings(&self) -> &dyn PdfiumLibraryBindings {
+        self.bindings.as_ref()
+    }
 }
 
 impl Drop for Pdfium {
@@ -557,11 +562,13 @@ impl<'lib, 'data> Document<'lib, 'data> {
                     unsafe { bindings.FPDFText_GetLooseCharBox(text, index, &mut rect) } != 0;
                 let quad = if boxed && !generated {
                     // SAFETY: `index` is in range.
-                    let angle = unsafe { bindings.FPDFText_GetCharAngle(text, index) };
+                    let clockwise = unsafe { bindings.FPDFText_GetCharAngle(text, index) };
+                    // PDFium measures the angle clockwise (`atan2(c, a)` of the character's
+                    // matrix): text drawn running down the page is a quarter turn, not three.
                     char_quad(
                         &frame,
                         [rect.left, rect.bottom, rect.right, rect.top],
-                        angle,
+                        -clockwise,
                     )
                 } else {
                     [0.0; 8]

@@ -19,6 +19,7 @@ mod links;
 mod memory;
 mod ocr;
 mod options;
+mod pdf_annotations;
 mod picker;
 mod protocol;
 mod reading;
@@ -106,6 +107,11 @@ fn main() {
             annotations::delete_annotation,
             annotations::restore_annotation,
             annotations::search_annotations,
+            pdf_annotations::pdf_annotations_export,
+            pdf_annotations::pdf_annotations_import,
+            pdf_annotations::xfdf_export,
+            pdf_annotations::xfdf_import,
+            pdf_annotations::e2e_pdf_annotations,
             links::e2e_opened_links,
             shelf::library_info,
             shelf::library_choose_root,

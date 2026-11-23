@@ -11,6 +11,7 @@ import type { StartupOptions } from '../protocol';
 import { api, type BookRow, type ReaderTarget, type SelectedBook } from './api';
 import { FRESH_LIBRARY, type LibraryMemory, LibraryView } from './library/LibraryView';
 import { useLibrary } from './library/use-books';
+import type { PdfAction } from './reader/annotations/AnnotationUi';
 import { type ReaderProbe, ReaderView } from './reader/ReaderView';
 
 export function App({ options }: { options: StartupOptions }): React.JSX.Element {
@@ -134,6 +135,15 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         book === null ? Promise.reject(new Error('no book is open')) : api.createFlowAnnotation(book.documentId, start, end, { kind: 'highlight', color: 'yellow', note }),
       /** Shows a page of the open fixed document, as an entry of its outline does. */
       goToPage: (page: number) => probe.current?.fixed?.send({ type: 'go-to-page', page }),
+      /** The open fixed document's annotations, whole, with their segments and selectors. */
+      fixedAnnotations: () => {
+        const session = probe.current?.fixed?.session;
+        return session === null || session === undefined ? null : api.fixedAnnotations(session.id);
+      },
+      /** One of a PDF's actions, with the path the dialog would have given. */
+      pdf: (action: string, path?: string) => probe.current?.pdf?.(action as PdfAction, path) ?? null,
+      /** What PDFium reads in a file. */
+      pdfAnnotations: (path: string) => api.e2ePdfAnnotations(path),
       resizeWindow: (width: number, height: number) => invoke('e2e_resize_window', { width, height }),
       openedLinks: () => invoke<string[]>('e2e_opened_links'),
       /** A page's characters as the compositor gets them, as bytes, for a test to aim a drag with. */

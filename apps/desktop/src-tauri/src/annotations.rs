@@ -510,6 +510,7 @@ pub fn found_region(
         clip: region.clip,
         lines: region.lines,
         path: region.path,
+        width: None,
         page_hash: library
             .and_then(|library| page_hash_of(library, session, region.page))
             .map(region::hash_text),
@@ -522,7 +523,7 @@ pub fn found_region(
 }
 
 /// Whether an annotation is a mark on a picture that quotes nothing yet.
-fn awaits_quote(annotation: &Annotation) -> bool {
+pub(crate) fn awaits_quote(annotation: &Annotation) -> bool {
     annotation.quote.is_none()
         && annotation.deleted_at.is_none()
         && annotation

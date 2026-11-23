@@ -34,6 +34,11 @@ pub enum RegionTool {
     Rect,
     /// A stroke.
     Free,
+    /// A note pinned at a point, its icon's box: a PDF's sticky note.
+    Point,
+    /// Over quads given from outside, with no lines of the detector or text under them: a PDF's
+    /// highlight or underline on a page whose text cannot be read.
+    Quads,
 }
 
 /// One of the detector's lines a mark covers, from and to fractions along it.
@@ -60,6 +65,9 @@ pub struct Region {
     /// A stroke's points, u and v in turn.
     #[serde(default)]
     pub path: Vec<f32>,
+    /// A stroke's width in points, when it is not the reader's own (a stroke from a PDF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
     /// Sixteen hex digits, or nothing when the page had not been looked at yet.
     #[serde(default)]
     pub page_hash: Option<String>,
@@ -103,6 +111,11 @@ impl Region {
         }
         if (self.tool == RegionTool::Free) != !self.path.is_empty() {
             return Some("only a stroke has a path".to_owned());
+        }
+        if self.width.is_some_and(|width| {
+            self.tool != RegionTool::Free || !(width.is_finite() && width > 0.0 && width <= 200.0)
+        }) {
+            return Some("only a stroke has a width, and a sensible one".to_owned());
         }
         if self.lines.len() > MAX_REGION_LINES
             || (self.tool == RegionTool::Lines) == self.lines.is_empty()
@@ -214,6 +227,7 @@ mod tests {
             } else {
                 Vec::new()
             },
+            width: None,
             page_hash: Some(hash_text(0xF0F0_0000_FFFF_1234)),
             region_hash: None,
         }
@@ -221,7 +235,13 @@ mod tests {
 
     #[test]
     fn a_region_goes_through_its_selector_and_back() {
-        for tool in [RegionTool::Lines, RegionTool::Rect, RegionTool::Free] {
+        for tool in [
+            RegionTool::Lines,
+            RegionTool::Rect,
+            RegionTool::Free,
+            RegionTool::Point,
+            RegionTool::Quads,
+        ] {
             let region = region(tool);
             assert_eq!(region.problem(), None, "{tool:?}");
             let segment = region.segment(0, 7, 1);
@@ -270,7 +290,23 @@ mod tests {
                 page_hash: Some("not a hash".to_owned()),
                 ..region(RegionTool::Rect)
             },
+            Region {
+                width: Some(3.0),
+                ..region(RegionTool::Rect)
+            },
+            Region {
+                width: Some(f32::NAN),
+                ..region(RegionTool::Free)
+            },
         ];
+        assert_eq!(
+            Region {
+                width: Some(3.0),
+                ..region(RegionTool::Free)
+            }
+            .problem(),
+            None
+        );
         for region in broken {
             assert!(region.problem().is_some(), "{region:?}");
         }

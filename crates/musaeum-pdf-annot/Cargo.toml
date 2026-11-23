@@ -1,0 +1,23 @@
+[package]
+name = "musaeum-pdf-annot"
+description = "A PDF's own annotations: read from its objects, written as an incremental update to a copy, and exchanged as XFDF, through an isolated worker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blake3.workspace = true
+flate2.workspace = true
+musaeum-sandbox.workspace = true
+musaeum-shm.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gen-fixtures.workspace = true
+
+[lints]
+workspace = true

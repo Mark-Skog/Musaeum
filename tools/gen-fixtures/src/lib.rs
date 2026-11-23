@@ -4,6 +4,7 @@
 //! documents exactly what each one is meant to stress. Everything is deterministic, so
 //! the same arguments always produce the same bytes.
 
+pub mod annot;
 pub mod books;
 pub mod color;
 pub mod comics;

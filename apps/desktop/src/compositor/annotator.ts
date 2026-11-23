@@ -127,6 +127,25 @@ const INK: Record<string, [number, number, number]> = {
  * dark ink, is the bright fill color.
  */
 export const DARK_FILL = 0.55;
+/**
+ * The fill and the line of a mark's color: the palette's for its names; for a color a PDF gave
+ * (`#rrggbb`, or `#rrggbbaa` with an opacity), that color itself for both, laid over white paper
+ * as much as its opacity says.
+ */
+export function paintOf(color: string): { fill: [number, number, number]; ink: [number, number, number] } {
+  const named = PALETTE[color];
+  if (named !== undefined) {
+    return { fill: named, ink: INK[color] ?? INK.yellow };
+  }
+  const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(color);
+  if (hex === null) {
+    return { fill: PALETTE.yellow, ink: INK.yellow };
+  }
+  const alpha = hex[4] !== undefined ? parseInt(hex[4], 16) / 255 : 1;
+  const channel = (digits: string): number => 1 - alpha * (1 - parseInt(digits, 16) / 255);
+  const painted: [number, number, number] = [channel(hex[1]), channel(hex[2]), channel(hex[3])];
+  return { fill: painted, ink: painted };
+}
 const dimmed = (color: readonly [number, number, number]): [number, number, number] => [
   color[0] * DARK_FILL,
   color[1] * DARK_FILL,
@@ -754,8 +773,7 @@ export class Annotator {
         }
       };
       for (const mark of marks ?? []) {
-        const fill = PALETTE[mark.color] ?? PALETTE.yellow;
-        const ink = INK[mark.color] ?? INK.yellow;
+        const { fill, ink } = paintOf(mark.color);
         const fillDark = dimmed(fill);
         mark.quads.forEach((quad, index) => {
           place(quad);

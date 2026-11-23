@@ -1880,3 +1880,40 @@ textarea.text-input {
 .merge-what .muted {
   font-size: 12px;
 }
+
+/* A PDF's own annotations, in and out, at the foot of the annotations panel. */
+.pdf-exchange {
+  flex: none;
+  margin: auto -10px 0;
+  border-top: 1px solid var(--line);
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pdf-exchange-heading {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pdf-exchange-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pdf-exchange-status {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.pdf-exchange-status.failed {
+  color: var(--danger);
+}

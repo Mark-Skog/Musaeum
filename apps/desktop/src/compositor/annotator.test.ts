@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Annotator, type AnnotatorMessage } from './annotator';
-import { CHARS_MAGIC, GENERATED, LINE_END } from './chars';
+import { CHARS_MAGIC, CHARS_VERSION, GENERATED, LINE_END } from './chars';
 import { PlacedPages } from './view';
 
 /** A layer of lines, each character 1/100 of the page wide, each line 1/20 high. */
@@ -22,7 +22,7 @@ function layer(lines: string[], rotation = 0): ArrayBuffer {
   const buffer = new ArrayBuffer(16 + glyphs.length * 24);
   const view = new DataView(buffer);
   view.setUint32(0, CHARS_MAGIC, true);
-  view.setUint32(4, 1, true);
+  view.setUint32(4, CHARS_VERSION, true);
   view.setUint32(8, glyphs.length, true);
   view.setUint32(12, rotation, true);
   glyphs.forEach((glyph, index) => {

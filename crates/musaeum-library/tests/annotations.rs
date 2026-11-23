@@ -483,6 +483,7 @@ fn a_phase_4_library_keeps_its_selectors_and_learns_marks_on_pictures() {
             },
         ],
         path: Vec::new(),
+        width: None,
         page_hash: Some(region::hash_text(u64::MAX - 1)),
         region_hash: Some(region::hash_text(42)),
     };
@@ -548,6 +549,7 @@ fn a_mark_on_a_scan_learns_its_quote_once_and_is_found_by_it() {
             to: 1.0,
         }],
         path: Vec::new(),
+        width: None,
         page_hash: Some(region::hash_text(7)),
         region_hash: Some(region::hash_text(8)),
     };
@@ -645,5 +647,118 @@ fn a_mark_on_a_scan_learns_its_quote_once_and_is_found_by_it() {
             )
             .is_err(),
         "a quote once filled keeps what it quoted"
+    );
+}
+
+#[test]
+fn importing_the_same_annotations_again_adds_nothing() {
+    use musaeum_library::ImportedAnnotation;
+
+    let fixture = Fixture::new();
+    let identity = book(&fixture);
+    let library = fixture.library();
+    let ours = library
+        .create_annotation(anchored_highlight(identity.document, identity.revision))
+        .unwrap();
+    let imported = |name: &str, uuid: Option<&str>| ImportedAnnotation {
+        new: musaeum_library::NewAnnotation {
+            pdf_nm: Some(name.to_owned()),
+            note: format!("de {name}"),
+            ..anchored_highlight(identity.document, identity.revision)
+        },
+        uuid: uuid.map(str::to_owned),
+        created_at: Some(1_700_000_000_000),
+        updated_at: Some(1_700_000_100_000),
+    };
+    // A copy Musaeum exported comes back: its annotation is named by its own UUID.
+    let back = imported(&ours.uuid, Some(&ours.uuid));
+    // One another program made, named by it, and one from another library of Musaeum.
+    let foreign = imported("acrobat-0001", None);
+    let elsewhere = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    let traveller = imported(elsewhere, Some(elsewhere));
+    let outcome = library
+        .import_annotations(
+            identity.document,
+            identity.revision,
+            vec![
+                back.clone(),
+                foreign.clone(),
+                traveller.clone(),
+                foreign.clone(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        outcome.already, 2,
+        "its own, and the same one twice in one file"
+    );
+    assert_eq!(outcome.added.len(), 2);
+    let added_foreign = &outcome.added[0];
+    assert_eq!(added_foreign.pdf_nm.as_deref(), Some("acrobat-0001"));
+    assert_eq!(added_foreign.created_at, 1_700_000_000_000);
+    assert_eq!(added_foreign.updated_at, 1_700_000_100_000);
+    assert_ne!(added_foreign.uuid, ours.uuid);
+    assert_eq!(
+        outcome.added[1].uuid, elsewhere,
+        "it keeps the UUID it came with"
+    );
+
+    // Again: nothing new, deleted ones included.
+    library.delete_annotation(&added_foreign.uuid).unwrap();
+    let again = library
+        .import_annotations(
+            identity.document,
+            identity.revision,
+            vec![back, foreign, traveller.clone()],
+        )
+        .unwrap();
+    assert_eq!((again.added.len(), again.already), (0, 3));
+    assert_eq!(
+        library.annotations(identity.document, true).unwrap().len(),
+        3
+    );
+
+    // Another document of the library may have the same one: it gets a UUID of its own.
+    let other_path = fixture.write("outro.pdf", &pdf(9));
+    fixture.settle();
+    let other = fixture.identity(&other_path);
+    let moved = ImportedAnnotation {
+        new: musaeum_library::NewAnnotation {
+            document_id: other.document,
+            revision_id: other.revision,
+            ..traveller.new.clone()
+        },
+        ..traveller
+    };
+    let there = library
+        .import_annotations(other.document, other.revision, vec![moved.clone()])
+        .unwrap();
+    assert_eq!(there.added.len(), 1);
+    assert_ne!(there.added[0].uuid, elsewhere);
+    assert_eq!(there.added[0].pdf_nm.as_deref(), Some(elsewhere));
+    let twice = library
+        .import_annotations(other.document, other.revision, vec![moved])
+        .unwrap();
+    assert_eq!(twice.already, 1, "known there by its name");
+
+    // Nameless, or for another document: refused, nothing written.
+    let nameless = ImportedAnnotation {
+        new: musaeum_library::NewAnnotation {
+            pdf_nm: None,
+            ..anchored_highlight(identity.document, identity.revision)
+        },
+        uuid: None,
+        created_at: None,
+        updated_at: None,
+    };
+    assert!(
+        library
+            .import_annotations(identity.document, identity.revision, vec![nameless])
+            .is_err()
+    );
+    assert!(
+        library
+            .import_annotations(other.document, other.revision, vec![imported("x", None)])
+            .is_err()
     );
 }

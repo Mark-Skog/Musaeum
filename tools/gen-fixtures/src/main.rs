@@ -1,7 +1,7 @@
 //! Command line for the fixture generator.
 //!
 //! ```text
-//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow|ocr]
+//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow|ocr|annot]
 //! ```
 
 use std::error::Error;
@@ -51,6 +51,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             gen_fixtures::ocr::truth_json(&book),
         )?;
         report(&path, started)?;
+        return Ok(());
+    }
+
+    if only.as_deref() == Some("annot") {
+        let started = Instant::now();
+        gen_fixtures::annot::write_annot_fixtures(&out)?;
+        for name in ["annot-classic.pdf", "annot-streams.pdf", "annot-hybrid.pdf"] {
+            report(&out.join(name), started)?;
+        }
         return Ok(());
     }
 

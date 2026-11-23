@@ -18,6 +18,7 @@ members = [
     "crates/musaeum-tesseract",
     "crates/musaeum-ocr",
     "crates/musaeum-ocr-worker",
+    "crates/musaeum-pdf-annot",
     "apps/cli",
     "apps/desktop/src-tauri",
     "tools/corpus-check",
@@ -47,6 +48,7 @@ musaeum-shm = { path = "crates/musaeum-shm" }
 musaeum-vision = { path = "crates/musaeum-vision" }
 musaeum-tesseract = { path = "crates/musaeum-tesseract" }
 musaeum-ocr = { path = "crates/musaeum-ocr" }
+musaeum-pdf-annot = { path = "crates/musaeum-pdf-annot" }
 musaeum-worker = { path = "crates/musaeum-worker" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 

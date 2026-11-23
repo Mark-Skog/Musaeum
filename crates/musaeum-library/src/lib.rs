@@ -42,8 +42,9 @@ mod taxonomy;
 mod thumbnails;
 
 pub use annotations::{
-    AnchorState, Annotation, AnnotationEdit, AnnotationHit, AnnotationKind, NewAnnotation,
-    QuoteSource, Reanchoring, Segment, SegmentUpdate, Selector, SelectorKind,
+    AnchorState, Annotation, AnnotationEdit, AnnotationHit, AnnotationKind, ImportOutcome,
+    ImportedAnnotation, NewAnnotation, QuoteSource, Reanchoring, Segment, SegmentUpdate, Selector,
+    SelectorKind,
 };
 pub use batch::{BatchEdit, BatchSummary, MAX_BATCH, Shared};
 pub use calibre::{

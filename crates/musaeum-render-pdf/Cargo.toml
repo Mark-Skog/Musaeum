@@ -7,9 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "musaeum-pdf-annots"
+path = "src/annots_main.rs"
+
 [dependencies]
 memmap2.workspace = true
 musaeum-ingest.workspace = true
+musaeum-pdf-annot.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true
 musaeum-worker.workspace = true

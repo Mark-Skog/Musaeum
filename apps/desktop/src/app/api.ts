@@ -525,7 +525,47 @@ export const api = {
     invoke<AnnotationHit[]>('search_annotations', { document, query, limit: 500 }),
   /** Opens a book's web link in the default browser; the host checks the address again. */
   openInBrowser: (url: string) => invoke<void>('open_in_browser', { url }),
+  /**
+   * Writes a copy of the open PDF with its annotations in it, where the person chooses in the
+   * system's dialog (a test gives the path). The book itself is never written. `null`: cancelled.
+   */
+  pdfAnnotationsExport: (session: number, target?: string) =>
+    invoke<PdfExportReport | null>('pdf_annotations_export', { session, target: target ?? null }),
+  /** Brings the annotations of a PDF the person chooses into the open book. */
+  pdfAnnotationsImport: (session: number, source?: string) =>
+    invoke<PdfImportReport | null>('pdf_annotations_import', { session, source: source ?? null }),
+  xfdfExport: (session: number, target?: string) =>
+    invoke<PdfExportReport | null>('xfdf_export', { session, target: target ?? null }),
+  xfdfImport: (session: number, source?: string) =>
+    invoke<PdfImportReport | null>('xfdf_import', { session, source: source ?? null }),
+  /** Under a test: what PDFium reads in a file. */
+  e2ePdfAnnotations: (path: string) => invoke<unknown>('e2e_pdf_annotations', { path }),
 };
+
+/** What an export to PDF or XFDF wrote. */
+export interface PdfExportReport {
+  path: string;
+  /** Musaeum's annotations written, and the PDF annotations they became. */
+  annotations: number;
+  written: number;
+  /** Orphans and notes about the whole document, which have no place on a page. */
+  leftOut: number;
+  /** Annotations the PDF already holds, which came from it: left as they are in the copy. */
+  alreadyInPdf: number;
+  bytes: number;
+}
+
+/** What an import from PDF or XFDF brought. */
+export interface PdfImportReport {
+  path: string;
+  added: number;
+  /** Already in the book, by their name, the deleted ones too. */
+  already: number;
+  /** Left out, by why: a kind not kept, a reply, hidden, unreadable. */
+  skipped: Record<string, number>;
+  /** An XFDF file that says it is about another PDF. */
+  otherDocument: boolean;
+}
 
 /** Whether the default browser can be given this address: `http` and `https` only. */
 export function isWebAddress(href: string): boolean {

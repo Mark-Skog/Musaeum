@@ -184,6 +184,32 @@ function placeOf(entry: Entry, pageCount: number | null): string {
   return progression !== null ? `${Math.round(progression * 100)}%` : '';
 }
 
+/** What the panel offers for a PDF: its own annotations, in and out. */
+export interface PdfActions {
+  /** The action running, if one is. */
+  busy: PdfAction | null;
+  /** What the last one did. */
+  report: { text: string; failed: boolean } | null;
+  run(action: PdfAction): void;
+}
+
+export type PdfAction = 'export-pdf' | 'import-pdf' | 'export-xfdf' | 'import-xfdf';
+
+const PDF_ACTIONS: { id: PdfAction; label: string; busy: string }[] = [
+  { id: 'export-pdf', label: 'Exportar PDF com anotações (cópia)…', busy: 'Gravando e conferindo a cópia…' },
+  { id: 'import-pdf', label: 'Importar anotações do PDF…', busy: 'Lendo as anotações do PDF…' },
+  { id: 'export-xfdf', label: 'Exportar XFDF…', busy: 'Gravando o XFDF…' },
+  { id: 'import-xfdf', label: 'Importar XFDF…', busy: 'Lendo o XFDF…' },
+];
+
+/** A color as the reader keeps it, as CSS: a palette name's swatch, or the color given. */
+export function swatchOf(color: string): string {
+  if (color.startsWith('#')) {
+    return color;
+  }
+  return COLORS.find((known) => known.id === color)?.swatch ?? '#ffe36b';
+}
+
 export interface InspectorProps {
   documentId: number;
   entries: Entry[];
@@ -194,10 +220,12 @@ export interface InspectorProps {
   onClose(): void;
   /** A click on a web link in a note. */
   onLink?: LinkHandler;
+  /** For a PDF: its own annotations, in and out. */
+  pdf?: PdfActions;
 }
 
 /** The book's annotations, by where they are: filtered, searched, and each a way back to its place. */
-export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRemove, onClose, onLink }: InspectorProps): React.JSX.Element {
+export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRemove, onClose, onLink, pdf }: InspectorProps): React.JSX.Element {
   const [query, setQuery] = useState('');
   const [found, setFound] = useState<Set<string> | null>(null);
   const [colors, setColors] = useState<Set<string>>(new Set());
@@ -307,7 +335,7 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
           {shown.map((entry) => {
             const { annotation } = entry;
             const state = STATE_LABEL[annotation.anchorState];
-            const swatch = COLORS.find((color) => color.id === annotation.color)?.swatch ?? '#ffe36b';
+            const swatch = swatchOf(annotation.color);
             const canJump = entry.marks.length > 0 || entry.ranges.length > 0;
             return (
               <li key={annotation.uuid} className={`annotation-item ${annotation.anchorState}`} data-annotation={annotation.uuid}>
@@ -346,6 +374,35 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
           })}
         </ol>
       )}
+      {pdf !== undefined ? (
+        <section className="pdf-exchange" aria-label="Anotações do PDF">
+          <Heading level={3} className="pdf-exchange-heading">
+            No arquivo PDF
+          </Heading>
+          <div className="pdf-exchange-actions">
+            {PDF_ACTIONS.map((action) => (
+              <Button
+                key={action.id}
+                id={`pdf-${action.id}`}
+                className="button small"
+                isDisabled={pdf.busy !== null}
+                onPress={() => pdf.run(action.id)}
+              >
+                {action.label}
+              </Button>
+            ))}
+          </div>
+          <p
+            className={`pdf-exchange-status${pdf.report?.failed === true ? ' failed' : ''}`}
+            role="status"
+            data-busy={pdf.busy ?? ''}
+          >
+            {pdf.busy !== null
+              ? PDF_ACTIONS.find((action) => action.id === pdf.busy)?.busy
+              : (pdf.report?.text ?? 'O livro na biblioteca nunca é alterado: a exportação grava uma cópia nova.')}
+          </p>
+        </section>
+      ) : null}
     </aside>
   );
 }

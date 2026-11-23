@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHARS_MAGIC,
+  CHARS_VERSION,
   decodeChars,
   GENERATED,
   hitTest,
@@ -34,7 +35,7 @@ function encode(lines: string[], rotation = 0, gapAfter: number[] = []): ArrayBu
   const buffer = new ArrayBuffer(16 + glyphs.length * 24);
   const view = new DataView(buffer);
   view.setUint32(0, CHARS_MAGIC, true);
-  view.setUint32(4, 1, true);
+  view.setUint32(4, CHARS_VERSION, true);
   view.setUint32(8, glyphs.length, true);
   view.setUint32(12, rotation, true);
   glyphs.forEach((glyph, index) => {

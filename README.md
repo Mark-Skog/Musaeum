@@ -23,7 +23,9 @@ texto e em fluidos, ancorados de três jeitos e achados de novo depois de renome
 arquivo, com o Inspetor de Anotações e busca; e, nos livros escaneados, as linhas de texto achadas na
 imagem da página, retas, curvas ou giradas a 45° e 90°, para selecionar por elas, ou marcar uma caixa
 ou um traço à mão, e o texto sob cada marca lido por OCR (Tesseract, num processo isolado), para
-copiar e buscar como num livro digital. Por baixo, o normalizador e o motor de posição (EPUB CFI e
+copiar e buscar como num livro digital; e, num PDF, as anotações do Musaeum levadas a uma cópia do
+arquivo como anotações do próprio PDF, que o Acrobat e o PDFium mostram, as anotações de um PDF trazidas
+para a biblioteca sem duplicar, e as duas coisas também em XFDF. Por baixo, o normalizador e o motor de posição (EPUB CFI e
 Locator) da Fase 3, o pipeline de tiles da Fase 2 e a biblioteca da Fase 1, com SQLite, identidade de
 arquivos, indexador, diário de operações em disco e uma CLI.
 
@@ -53,7 +55,10 @@ crates/
   musaeum-sandbox/     Token restrito, mitigações, job object e estação de janelas isolada
   musaeum-worker/      O que todo worker de render compartilha: handshake, handles, laço de
                        controle, cancelamento, e o arnês que os testes usam
-  musaeum-render-pdf/  Processo isolado que rasteriza tiles com PDFium
+  musaeum-render-pdf/  Processo isolado que rasteriza tiles com PDFium, e o worker das anotações
+                       do PDF (musaeum-pdf-annots.exe)
+  musaeum-pdf-annot/   As anotações do próprio PDF: a estrutura do arquivo lida como um leitor a lê,
+                       a atualização incremental de uma cópia, o XFDF, e a conversa com o worker
   musaeum-archive/     libarchive vendorizada, só a leitura de ZIP, RAR e RAR5
   musaeum-render-raster/  Processo isolado que desenha quadrinhos (CBZ, CBR)
   musaeum-djvu/        DjVuLibre vendorizada, atrás de uma ponte em C++
@@ -108,6 +113,7 @@ tools/
   e2e-alpha.mjs        Testa o Alpha na janela real: biblioteca, leitor e a posição em cada formato
   e2e-taxonomy.mjs     Testa na janela real a organização da biblioteca e o painel de detalhes
   e2e-beta.mjs         Testa na janela real a Beta: vários livros, revisão e fusão, texto, Calibre
+  e2e-pdf-annotations.mjs  Testa na janela real as anotações levadas ao PDF e trazidas dele, e o XFDF
   reader-check.mjs     Testa o leitor fluido sem janela, num Chrome headless, em livros normalizados
   lib/cdp.mjs          O que os testes de janela usam para falar com o WebView2 pelo CDP
   lib/clipboard.mjs    A área de transferência nos testes de janela, guardada antes e reposta depois
@@ -307,6 +313,29 @@ Três regras valem para tudo isso:
   tile visível precisa do worker, cada página ganha uma miniatura de até 256 px em
   `cache\thumbnails\v1\ab\<hash>\<página>.jpg`, pelo hash BLAKE3 do arquivo (`ab` são os dois
   primeiros dígitos dele).
+
+## As anotações do próprio PDF
+
+No painel *Anotações* de um PDF, a seção *No arquivo PDF* tem quatro ações:
+
+- **Exportar PDF com anotações (cópia)…** grava um PDF novo onde a pessoa escolher: os bytes do livro,
+  todos, sem mudar nenhum, e depois deles uma atualização incremental com as anotações como anotações do
+  próprio PDF (`/Highlight`, `/Underline`, `/Square`, `/Ink`, `/Text`), com a nota, a cor, as datas, o
+  autor e o `/NM`, que é o UUID da anotação, e a aparência desenhada como o leitor a desenha. Antes de a
+  cópia tomar o nome, o PDFium a lê e tem de achar cada anotação no lugar dela e tudo o que o livro já
+  tinha. O livro da biblioteca nunca é escrito, nem nenhum outro arquivo dela.
+- **Importar anotações do PDF…** traz as anotações de um PDF com as mesmas páginas: o próprio livro ou uma
+  cópia anotada em outro programa. O que a obra já tem não vem de novo.
+- **Exportar XFDF…** e **Importar XFDF…**: o mesmo pelo XML do Acrobat, lido por um leitor estrito, que
+  recusa `<!DOCTYPE>` e qualquer entidade que não seja do XML.
+
+Todo PDF e todo XFDF é lido no worker isolado `musaeum-pdf-annots.exe`, no mesmo sandbox do render de
+PDF. PDFs cifrados têm as anotações lidas, mas não recebem novas. As decisões estão no ADR 0012.
+
+```powershell
+node tools\e2e-pdf-annotations.mjs
+target\release\corpus-check.exe --pdf-annots --corpus D:\Livros --work D:\trabalho --out D:\trabalho\report.json
+```
 
 ## Validar num acervo real
 

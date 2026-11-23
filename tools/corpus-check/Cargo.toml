@@ -12,6 +12,7 @@ blake3.workspace = true
 gen-fixtures.workspace = true
 musaeum-core.workspace = true
 musaeum-ocr.workspace = true
+musaeum-pdf-annot.workspace = true
 musaeum-flow.workspace = true
 musaeum-ingest.workspace = true
 musaeum-library.workspace = true

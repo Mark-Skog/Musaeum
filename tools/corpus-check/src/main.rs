@@ -7,6 +7,7 @@
 //! corpus-check --lines-synthetic [--out REPORT.json] [--pages N]
 //! corpus-check --ocr-book --work DIR [--out REPORT.json]
 //! corpus-check --inspect BOOK.pdf --at 14,78,100-120 --corpus DIR --work DIR [--ocr] [--out REPORT.json]
+//! corpus-check --pdf-annots --corpus DIR --work DIR [--out REPORT.json] [--sample N]
 //! ```
 //!
 //! The collection is only ever read. Every file and folder in it, with its size, dates and
@@ -36,12 +37,17 @@
 //!
 //! With `--inspect`, the detector and the OCR on chosen pages of one book of the collection, for
 //! looking at (see `inspect.rs`).
+//!
+//! With `--pdf-annots`, every PDF's own annotations read by the sandboxed annotations worker, and
+//! copies of a sample with annotations added, written into the work folder and read back by
+//! PDFium (see `pdf_annots.rs`).
 
 mod content;
 mod flow;
 mod inspect;
 mod lines;
 mod ocr;
+mod pdf_annots;
 mod render;
 mod snapshot;
 
@@ -76,6 +82,7 @@ struct Options {
     dump: Option<PathBuf>,
     /// With `--inspect`: the book, and its pages from 0.
     inspect: Option<(PathBuf, Vec<u32>)>,
+    pdf_annots: bool,
 }
 
 fn parse_options() -> Result<Options, String> {
@@ -94,6 +101,7 @@ fn parse_options() -> Result<Options, String> {
     let mut dump = None;
     let mut inspect_file = None;
     let mut inspect_pages = Vec::new();
+    let mut pdf_annots = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -110,6 +118,7 @@ fn parse_options() -> Result<Options, String> {
             "--skip-content" => skip_content = true,
             "--flow-only" => flow_only = true,
             "--lines" => lines = true,
+            "--pdf-annots" => pdf_annots = true,
             "--dump" => dump = Some(PathBuf::from(value()?)),
             "--lines-synthetic" => lines_synthetic = true,
             "--ocr-book" => ocr_book = true,
@@ -149,6 +158,7 @@ fn parse_options() -> Result<Options, String> {
             pages_per_file,
             dump,
             inspect: None,
+            pdf_annots,
         });
     }
     let corpus = std::fs::canonicalize(corpus.ok_or("--corpus is required")?)
@@ -174,6 +184,7 @@ fn parse_options() -> Result<Options, String> {
         pages_per_file,
         dump,
         inspect: inspect_file.map(|file| (file, inspect_pages)),
+        pdf_annots,
     })
 }
 
@@ -232,6 +243,13 @@ fn main() {
             pages,
             options.read_lines,
             options.out.as_deref(),
+        )
+    } else if options.pdf_annots {
+        pdf_annots::run_pdf_annots(
+            &options.corpus,
+            &options.work,
+            options.out.as_deref(),
+            options.sample,
         )
     } else if options.ocr_book {
         ocr::run_ocr_book(&options.work, options.out.as_deref())

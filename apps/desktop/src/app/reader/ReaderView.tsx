@@ -49,12 +49,14 @@ import {
   type FlowAnnotationView,
   type FlowPosition,
   type NavPoint,
+  type PdfExportReport,
+  type PdfImportReport,
   type ReaderTarget,
   type RegionText,
 } from '../api';
 import { formatName } from '../library/LibraryView';
 import { FlowReader, type Relocation } from './flow-reader';
-import { Inspector, NoteEditor, type ScreenRect, SelectionToolbar, UndoToast } from './annotations/AnnotationUi';
+import { Inspector, NoteEditor, type PdfAction, type PdfActions, type ScreenRect, SelectionToolbar, UndoToast } from './annotations/AnnotationUi';
 import { AnnotationStore, draft, type Entry } from './annotations/store';
 
 /** What the reader has selected now, in either kind of book, with its box on the screen. */
@@ -99,6 +101,54 @@ export interface ReaderProbe {
   /** The annotations shown, and what is selected. */
   annotations: Entry[];
   selection: ReaderSelection | null;
+  /** For a PDF: its own annotations in and out, with a path a test gives instead of the dialog. */
+  pdf: ((action: PdfAction, path?: string) => Promise<PdfOutcome>) | null;
+  /** What the panel says about the last of them. */
+  pdfReport: { text: string; failed: boolean } | null;
+}
+
+/** What one of a PDF's actions did: its report, nothing when cancelled, or why it failed. */
+export type PdfOutcome = { ok: true; report: PdfExportReport | PdfImportReport | null } | { ok: false; error: string };
+
+const SKIPPED_LABEL: Record<string, string> = {
+  resposta: 'respostas',
+  oculta: 'ocultas',
+  '(ilegível)': 'ilegíveis',
+  '(broken)': 'ilegíveis',
+  '(no such page)': 'em páginas que o livro não tem',
+  'página que o livro não tem': 'em páginas que o livro não tem',
+  StrikeOut: 'tachados',
+  Circle: 'círculos',
+  Stamp: 'carimbos',
+  FileAttachment: 'anexos',
+  Line: 'linhas',
+  Polygon: 'polígonos',
+  PolyLine: 'polilinhas',
+  Caret: 'marcas de inserção',
+  Sound: 'sons',
+  Redact: 'tarjas',
+};
+
+function importText(report: PdfImportReport): string {
+  const parts = [`${report.added} ${report.added === 1 ? 'anotação trazida' : 'anotações trazidas'}`];
+  if (report.already > 0) {
+    parts.push(`${report.already} já ${report.already === 1 ? 'estava' : 'estavam'} no livro`);
+  }
+  const skipped = Object.entries(report.skipped).filter(([, count]) => Number(count) > 0);
+  if (skipped.length > 0) {
+    parts.push(`deixadas de fora: ${skipped.map(([why, count]) => `${count} ${SKIPPED_LABEL[why] ?? why}`).join(', ')}`);
+  }
+  let text = parts.join('; ') + '.';
+  if (report.otherDocument) {
+    text += ' O XFDF diz ser de outro PDF: confira se as anotações caíram no lugar.';
+  }
+  return text;
+}
+
+function exportText(report: PdfExportReport, what: string): string {
+  const left = report.leftOut > 0 ? ` ${report.leftOut} sem lugar na página (órfãs ou do livro todo) ficaram de fora.` : '';
+  const kept = report.alreadyInPdf > 0 ? ` ${report.alreadyInPdf} já ${report.alreadyInPdf === 1 ? 'estava' : 'estavam'} no próprio PDF e não ${report.alreadyInPdf === 1 ? 'foi gravada' : 'foram gravadas'} de novo.` : '';
+  return `${what} com ${report.annotations} ${report.annotations === 1 ? 'anotação' : 'anotações'} salvo em ${report.path}.${left}${kept}`;
 }
 
 function lineHeightLabel(value: number): string {
@@ -308,6 +358,64 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
   const [tool, setTool] = useState<Tool>('text');
   const [snap, setSnap] = useState(true);
   const kind = book.layout;
+  const [pdfBusy, setPdfBusy] = useState<PdfAction | null>(null);
+  const [pdfReport, setPdfReport] = useState<{ text: string; failed: boolean } | null>(null);
+  const isPdf = kind === 'fixed' && book.format.toLowerCase() === 'pdf';
+
+  /** One of a PDF's actions: the dialog asks where, unless a test gave the path. */
+  const pdfAction = useCallback(
+    async (action: PdfAction, path?: string): Promise<PdfOutcome> => {
+      const session = fixed.current?.session;
+      if (session === null || session === undefined) {
+        return { ok: false, error: 'o documento ainda não está aberto' };
+      }
+      setPdfBusy(action);
+      setPdfReport(null);
+      try {
+        let report: PdfExportReport | PdfImportReport | null;
+        switch (action) {
+          case 'export-pdf': {
+            const written = await api.pdfAnnotationsExport(session.id, path);
+            report = written;
+            if (written !== null) {
+              setPdfReport({ text: exportText(written, 'PDF'), failed: false });
+            }
+            break;
+          }
+          case 'export-xfdf': {
+            const written = await api.xfdfExport(session.id, path);
+            report = written;
+            if (written !== null) {
+              setPdfReport({ text: exportText(written, 'XFDF'), failed: false });
+            }
+            break;
+          }
+          case 'import-pdf':
+          case 'import-xfdf': {
+            const brought = action === 'import-pdf' ? await api.pdfAnnotationsImport(session.id, path) : await api.xfdfImport(session.id, path);
+            report = brought;
+            if (brought !== null) {
+              store.load((await api.fixedAnnotations(session.id)).map(fixedEntry));
+              setPdfReport({ text: importText(brought), failed: false });
+            }
+            break;
+          }
+        }
+        return { ok: true, report };
+      } catch (reason: unknown) {
+        const message = String(reason instanceof Error ? reason.message : reason);
+        setPdfReport({ text: `Não foi possível: ${message}`, failed: true });
+        return { ok: false, error: message };
+      } finally {
+        setPdfBusy(null);
+      }
+    },
+    [store],
+  );
+  const pdfActions = useMemo<PdfActions | undefined>(
+    () => (isPdf ? { busy: pdfBusy, report: pdfReport, run: (action) => void pdfAction(action) } : undefined),
+    [isPdf, pdfBusy, pdfReport, pdfAction],
+  );
 
   const updateProbe = useCallback(() => {
     if (probe !== undefined) {
@@ -321,9 +429,11 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         outline,
         annotations: entries,
         selection,
+        pdf: isPdf ? pdfAction : null,
+        pdfReport,
       };
     }
-  }, [probe, kind, book.documentId, ready, error, outline, entries, selection]);
+  }, [probe, kind, book.documentId, ready, error, outline, entries, selection, isPdf, pdfAction, pdfReport]);
   useEffect(updateProbe, [updateProbe]);
 
   // The typography chosen before, for every flowing book.
@@ -1001,6 +1111,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
             onRemove={(target) => void removeEntry(target.annotation.uuid)}
             onClose={() => setPanelOpen(false)}
             onLink={setLink}
+            pdf={pdfActions}
           />
         ) : null}
         {!ready && error === null ? <div className="reader-loading">Abrindo…</div> : null}

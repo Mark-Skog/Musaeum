@@ -527,6 +527,7 @@ dependencies = [
  "musaeum-ingest",
  "musaeum-library",
  "musaeum-ocr",
+ "musaeum-pdf-annot",
  "musaeum-sandbox",
  "musaeum-shm",
  "musaeum-vision",
@@ -2354,6 +2355,7 @@ dependencies = [
  "musaeum-ingest",
  "musaeum-library",
  "musaeum-ocr",
+ "musaeum-pdf-annot",
  "musaeum-sandbox",
  "musaeum-shm",
  "musaeum-vision",
@@ -2361,6 +2363,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "uuid",
  "webview2-com",
  "windows",
  "windows-sys 0.61.2",
@@ -2456,6 +2459,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "musaeum-pdf-annot"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "flate2",
+ "gen-fixtures",
+ "musaeum-sandbox",
+ "musaeum-shm",
+ "quick-xml",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "musaeum-render-djvu"
 version = "0.0.1"
 dependencies = [
@@ -2475,6 +2492,7 @@ dependencies = [
  "memmap2",
  "musaeum-core",
  "musaeum-ingest",
+ "musaeum-pdf-annot",
  "musaeum-sandbox",
  "musaeum-shm",
  "musaeum-vision",

@@ -18,12 +18,14 @@ musaeum-fs.workspace = true
 musaeum-ingest.workspace = true
 musaeum-library.workspace = true
 musaeum-ocr.workspace = true
+musaeum-pdf-annot.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true
 musaeum-vision.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Must stay on the versions that wry uses, or the COM types will not line up.
@@ -40,6 +42,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
+    "Win32_Storage_FileSystem",
     "Win32_System_Threading",
 ] }
 
