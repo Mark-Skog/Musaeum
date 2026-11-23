@@ -30,7 +30,7 @@ use crate::session::AppState;
 /// Whole documents kept parsed, for turning positions into Locators without parsing again.
 const KEPT_DOCUMENTS: usize = 4;
 /// Parsing and locating walk trees as deep as a document nests.
-const STACK: usize = 32 << 20;
+pub const STACK: usize = 32 << 20;
 
 /// A normalized book, open in the reader.
 pub struct FlowBook {
@@ -57,21 +57,7 @@ impl FlowBook {
                 return Ok(document);
             }
         }
-        let info = self
-            .manifest
-            .documents
-            .get(index)
-            .ok_or_else(|| format!("the book has no document {index}"))?;
-        let mut parts = Vec::with_capacity(info.parts.len());
-        for part in &info.parts {
-            let text = std::fs::read_to_string(self.dir.join(&part.href))
-                .map_err(|error| format!("{}: {error}", part.href))?;
-            let dom = xml::parse(&text, &xml::Limits::default())
-                .map_err(|error| format!("{}: {error}", part.href))?;
-            parts.push((part.start.clone(), dom));
-        }
-        let document =
-            Arc::new(LogicalDocument::assemble(index, parts).map_err(|error| error.to_string())?);
+        let document = Arc::new(assemble(&self.dir, &self.manifest, index)?);
         let mut kept = self
             .documents
             .lock()
@@ -131,6 +117,28 @@ impl musaeum_library::anchoring::flow::Documents for FlowBook {
     }
 }
 
+/// One whole document of a normalized book, put back together from its parts. Deep documents need
+/// a large stack: run it on [`on_large_stack`], or on a thread made as large.
+pub fn assemble(
+    dir: &std::path::Path,
+    manifest: &Manifest,
+    index: usize,
+) -> Result<LogicalDocument, String> {
+    let info = manifest
+        .documents
+        .get(index)
+        .ok_or_else(|| format!("the book has no document {index}"))?;
+    let mut parts = Vec::with_capacity(info.parts.len());
+    for part in &info.parts {
+        let text = std::fs::read_to_string(dir.join(&part.href))
+            .map_err(|error| format!("{}: {error}", part.href))?;
+        let dom = xml::parse(&text, &xml::Limits::default())
+            .map_err(|error| format!("{}: {error}", part.href))?;
+        parts.push((part.start.clone(), dom));
+    }
+    LogicalDocument::assemble(index, parts).map_err(|error| error.to_string())
+}
+
 /// Runs `work` on a thread with a stack deep enough for any document the normalizer lets through.
 pub fn on_large_stack<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -160,7 +168,7 @@ fn hash_of(path: &std::path::Path) -> Result<Hash, String> {
 }
 
 /// The normalized book of a file, from the cache, or normalized now in the worker and kept.
-fn normalized(
+pub fn normalized(
     library: &Library,
     client: &Mutex<Option<IngestClient>>,
     path: &std::path::Path,
@@ -267,6 +275,8 @@ pub fn open_flow(
     args: OpenFlowArgs,
 ) -> Result<FlowInfo, String> {
     let started = Instant::now();
+    // A book open in the reader: the full-text indexer gives way.
+    state.shelf.set_reading(true);
     let library = state.shelf.library().ok_or("there is no library open")?;
     let file = library
         .book_file(args.document)
@@ -446,8 +456,9 @@ pub fn locate_flow(
 
 /// Closes the book in the reader, whichever kind it is.
 #[tauri::command(async)]
-pub fn close_book(books: State<'_, BookState>) {
+pub fn close_book(state: State<'_, AppState>, books: State<'_, BookState>) {
     book::close(&books);
+    state.shelf.set_reading(false);
 }
 
 #[cfg(test)]

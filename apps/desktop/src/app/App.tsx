@@ -1,20 +1,25 @@
 /**
  * The app: the library, and a book open in the reader over it. Going back to the library closes
- * the book, keeping where the reader was, and leaves the library as it was left.
+ * the book, keeping where the reader was, and shows the library as it was left: the same search,
+ * in the titles or the text, the same side chosen, the same view.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { StartupOptions } from '../protocol';
-import { api, type BookRow } from './api';
-import { LibraryView } from './library/LibraryView';
+import { api, type BookRow, type ReaderTarget, type SelectedBook } from './api';
+import { FRESH_LIBRARY, type LibraryMemory, LibraryView } from './library/LibraryView';
 import { useLibrary } from './library/use-books';
 import { type ReaderProbe, ReaderView } from './reader/ReaderView';
 
 export function App({ options }: { options: StartupOptions }): React.JSX.Element {
   const library = useLibrary();
   const [book, setBook] = useState<BookRow | null>(null);
+  const [target, setTarget] = useState<ReaderTarget | null>(null);
+  const memory = useRef<LibraryMemory>(FRESH_LIBRARY);
+  const chosen = useRef<SelectedBook[]>([]);
+  const [calibreRequest, setCalibreRequest] = useState<{ folder: string; at: number } | null>(null);
   const rows = useRef<{ rows: BookRow[]; total: number; text: string; folder: number | null }>({
     rows: [],
     total: 0,
@@ -31,14 +36,21 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     [],
   );
 
+  const onSelection = useCallback((books: SelectedBook[]) => {
+    chosen.current = books;
+  }, []);
+
   const back = useCallback(() => {
     probe.current = null;
     setBook(null);
+    setTarget(null);
+    setCalibreRequest(null);
     library.refresh();
   }, [library]);
 
-  const open = useCallback((next: BookRow) => {
+  const open = useCallback((next: BookRow, at?: ReaderTarget) => {
     opened.current++;
+    setTarget(at ?? null);
     setBook(next);
   }, []);
 
@@ -105,6 +117,21 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       taxonomy: () => api.taxonomy(),
       /** A work as the editor reads it. */
       workMetadata: (work: number) => api.workMetadata(work),
+      /** The books chosen in the library, as the details panel edits them. */
+      selection: () => chosen.current,
+      /** Opens the Calibre import for this folder, as the folder dialog would have given it. */
+      openCalibre: (path: string) => setCalibreRequest({ folder: path, at: Date.now() }),
+      /** What waits for review: suggestions and works that may be one. */
+      review: () => api.review(),
+      fulltextStatus: () => api.fulltextStatus(),
+      fulltextSearch: (query: string) => api.fulltextSearch(query),
+      /** Where the book open now was asked to be shown, if at a match. */
+      target: () => target,
+      /** Where a match of the text search is, as the flowing reader names places. */
+      flowPlace: (document: number, unit: number, position: number, length: number) => api.fulltextFlowPlace(document, unit, position, length),
+      /** Marks a range of the flowing book open now with a note, as the selection toolbar would. */
+      annotateFlow: (start: string, end: string, note: string) =>
+        book === null ? Promise.reject(new Error('no book is open')) : api.createFlowAnnotation(book.documentId, start, end, { kind: 'highlight', color: 'yellow', note }),
       /** Shows a page of the open fixed document, as an entry of its outline does. */
       goToPage: (page: number) => probe.current?.fixed?.send({ type: 'go-to-page', page }),
       resizeWindow: (width: number, height: number) => invoke('e2e_resize_window', { width, height }),
@@ -133,7 +160,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         dpr: devicePixelRatio,
       }),
     };
-  }, [options.e2e, book, library]);
+  }, [options.e2e, book, library, target]);
 
   return (
     <div className="app">
@@ -144,10 +171,13 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
           generation={library.generation}
           onChanged={library.refresh}
           onOpen={open}
+          memory={memory}
           onRows={onRows}
+          onSelection={onSelection}
+          calibreRequest={calibreRequest}
         />
       ) : (
-        <ReaderView key={`${book.documentId}-${opened.current}`} book={book} options={options} onBack={back} probe={probe} />
+        <ReaderView key={`${book.documentId}-${opened.current}`} book={book} options={options} onBack={back} probe={probe} target={target} />
       )}
     </div>
   );

@@ -21,6 +21,7 @@ import {
   Tag as Chip,
   TagGroup,
   TagList,
+  TextArea,
   TextField,
   ToggleButton,
 } from 'react-aria-components';
@@ -34,7 +35,7 @@ function Origin({ work, field }: { work: WorkMetadata; field: string }): React.J
   return label === null ? null : <span className={`origin origin-${work.provenance[field]}`}>{label}</span>;
 }
 
-function Picker({ label, value, options, onChange, className }: { label: string; value: string; options: [string, string][]; onChange(value: string): void; className?: string }): React.JSX.Element {
+export function Picker({ label, value, options, onChange, className }: { label: string; value: string; options: [string, string][]; onChange(value: string): void; className?: string }): React.JSX.Element {
   return (
     <Select className={className ?? 'picker'} selectedKey={value} onSelectionChange={(key) => onChange(String(key))} aria-label={label} data-picker={label}>
       <Button className="button select-button">
@@ -68,7 +69,7 @@ function ChipsInput({ combo, placeholder, onKeyDown }: { combo: RefObject<ComboS
 }
 
 /** Chips of what a work is in, each with a ×, and a box to add one by name. */
-function Chips({
+export function Chips({
   label,
   chosen,
   options,
@@ -382,6 +383,13 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
             <Picker label="Estado de leitura" value={draft.status} options={STATUSES} onChange={(status) => set('status', status)} />
           </div>
         </div>
+
+        <TextField className="field" value={draft.description} onChange={(description) => set('description', description)}>
+          <Label>
+            Sinopse <Origin work={work} field="description" />
+          </Label>
+          <TextArea className="text-input description" rows={4} data-field="description" />
+        </TextField>
 
         <div className="field" role="group" aria-label="Categorias">
           <span className="field-label">Categorias</span>

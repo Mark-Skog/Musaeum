@@ -57,8 +57,11 @@ memmap2 = "0.9"
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_7881"] }
 quick-xml = "0.42"
 # SQLite is compiled in, so the build decides its version and that FTS5 is there.
-rusqlite = { version = "0.41", features = ["backup", "bundled", "functions"] }
+rusqlite = { version = "0.41", features = ["backup", "bundled", "functions", "limits"] }
 serde = { version = "1", features = ["derive"] }
+# The full-text index of the books' contents (the plan: Tantivy for full text, BM25). Without its
+# default features: no zstd (a C library) and no stemmer, which would suit one language only.
+tantivy = { version = "=0.27.0", default-features = false, features = ["mmap", "lz4-compression"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }

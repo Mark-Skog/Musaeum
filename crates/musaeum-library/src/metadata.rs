@@ -40,6 +40,8 @@ pub const MAX_CREATORS: usize = 100;
 pub const MAX_IDENTIFIERS: usize = 32;
 /// The longest text of a custom field.
 pub const MAX_CUSTOM_TEXT: usize = 4000;
+/// The longest description of a work.
+pub const MAX_DESCRIPTION: usize = 100_000;
 
 /// Someone who made a work, and in what role.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +94,8 @@ pub struct WorkMetadata {
     pub identifiers: Vec<Identifier>,
     pub rating: Option<i64>,
     pub status: String,
+    /// What the book is about, as plain text.
+    pub description: Option<String>,
     pub categories: Vec<CategoryId>,
     pub tags: Vec<TagId>,
     /// The tags' names, in the same order.
@@ -99,7 +103,7 @@ pub struct WorkMetadata {
     pub collections: Vec<CollectionId>,
     pub custom: Vec<CustomValue>,
     /// Where each field it has a provenance for came from: `filename`, `embedded` (read from the
-    /// file) or `user`.
+    /// file), `calibre` (brought from a Calibre library) or `user`.
     pub provenance: BTreeMap<String, String>,
     pub documents: Vec<DocumentId>,
     /// The formats of its documents, as their files are named.
@@ -107,7 +111,7 @@ pub struct WorkMetadata {
 }
 
 /// For a field that may be set to nothing: absent leaves it, `null` clears it.
-fn present<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+pub(crate) fn present<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(deserializer).map(Some)
@@ -137,6 +141,9 @@ pub struct WorkEdit {
     /// `unread`, `reading`, `read` or `abandoned`.
     #[serde(default)]
     pub status: Option<String>,
+    /// What the book is about, as plain text.
+    #[serde(default, deserialize_with = "present")]
+    pub description: Option<Option<String>>,
     /// Exactly these categories.
     #[serde(default)]
     pub categories: Option<Vec<CategoryId>>,
@@ -149,6 +156,36 @@ pub struct WorkEdit {
     /// These custom fields' values; the others stay.
     #[serde(default)]
     pub custom: Option<Vec<CustomValue>>,
+}
+
+/// A description: its lines trimmed at the end, runs of blank lines made one, nothing for empty.
+pub(crate) fn clean_description(value: Option<String>) -> Result<Option<String>> {
+    let Some(text) = value else {
+        return Ok(None);
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut blank = 0;
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            blank += 1;
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str(if blank > 0 { "\n\n" } else { "\n" });
+        }
+        blank = 0;
+        out.push_str(line);
+    }
+    if out.is_empty() {
+        return Ok(None);
+    }
+    if out.chars().count() > MAX_DESCRIPTION {
+        return Err(Error::Refused(format!(
+            "a description is {MAX_DESCRIPTION} characters at most"
+        )));
+    }
+    Ok(Some(out))
 }
 
 /// A text field: trimmed, nothing for empty, `max` characters at most.
@@ -278,7 +315,7 @@ fn clean_credits(credits: Vec<Credit>) -> Result<Vec<Credit>> {
 }
 
 /// The custom field's value, checked against its kind, as it is kept.
-fn custom_sql(
+pub(crate) fn custom_sql(
     kind: &str,
     choices: &[String],
     value: &serde_json::Value,
@@ -358,7 +395,7 @@ pub(crate) fn set_credits(
     Ok(())
 }
 
-fn write_identifiers(
+pub(crate) fn write_identifiers(
     transaction: &Transaction<'_>,
     work: WorkId,
     identifiers: &[Identifier],
@@ -426,7 +463,8 @@ pub(crate) fn refresh_identifiers(transaction: &Transaction<'_>, work: WorkId) -
         )?
         .query_row([work], |row| row.get(0))
         .optional()?;
-    if origin.as_deref() == Some("user") {
+    // The person's list, or Calibre's, stays as it is.
+    if matches!(origin.as_deref(), Some("user" | "calibre")) {
         return Ok(());
     }
     let documents: Vec<(Option<String>, Option<String>)> = transaction
@@ -497,7 +535,7 @@ pub(crate) fn move_placement(
 pub(crate) fn work_metadata(connection: &Connection, work: WorkId) -> Result<WorkMetadata> {
     let row = connection
         .prepare_cached(
-            "SELECT title, series, series_position, year, language, rating, status
+            "SELECT title, series, series_position, year, language, rating, status, description
              FROM work WHERE id = ?1",
         )?
         .query_row([work], |row| {
@@ -509,11 +547,12 @@ pub(crate) fn work_metadata(connection: &Connection, work: WorkId) -> Result<Wor
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("there is no work {work}")))?;
-    let (title, series, series_position, year, language, rating, status) = row;
+    let (title, series, series_position, year, language, rating, status, description) = row;
     let list = |sql: &str| -> Result<Vec<i64>> {
         Ok(connection
             .prepare_cached(sql)?
@@ -583,6 +622,7 @@ pub(crate) fn work_metadata(connection: &Connection, work: WorkId) -> Result<Wor
         identifiers,
         rating,
         status,
+        description,
         categories: list(
             "SELECT x.category_id FROM work_category x JOIN category c ON c.id = x.category_id
              WHERE x.work_id = ?1 ORDER BY c.path",
@@ -602,7 +642,7 @@ pub(crate) fn work_metadata(connection: &Connection, work: WorkId) -> Result<Wor
 }
 
 /// Checks an edit before it reaches the writer: what can be judged without the database.
-fn check_edit(edit: WorkEdit) -> Result<WorkEdit> {
+pub(crate) fn check_edit(edit: WorkEdit) -> Result<WorkEdit> {
     let mut edit = edit;
     if let Some(title) = &edit.title {
         edit.title = Some(taxonomy::clean_name(title, 1000, "a work")?);
@@ -647,10 +687,17 @@ fn check_edit(edit: WorkEdit) -> Result<WorkEdit> {
     {
         return Err(Error::Refused(format!("{status} is not a status")));
     }
+    if let Some(description) = edit.description.take() {
+        edit.description = Some(clean_description(description)?);
+    }
     Ok(edit)
 }
 
-fn apply_edit(transaction: &Transaction<'_>, work: WorkId, edit: WorkEdit) -> Result<()> {
+pub(crate) fn apply_edit(
+    transaction: &Transaction<'_>,
+    work: WorkId,
+    edit: WorkEdit,
+) -> Result<()> {
     let now = now_ms();
     let exists: Option<i64> = transaction
         .prepare_cached("SELECT 1 FROM work WHERE id = ?1")?
@@ -690,6 +737,9 @@ fn apply_edit(transaction: &Transaction<'_>, work: WorkId, edit: WorkEdit) -> Re
     }
     if let Some(status) = edit.status {
         column("status", Value::Text(status))?;
+    }
+    if let Some(description) = edit.description {
+        column("description", text(description))?;
     }
     if let Some(credits) = &edit.creators {
         set_credits(transaction, work, credits)?;

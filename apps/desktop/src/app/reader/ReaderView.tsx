@@ -49,6 +49,7 @@ import {
   type FlowAnnotationView,
   type FlowPosition,
   type NavPoint,
+  type ReaderTarget,
   type RegionText,
 } from '../api';
 import { formatName } from '../library/LibraryView';
@@ -223,9 +224,11 @@ export interface ReaderViewProps {
   options: StartupOptions;
   onBack(): void;
   probe?: React.MutableRefObject<ReaderProbe | null>;
+  /** Where to show the book once it is open, instead of where the reading stopped: a match found in its text. */
+  target?: ReaderTarget | null;
 }
 
-export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): React.JSX.Element {
+export function ReaderView({ book, options, onBack, probe, target = null }: ReaderViewProps): React.JSX.Element {
   const surface = useRef<HTMLDivElement>(null);
   const fixed = useRef<FixedReader | null>(null);
   const flow = useRef<FlowReader | null>(null);
@@ -473,6 +476,35 @@ export function ReaderView({ book, options, onBack, probe }: ReaderViewProps): R
   }, [book.documentId, book.path, kind, options, style === null]);
 
   useEffect(updateProbe, [ready, error, updateProbe]);
+
+  // A match found in the book's text, shown once the book is open: on a page, at its word; in a
+  // flowing book, at the very place. Gone to once, so the person can read on from there.
+  const reached = useRef(false);
+  useEffect(() => {
+    if (!ready || target === null || reached.current) {
+      return;
+    }
+    reached.current = true;
+    if (target.kind === 'page') {
+      const session = fixed.current?.session;
+      const page = target.page;
+      if (session === null || session === undefined) {
+        return;
+      }
+      api
+        .fulltextPagePoint(session.id, page, target.position)
+        .then((point) => fixed.current?.send(point === null ? { type: 'go-to-page', page } : { type: 'go-to-point', page, u: point[0], v: point[1] }))
+        .catch(() => fixed.current?.send({ type: 'go-to-page', page }));
+      return;
+    }
+    api
+      .fulltextFlowPlace(target.document, target.unit, target.position, target.length)
+      .then((place) => {
+        flow.current?.goTo({ cfi: place.start });
+        flow.current?.focus();
+      })
+      .catch((reason: unknown) => setNotice(`O trecho encontrado não pôde ser mostrado: ${String(reason)}`));
+  }, [ready, target]);
 
   // The reader draws what the store has, every time it changes.
   useEffect(() => {

@@ -1142,29 +1142,31 @@ pub(crate) fn merge_empty_document(
 }
 
 /// A work left with no documents. Whatever a person set on it, and is not set on the work it turned
-/// out to be, moves there. If both have a value, the one that was already there stays.
-fn merge_empty_work(
+/// out to be, moves there, and so does what came from Calibre where the other has only what a
+/// file said. Otherwise the value that was already there stays.
+pub(crate) fn merge_empty_work(
     transaction: &Transaction<'_>,
     from: WorkId,
     into: WorkId,
     now: i64,
 ) -> Result<()> {
-    let user_fields: Vec<String> = {
+    let curated: Vec<(String, String)> = {
         let mut statement = transaction.prepare_cached(
-            "SELECT field FROM field_provenance WHERE work_id = ?1 AND origin = 'user'",
+            "SELECT field, origin FROM field_provenance
+             WHERE work_id = ?1 AND origin IN ('user', 'calibre')",
         )?;
         statement
-            .query_map([from], |row| row.get(0))?
+            .query_map([from], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    for field in user_fields {
+    for (field, origin) in curated {
         let taken: Option<String> = transaction
             .prepare_cached(
                 "SELECT origin FROM field_provenance WHERE work_id = ?1 AND field = ?2",
             )?
             .query_row(params![into, field], |row| row.get(0))
             .optional()?;
-        if taken.as_deref() == Some("user") {
+        if origin_rank(taken.as_deref()) >= origin_rank(Some(&origin)) {
             continue;
         }
         let column = match field.as_str() {
@@ -1175,6 +1177,7 @@ fn merge_empty_work(
             "series_position" => "series_position",
             "rating" => "rating",
             "status" => "status",
+            "description" => "description",
             "creators" => {
                 transaction
                     .prepare_cached("DELETE FROM work_creator WHERE work_id = ?1")?
@@ -1183,7 +1186,7 @@ fn merge_empty_work(
                     .prepare_cached("UPDATE work_creator SET work_id = ?2 WHERE work_id = ?1")?
                     .execute(params![from, into])?;
                 crate::search::refresh_entry(transaction, into)?;
-                set_provenance(transaction, into, &field, "user", now)?;
+                set_provenance(transaction, into, &field, &origin, now)?;
                 continue;
             }
             "identifiers" => {
@@ -1193,7 +1196,7 @@ fn merge_empty_work(
                 transaction
                     .prepare_cached("UPDATE work_identifier SET work_id = ?2 WHERE work_id = ?1")?
                     .execute(params![from, into])?;
-                set_provenance(transaction, into, &field, "user", now)?;
+                set_provenance(transaction, into, &field, &origin, now)?;
                 continue;
             }
             _ => continue,
@@ -1206,12 +1209,20 @@ fn merge_empty_work(
             ),
             params![from, into, now],
         )?;
-        set_provenance(transaction, into, &field, "user", now)?;
+        set_provenance(transaction, into, &field, &origin, now)?;
     }
     transaction
         .prepare_cached("DELETE FROM work_creator WHERE work_id = ?1")?
         .execute([from])?;
     crate::metadata::move_placement(transaction, from, into)?;
+    // A Calibre book brought in as this work is now the other, and a pair said to be two books
+    // has one of them gone.
+    transaction
+        .prepare_cached("UPDATE calibre_book SET work_id = ?2 WHERE work_id = ?1")?
+        .execute(params![from, into])?;
+    transaction
+        .prepare_cached("DELETE FROM work_pair_dismissed WHERE work_a = ?1 OR work_b = ?1")?
+        .execute([from])?;
     transaction
         .prepare_cached("DELETE FROM field_provenance WHERE work_id = ?1")?
         .execute([from])?;
@@ -1220,6 +1231,17 @@ fn merge_empty_work(
         .execute([from])?;
     crate::metadata::refresh_identifiers(transaction, into)?;
     Ok(())
+}
+
+/// How much a field's origin weighs against another's: the person's word, then Calibre's, then a
+/// file's.
+pub(crate) fn origin_rank(origin: Option<&str>) -> u8 {
+    match origin {
+        Some("user") => 3,
+        Some("calibre") => 2,
+        Some("embedded" | "filename") => 1,
+        _ => 0,
+    }
 }
 
 pub(crate) fn set_provenance(
@@ -1320,7 +1342,8 @@ pub(crate) fn apply_extraction(
         }
     }
 
-    let writable = |origin: Option<String>| origin.as_deref() != Some("user");
+    // What the person set here, or curated in Calibre, is never written over by a file.
+    let writable = |origin: Option<String>| !matches!(origin.as_deref(), Some("user" | "calibre"));
 
     let mut creators_changed = false;
     if !extracted.creators.is_empty() && writable(field_origin(transaction, work, "creators")?) {

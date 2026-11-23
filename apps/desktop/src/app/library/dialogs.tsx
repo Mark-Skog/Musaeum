@@ -33,7 +33,7 @@ export function reasonOf(error: unknown): string {
   return String(error).replace(/^Error:\s*/, '');
 }
 
-function Frame({
+export function Frame({
   title,
   onClose,
   onSubmit,

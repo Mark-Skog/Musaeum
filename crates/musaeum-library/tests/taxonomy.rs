@@ -674,6 +674,7 @@ fn what_a_person_edits_stays_however_the_file_is_read_again() {
                 ]),
                 rating: Some(Some(4)),
                 status: Some("reading".into()),
+                description: Some(Some("Um livro sobre fósseis.".into())),
                 categories: Some(vec![category]),
                 tags: Some(vec!["Clássico".into(), "clássico".into(), "Ensaio".into()]),
                 collections: Some(vec![collection]),
@@ -694,6 +695,10 @@ fn what_a_person_edits_stays_however_the_file_is_read_again() {
         assert_eq!(after.identifiers[1].scheme, "doi");
         assert_eq!(after.rating, Some(4));
         assert_eq!(after.status, "reading");
+        assert_eq!(
+            after.description.as_deref(),
+            Some("Um livro sobre fósseis.")
+        );
         assert_eq!(after.categories, [category]);
         assert_eq!(after.tags.len(), 2, "one tag per name, however written");
         assert_eq!(after.collections, [collection]);

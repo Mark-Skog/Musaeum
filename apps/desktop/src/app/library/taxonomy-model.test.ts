@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { Category, CustomField, WorkMetadata } from '../api';
 import {
+  batchEditOf,
   categoryPath,
   categoryTree,
   defaultRule,
   draftOf,
   editOf,
+  emptyBatch,
   filterArgs,
   fold,
   isbn,
@@ -91,6 +93,7 @@ describe('the editor', () => {
     identifiers: [{ scheme: 'isbn', value: '9788535902778' }],
     rating: null,
     status: 'unread',
+    description: 'Sobre o xisto de Burgess.',
     categories: [1],
     tags: [3],
     tagNames: ['Clássico'],
@@ -108,6 +111,14 @@ describe('the editor', () => {
 
   it('changes nothing when nothing was touched', () => {
     expect(editOf(original, structuredClone(original), fields)).toEqual({ edit: {}, problems: [] });
+  });
+
+  it('sends the description changed, and an emptied one as nothing', () => {
+    const draft = structuredClone(original);
+    draft.description = '  Sobre o xisto de Burgess e os fósseis.  ';
+    expect(editOf(original, draft, fields).edit).toEqual({ description: 'Sobre o xisto de Burgess e os fósseis.' });
+    draft.description = '   ';
+    expect(editOf(original, draft, fields).edit).toEqual({ description: null });
   });
 
   it('sends only what changed, cleared fields as nothing', () => {
@@ -187,3 +198,44 @@ describe('the picker of the details', () => {
     expect(named(options, '')).toBeUndefined();
   });
 });
+
+describe('many books at once', () => {
+  it('sends only what was touched', () => {
+    expect(batchEditOf(emptyBatch())).toEqual({ edit: {}, problems: [], changed: false });
+    const { edit, problems, changed } = batchEditOf({
+      ...emptyBatch(),
+      creators: ' Ana Souza ;; Bruno ',
+      series: '  ',
+      year: '1990',
+      language: 'PT-br',
+      rating: null,
+      status: 'read',
+      addCategories: [3],
+      addTags: ['Clássico'],
+      removeTags: [7],
+    });
+    expect(problems).toEqual([]);
+    expect(changed).toBe(true);
+    expect(edit).toEqual({
+      creators: [
+        { name: 'Ana Souza', role: 'author' },
+        { name: 'Bruno', role: 'author' },
+      ],
+      series: null,
+      year: 1990,
+      language: 'pt-BR',
+      rating: null,
+      status: 'read',
+      addCategories: [3],
+      addTags: ['Clássico'],
+      removeTags: [7],
+    });
+  });
+
+  it('says what cannot be saved', () => {
+    expect(batchEditOf({ ...emptyBatch(), year: '19,5' }).problems).toHaveLength(1);
+    expect(batchEditOf({ ...emptyBatch(), language: 'português' }).problems).toHaveLength(1);
+    expect(batchEditOf({ ...emptyBatch(), year: '' }).edit).toEqual({ year: null });
+  });
+});
+

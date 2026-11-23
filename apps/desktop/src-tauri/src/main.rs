@@ -10,8 +10,10 @@
 mod annotations;
 mod background;
 mod book;
+mod calibre;
 mod covers;
 mod flow;
+mod fulltext;
 mod lines;
 mod links;
 mod memory;
@@ -20,6 +22,7 @@ mod options;
 mod picker;
 mod protocol;
 mod reading;
+mod review;
 mod session;
 mod shelf;
 mod taxonomy;
@@ -134,6 +137,22 @@ fn main() {
             taxonomy::field_delete,
             taxonomy::work_metadata,
             taxonomy::work_edit,
+            taxonomy::works_edit,
+            taxonomy::works_summary,
+            shelf::library_select_all,
+            review::library_review,
+            review::suggestion_accept,
+            review::suggestion_dismiss,
+            review::duplicate_dismiss,
+            review::works_merge,
+            fulltext::fulltext_status,
+            fulltext::fulltext_search,
+            fulltext::fulltext_flow_place,
+            fulltext::fulltext_page_point,
+            fulltext::fulltext_wake,
+            calibre::calibre_choose,
+            calibre::calibre_preview,
+            calibre::calibre_import,
             shelf::library_folders,
             shelf::reader_setting,
             shelf::set_reader_setting,

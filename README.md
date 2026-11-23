@@ -2,15 +2,18 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto está na **Fase 6 do Plano Diretor**, a organização da biblioteca, depois do **marco Alpha**
-(uma biblioteca de uso diário com o leitor integrado), das anotações de texto da Fase 4 e das anotações
-sobre livros escaneados da Fase 5. O que existe hoje: a biblioteca, que segue as pastas escolhidas e
-lista os livros em capas ou em lista, com busca instantânea, e os filtra por pasta, por uma árvore de
-categorias e subcategorias, por etiquetas, por coleções feitas à mão (na ordem que a pessoa dá) e por
-coleções inteligentes (uma regra, como "autor contém Sagan e ano entre 1980 e 1999"); um painel de
-detalhes que edita o título, as pessoas e os seus papéis, a série, o ano, o idioma, os identificadores,
-a avaliação, o estado de leitura e campos personalizados, sem que uma releitura do arquivo escreva por
-cima do que a pessoa editou; o leitor
+O projeto chegou ao **marco Beta** do Plano Diretor (o fim da Fase 6, a organização da biblioteca),
+depois do **marco Alpha** (uma biblioteca de uso diário com o leitor integrado), das anotações de texto
+da Fase 4 e das anotações sobre livros escaneados da Fase 5. O que existe hoje: a biblioteca, que segue
+as pastas escolhidas e lista os livros em capas ou em lista, com busca instantânea nos títulos ou no
+texto dos livros (com o trecho achado, a página ou a seção, e o livro aberto ali), e os filtra por pasta,
+por uma árvore de categorias e subcategorias, por etiquetas, por coleções feitas à mão (na ordem que a
+pessoa dá) e por coleções inteligentes (uma regra, como "autor contém Sagan e ano entre 1980 e 1999"); um
+painel de detalhes que edita o título, as pessoas e os seus papéis, a série, o ano, o idioma, os
+identificadores, a avaliação, o estado de leitura, a sinopse e campos personalizados, de um livro ou de
+vários escolhidos de uma vez, sem que uma releitura do arquivo escreva por cima do que a pessoa editou;
+a revisão dos livros que podem ser um só, e a fusão deles sem perder anotações nem categorias; a
+importação de uma biblioteca do Calibre, só lida; o leitor
 fluido para EPUB 2 e 3, MOBI, AZW3, FB2, TXT e Markdown, que lê cada livro normalizado num processo isolado
 e mostra em páginas, com a virada animada, ou numa rolagem contínua própria, com fonte, tamanho,
 entrelinha, margens e tema; o leitor de layout fixo da Fase 2 para PDF, quadrinhos (CBZ e CBR) e DjVu; a
@@ -33,8 +36,9 @@ As decisões e os números de cada fase estão em
 [`docs/adr/0006-fase-3-parte-2.md`](docs/adr/0006-fase-3-parte-2.md),
 [`docs/adr/0007-fase-4.md`](docs/adr/0007-fase-4.md),
 [`docs/adr/0008-fase-5-parte-1.md`](docs/adr/0008-fase-5-parte-1.md),
-[`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md) e
-[`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md).
+[`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md),
+[`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md) e
+[`docs/adr/0011-fase-6-parte-2.md`](docs/adr/0011-fase-6-parte-2.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -102,10 +106,13 @@ tools/
   visual-check/        Compara a janela com páginas desenhadas inteiras, e as cores do PDFium
   e2e-reader.mjs       Testa a janela real: modos, atalhos, posição salva e comparação visual
   e2e-alpha.mjs        Testa o Alpha na janela real: biblioteca, leitor e a posição em cada formato
+  e2e-taxonomy.mjs     Testa na janela real a organização da biblioteca e o painel de detalhes
+  e2e-beta.mjs         Testa na janela real a Beta: vários livros, revisão e fusão, texto, Calibre
   reader-check.mjs     Testa o leitor fluido sem janela, num Chrome headless, em livros normalizados
   lib/cdp.mjs          O que os testes de janela usam para falar com o WebView2 pelo CDP
   lib/clipboard.mjs    A área de transferência nos testes de janela, guardada antes e reposta depois
   lib/seam-oracle.mjs  Onde o texto depois de um corte deve cair, pelo documento inteiro
+  lib/calibre-library.mjs  Uma biblioteca do Calibre sintética, do esquema de lib/calibre-schema.sql
   run-bench.mjs        Roda a matriz dos Experimentos A e B
   run-epub-bench.mjs   Mede o tempo de relayout do leitor fluido
   measure-memory.mjs   Mede a RAM do app inteiro
@@ -237,6 +244,26 @@ Três regras valem para tudo isso:
   verificador.
 - **Campos personalizados.** Definidos uma vez (*Campos personalizados…*, no pé do lado), de um tipo:
   texto, número, data, sim/não, lista de opções ou endereço web; cada livro tem o seu valor.
+- **Vários livros de uma vez.** Ctrl+clique acrescenta ou tira um livro da escolha, Shift+clique
+  escolhe os do meio, Ctrl+A todos os da lista (também os ainda não carregados). Com dois ou mais, o
+  painel edita todos: pessoas, série, ano, idioma, avaliação, estado, e categorias, etiquetas e coleções
+  acrescentadas ou tiradas de todos. Um campo em que eles diferem mostra "(vários)"; *Salvar em N
+  livros* grava tudo de uma vez, ou nada, e só os campos tocados.
+- **Revisar.** No lado, com o número do que espera: arquivos que podem ser o mesmo e obras que podem ser
+  um só livro (o mesmo identificador, o mesmo título do mesmo autor). Cada par se aceita ou se recusa, e
+  recusado não volta. *Fundir* escolhe a obra que fica e traz para ela os arquivos das outras, cada um
+  com as suas anotações, a posição de leitura e o histórico, e as categorias, etiquetas e coleções.
+- **No texto.** Com algo digitado na busca, *Títulos / No texto*. No texto, cada livro aparece com as
+  páginas ou seções em que estão todas as palavras (ou a "frase entre aspas"), um trecho com o achado
+  realçado, e um clique abre o livro ali. O texto vem da camada de texto dos PDFs e DjVus, das linhas
+  já lidas por OCR nos escaneados e do texto dos livros fluidos, lido em segundo plano e devagar, mais
+  devagar ainda com um livro aberto. Ao voltar do livro, a busca está como foi deixada.
+- **Do Calibre.** *Importar do Calibre…* escolhe a pasta da biblioteca (a do `metadata.db`), mostra o
+  que ela tem e a traz: cada livro com os seus formatos numa obra, autores, série e número, etiquetas,
+  avaliação, identificadores, comentários e colunas personalizadas como campos. A pasta é só lida, nem o
+  `metadata.db` muda, e passa a ser acompanhada como as outras; um arquivo com os mesmos bytes de um que
+  a biblioteca já tem é o mesmo livro. O que veio do Calibre aparece como "do Calibre" no painel, e uma
+  releitura do arquivo não escreve por cima; o que a pessoa editar, nem o Calibre.
 
 ## O leitor de layout fixo
 
@@ -367,6 +394,23 @@ das partes. Depois arrasta o mouse sobre um trecho na tela, confere que a seleç
 texto, desenha uma marca e confere, a cada mudança de fonte, margens, modo e tema, que ela continua sobre
 o seu texto; onde o livro tem um corte, arrasta de uma parte para a outra. Não abre janela nem usa input do
 sistema, e pode rodar com o computador em uso.
+
+A organização da biblioteca e a Beta têm os seus:
+
+```powershell
+node tools\e2e-taxonomy.mjs
+node tools\e2e-beta.mjs --phase synthetic
+node tools\e2e-beta.mjs --phase real --corpus D:\Livros
+```
+
+O da Beta, com livros escritos para ele, escolhe vários com Ctrl+clique, Shift+clique e Ctrl+A e edita
+dois de uma vez; busca uma palavra no texto e confere que o clique abre o PDF na página dela e o EPUB no
+lugar exato, onde faz uma nota; funde duas obras com o mesmo ISBN e confere a nota, a etiqueta e a série
+na que ficou, e recusa um par que não é o mesmo livro; importa uma biblioteca do Calibre sintética
+(`tools/lib/calibre-library.mjs`, com colunas personalizadas, séries, etiquetas, um livro com os mesmos
+bytes de um que já está na biblioteca e um sem arquivo) e confere que nenhum byte dela mudou; fecha,
+reabre e confere tudo. Com um acervo, lista-o, busca pelo título e no texto, abre um achado e confere
+que o acervo não mudou.
 
 As anotações têm o seu teste de janela:
 

@@ -6,8 +6,9 @@
 use std::sync::Arc;
 
 use musaeum_library::{
-    Category, CategoryId, Collection, CollectionId, CustomField, CustomFieldId, Library, Place,
-    SmartCollection, SmartCollectionId, SmartRules, Tag, TagId, WorkEdit, WorkId, WorkMetadata,
+    BatchEdit, BatchSummary, Category, CategoryId, Collection, CollectionId, CustomField,
+    CustomFieldId, Library, Place, SmartCollection, SmartCollectionId, SmartRules, Tag, TagId,
+    WorkEdit, WorkId, WorkMetadata,
 };
 use serde::Serialize;
 use tauri::State;
@@ -257,4 +258,23 @@ pub fn work_edit(
     let library = library_of(&state)?;
     text(library.edit_work(work, edit))?;
     text(library.work_metadata(work))
+}
+
+/// Changes many works at once, everything or nothing. Returns how many it changed.
+#[tauri::command(async)]
+pub fn works_edit(
+    state: State<'_, AppState>,
+    works: Vec<WorkId>,
+    edit: BatchEdit,
+) -> Result<usize, String> {
+    text(library_of(&state)?.edit_works(&works, edit))
+}
+
+/// What these works have in common, for the panel to show.
+#[tauri::command(async)]
+pub fn works_summary(
+    state: State<'_, AppState>,
+    works: Vec<WorkId>,
+) -> Result<BatchSummary, String> {
+    text(library_of(&state)?.works_summary(&works))
 }

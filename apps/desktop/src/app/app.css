@@ -11,6 +11,7 @@
   --accent-text: #ffffff;
   --focus: #2f5fb3;
   --danger: #b3261e;
+  --mark: #f6df7c;
   --shadow: 0 1px 2px rgb(0 0 0 / 8%), 0 4px 14px rgb(0 0 0 / 8%);
   color-scheme: light;
   font: 14px/1.4 'Segoe UI', system-ui, sans-serif;
@@ -28,6 +29,7 @@
     --accent-text: #10213f;
     --focus: #8ab4f8;
     --danger: #f2b8b5;
+    --mark: #6b5a14;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 35%);
     color-scheme: dark;
   }
@@ -1599,4 +1601,282 @@ textarea.text-input {
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
+}
+
+/* --- The Beta: many books at once, the review, the books' text, Calibre --- */
+
+/* A toolbar with more in it than the window is wide goes on to a second line. */
+.toolbar {
+  flex-wrap: wrap;
+}
+
+.folder-count.waiting {
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.shared-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shared {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shared-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shared .muted {
+  font-size: 12px;
+}
+
+.shared.taken .shared-name {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.review,
+.text-results {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 18px 18px;
+}
+
+.review {
+  gap: 18px;
+}
+
+.text-results {
+  gap: 14px;
+}
+
+.review-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-section h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.review-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.review-reason {
+  margin: 0;
+  font-weight: 600;
+}
+
+.review-item > .muted {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.review-books {
+  display: grid;
+  gap: 6px;
+}
+
+.review-book {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.review-book .muted {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fulltext-status {
+  margin: 0;
+  font-size: 12px;
+}
+
+.text-book {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.text-book-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.text-book-title .muted {
+  font-weight: 400;
+}
+
+.text-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.text-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+
+.text-hit[data-hovered] {
+  background: var(--surface-2);
+}
+
+.text-hit[data-focus-visible] {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.text-hit-where {
+  flex: 0 0 auto;
+  min-width: 64px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.snippet {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.snippet mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--mark);
+  color: inherit;
+}
+
+.calibre-dialog,
+.calibre-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calibre-preview p,
+.calibre-report {
+  margin: 0;
+}
+
+.calibre-path {
+  min-width: 0;
+  overflow: hidden;
+  font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calibre-columns {
+  max-height: 160px;
+  margin: 0;
+  padding-left: 18px;
+  overflow: auto;
+}
+
+.calibre-report {
+  font-weight: 600;
+}
+
+.merge-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow: auto;
+}
+
+.merge-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+}
+
+.merge-choice[data-selected] {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.merge-choice[data-focus-visible] {
+  outline: 2px solid var(--focus);
+}
+
+.radio-dot {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+}
+
+.merge-choice[data-selected] .radio-dot {
+  border: 4px solid var(--accent);
+}
+
+.merge-what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.merge-what .muted {
+  font-size: 12px;
 }

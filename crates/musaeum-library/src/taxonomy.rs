@@ -590,7 +590,39 @@ pub(crate) fn custom_fields(connection: &Connection) -> Result<Vec<CustomField>>
         .collect()
 }
 
-fn clean_choices(kind: &str, choices: &[String]) -> Result<Vec<String>> {
+/// Makes a custom field, last in the order, with a name and choices already checked.
+pub(crate) fn insert_custom_field(
+    transaction: &Transaction<'_>,
+    name: &str,
+    kind: &str,
+    choices: &[String],
+) -> Result<CustomFieldId> {
+    let siblings = ordered(
+        transaction,
+        "SELECT id, sort_key FROM custom_field WHERE ?1 IS NULL ORDER BY sort_key, id",
+        None,
+    )?;
+    let key = key_for(&siblings, Place::Last)?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO custom_field (name, name_key, kind, choices, sort_key, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?
+        .execute(params![
+            name,
+            fold(name),
+            kind,
+            serde_json::to_string(choices)?,
+            key,
+            now_ms()
+        ])
+        .map_err(|error| {
+            constraint_to(error, || format!("there is already a field named {name}"))
+        })?;
+    Ok(transaction.last_insert_rowid())
+}
+
+pub(crate) fn clean_choices(kind: &str, choices: &[String]) -> Result<Vec<String>> {
     if kind != "choice" {
         if choices.is_empty() {
             return Ok(Vec::new());
@@ -1082,31 +1114,8 @@ impl Library {
         let name = clean_name(name, MAX_TAG_NAME, "a field")?;
         let choices = clean_choices(kind, choices)?;
         let kind = kind.to_owned();
-        self.database().write(move |transaction| {
-            let siblings = ordered(
-                transaction,
-                "SELECT id, sort_key FROM custom_field WHERE ?1 IS NULL ORDER BY sort_key, id",
-                None,
-            )?;
-            let key = key_for(&siblings, Place::Last)?;
-            transaction
-                .prepare_cached(
-                    "INSERT INTO custom_field (name, name_key, kind, choices, sort_key, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                )?
-                .execute(params![
-                    name,
-                    fold(&name),
-                    kind,
-                    serde_json::to_string(&choices)?,
-                    key,
-                    now_ms()
-                ])
-                .map_err(|error| {
-                    constraint_to(error, || format!("there is already a field named {name}"))
-                })?;
-            Ok(transaction.last_insert_rowid())
-        })
+        self.database()
+            .write(move |transaction| insert_custom_field(transaction, &name, &kind, &choices))
     }
 
     /// Renames a custom field, or gives a `choice` field other choices. A choice some work has

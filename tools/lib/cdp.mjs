@@ -138,8 +138,11 @@ export async function press(cdp, key, modifiers = 0) {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
 }
 
-/** A click in the middle of the first element `selector` finds, scrolled into view first. */
-export async function click(cdp, selector) {
+/**
+ * A click in the middle of the first element `selector` finds, scrolled into view first, with the
+ * keys `modifiers` holds down (CDP's bits: 1 Alt, 2 Ctrl, 4 Meta, 8 Shift), as Ctrl+click does.
+ */
+export async function click(cdp, selector, modifiers = 0) {
   const box = await cdp.evaluate(`(async () => {
     const element = document.querySelector(${JSON.stringify(selector)});
     if (!element) return null;
@@ -173,6 +176,7 @@ export async function click(cdp, selector) {
       y: box.y,
       button: type === 'mouseMoved' ? 'none' : 'left',
       clickCount: type === 'mouseMoved' ? 0 : 1,
+      modifiers,
     });
   }
 }

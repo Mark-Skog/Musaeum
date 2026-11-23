@@ -143,13 +143,15 @@ export interface WorkMetadata {
   identifiers: Identifier[];
   rating: number | null;
   status: 'unread' | 'reading' | 'read' | 'abandoned';
+  /** What the book is about, as plain text. */
+  description: string | null;
   categories: number[];
   tags: number[];
   /** The tags' names, in the same order. */
   tagNames: string[];
   collections: number[];
   custom: CustomValue[];
-  /** Where each field came from: `filename`, `embedded` (the file) or `user`. */
+  /** Where each field came from: `filename`, `embedded` (the file), `calibre` or `user`. */
   provenance: Record<string, string>;
   documents: number[];
   formats: string[];
@@ -166,10 +168,153 @@ export interface WorkEdit {
   identifiers?: Identifier[];
   rating?: number | null;
   status?: string;
+  description?: string | null;
   categories?: number[];
   tags?: string[];
   collections?: number[];
   custom?: CustomValue[];
+}
+
+/** What changes on many works at once; a field left out stays as each has it, `null` clears it. */
+export interface BatchEdit {
+  creators?: Credit[];
+  series?: string | null;
+  year?: number | null;
+  language?: string | null;
+  rating?: number | null;
+  status?: string;
+  addCategories?: number[];
+  removeCategories?: number[];
+  addTags?: string[];
+  removeTags?: number[];
+  addCollections?: number[];
+  removeCollections?: number[];
+}
+
+/** How many of the works have something. */
+export interface Shared {
+  id: number;
+  works: number;
+}
+
+/** What a set of works has in common. */
+export interface BatchSummary {
+  works: number;
+  /** The fields every work has the same value of (`null` when none has one); one they differ on is not here. */
+  same: Partial<Record<'creators' | 'series' | 'year' | 'language' | 'rating' | 'status', unknown>>;
+  categories: Shared[];
+  tags: Shared[];
+  collections: Shared[];
+}
+
+/** A book of a listing, as a selection holds it. */
+export interface SelectedBook {
+  documentId: number;
+  workId: number;
+}
+
+export type DuplicateReason =
+  | { kind: 'same_identifier'; scheme: string; value: string }
+  | { kind: 'same_title_and_author'; title: string; author: string };
+
+/** Two works that may be one book, the older first. */
+export interface DuplicatePair {
+  works: [number, number];
+  reason: DuplicateReason;
+}
+
+/** Two documents the library noticed may be one. */
+export interface SuggestionReview {
+  id: number;
+  kind: 'same_internal_id' | 'same_file_id' | 'same_path' | 'same_fingerprint';
+  documentId: number;
+  candidateDocumentId: number;
+  evidence: string;
+  state: string;
+  workId: number;
+  candidateWorkId: number;
+}
+
+export interface Review {
+  suggestions: SuggestionReview[];
+  duplicates: DuplicatePair[];
+}
+
+/** How far the full-text index is, and the book being read into it. */
+export interface FullTextStatus {
+  indexed: number;
+  empty: number;
+  failed: number;
+  pending: number;
+  units: number;
+  chars: number;
+  running: boolean;
+  current: string | null;
+  read: number;
+}
+
+/** A page or a section a search found. */
+export interface UnitHit {
+  kind: 'page' | 'document';
+  index: number;
+  label: string | null;
+  source: 'text_layer' | 'ocr' | 'flow';
+  score: number;
+  snippet: string;
+  /** What matched in the snippet, as UTF-16 ranges. */
+  marks: [number, number][];
+  /** Where the first match starts in the unit's text, in UTF-16 code units. */
+  position: number;
+  matched: string;
+}
+
+export interface BookHit {
+  blake3: string;
+  score: number;
+  documents: number[];
+  works: number[];
+  units: UnitHit[];
+}
+
+export interface FullTextResults {
+  terms: string[];
+  books: BookHit[];
+  units: number;
+  elapsedMs: number;
+}
+
+/** Where to open a book: a page and a point on it, or a place in a flowing book. */
+export type ReaderTarget =
+  | { kind: 'page'; page: number; position: number }
+  | { kind: 'flow'; document: number; unit: number; position: number; length: number };
+
+export interface CalibreColumn {
+  label: string;
+  name: string;
+  datatype: string;
+  kind: FieldKind | null;
+  choices: string[];
+  isMultiple: boolean;
+}
+
+export interface CalibrePreview {
+  source: string;
+  readFrom: string;
+  books: number;
+  files: number;
+  missing: number;
+  columns: CalibreColumn[];
+  sample: string[];
+  followed: boolean;
+}
+
+export interface CalibreReport {
+  books: number;
+  imported: number;
+  waiting: number;
+  missing: number;
+  merged: number;
+  fieldsCreated: number;
 }
 
 /** Which books to list besides the search: one folder, category, tag or collection, or a rule. */
@@ -179,6 +324,8 @@ export interface BrowseFilter {
   tag: number | null;
   collection: number | null;
   smart: number | null;
+  /** Only these works' books. */
+  works?: number[] | null;
 }
 
 export interface NavPoint {
@@ -327,6 +474,25 @@ export const api = {
   deleteField: (id: number) => invoke<void>('field_delete', { id }),
   workMetadata: (work: number) => invoke<WorkMetadata>('work_metadata', { work }),
   editWork: (work: number, edit: WorkEdit) => invoke<WorkMetadata>('work_edit', { work, edit }),
+  editWorks: (works: number[], edit: BatchEdit) => invoke<number>('works_edit', { works, edit }),
+  worksSummary: (works: number[]) => invoke<BatchSummary>('works_summary', { works }),
+  /** Every book of a listing, not only those read so far. */
+  selectAll: (query: BrowseFilter & { text: string }) => invoke<SelectedBook[]>('library_select_all', { query: { ...query, offset: 0, limit: 0 } }),
+  review: () => invoke<Review>('library_review'),
+  acceptSuggestion: (id: number) => invoke<number>('suggestion_accept', { id }),
+  dismissSuggestion: (id: number) => invoke<void>('suggestion_dismiss', { id }),
+  dismissDuplicate: (a: number, b: number) => invoke<void>('duplicate_dismiss', { a, b }),
+  mergeWorks: (keep: number, others: number[]) => invoke<number>('works_merge', { keep, others }),
+  fulltextStatus: () => invoke<FullTextStatus>('fulltext_status'),
+  fulltextSearch: (query: string, books = 50) => invoke<FullTextResults>('fulltext_search', { query, books }),
+  fulltextFlowPlace: (document: number, unit: number, position: number, length: number) =>
+    invoke<{ start: string; end: string }>('fulltext_flow_place', { document, unit, position, length }),
+  fulltextPagePoint: (session: number, page: number, position: number) =>
+    invoke<[number, number] | null>('fulltext_page_point', { session, page, position }),
+  fulltextWake: () => invoke<void>('fulltext_wake'),
+  calibreChoose: () => invoke<string | null>('calibre_choose'),
+  calibrePreview: (path: string) => invoke<CalibrePreview>('calibre_preview', { path }),
+  calibreImport: (path: string) => invoke<CalibreReport>('calibre_import', { path }),
   folders: () => invoke<FolderEntry[]>('library_folders'),
   setting: <T>(key: string) => invoke<T | null>('reader_setting', { key }),
   setSetting: (key: string, value: unknown) => invoke<void>('set_reader_setting', { key, value }),

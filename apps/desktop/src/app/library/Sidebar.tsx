@@ -157,9 +157,11 @@ export interface SidebarProps {
   /** Something changed in the taxonomy: read it and the books again. */
   onChanged(): void;
   notice(message: string): void;
+  /** How many suggestions and possible duplicates wait for the person's word. */
+  waiting: number;
 }
 
-export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, notice }: SidebarProps): React.JSX.Element {
+export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, notice, waiting }: SidebarProps): React.JSX.Element {
   const tree = useMemo(() => buildTree(folders), [folders]);
   const categories = useMemo(() => categoryTree(taxonomy.categories), [taxonomy.categories]);
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -179,15 +181,15 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
     });
   }, [tree, taxonomy.categories]);
 
-  const selectedIn = (kind: Filter['kind']): Set<Key> => (filter.kind === kind && filter.kind !== 'all' ? new Set([`${kind}:${filter.id}`]) : new Set());
+  const selectedIn = (kind: Filter['kind']): Set<Key> => (filter.kind === kind && 'id' in filter ? new Set([`${kind}:${filter.id}`]) : new Set());
   const choose = (keys: 'all' | Set<Key>): void => {
     const key = keys === 'all' ? undefined : [...keys][0];
     if (key === undefined) {
       return;
     }
     const text = String(key);
-    if (text === 'all') {
-      onFilter({ kind: 'all' });
+    if (text === 'all' || text === 'review') {
+      onFilter({ kind: text });
       return;
     }
     const [kind, id] = text.split(':');
@@ -259,13 +261,22 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
 
   return (
     <nav className="sidebar" aria-label="Organização">
-      <Tree aria-label="Todos os livros" className="folders" selectionMode="single" selectedKeys={filter.kind === 'all' ? new Set(['all']) : new Set()} onSelectionChange={choose}>
+      <Tree aria-label="Todos os livros" className="folders" selectionMode="single" selectedKeys={filter.kind === 'all' || filter.kind === 'review' ? new Set([filter.kind]) : new Set()} onSelectionChange={choose}>
         <TreeItem id="all" textValue="Todos os livros" className="folder-item">
           <TreeItemContent>
             <div className="folder-row">
               <span className="folder-chevron" />
               <span className="folder-name">Todos os livros</span>
               <span className="folder-count">{info.books}</span>
+            </div>
+          </TreeItemContent>
+        </TreeItem>
+        <TreeItem id="review" textValue="Revisar" className="folder-item" data-waiting={waiting}>
+          <TreeItemContent>
+            <div className="folder-row">
+              <span className="folder-chevron" />
+              <span className="folder-name">Revisar</span>
+              <span className={waiting > 0 ? 'folder-count waiting' : 'folder-count'}>{waiting > 0 ? waiting : ''}</span>
             </div>
           </TreeItemContent>
         </TreeItem>

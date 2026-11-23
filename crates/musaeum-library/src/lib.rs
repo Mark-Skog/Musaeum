@@ -11,6 +11,8 @@
 
 pub mod anchoring;
 pub mod annotations;
+mod batch;
+pub mod calibre;
 pub mod catalog;
 mod content;
 mod content_kind;
@@ -18,12 +20,14 @@ mod db;
 mod error;
 mod fingerprint;
 pub mod flow;
+mod fulltext;
 pub mod identity;
 mod indexer;
 mod ingest;
 mod journal;
 mod library;
 mod lines;
+mod merge;
 mod metadata;
 mod model;
 pub mod order;
@@ -41,12 +45,20 @@ pub use annotations::{
     AnchorState, Annotation, AnnotationEdit, AnnotationHit, AnnotationKind, NewAnnotation,
     QuoteSource, Reanchoring, Segment, SegmentUpdate, Selector, SelectorKind,
 };
+pub use batch::{BatchEdit, BatchSummary, MAX_BATCH, Shared};
+pub use calibre::{
+    CalibreBook, CalibreColumn, CalibreFile, CalibreLibrary, CalibreReport, read_calibre,
+};
 pub use catalog::{BookFile, BookRow, BrowsePage, BrowseQuery, FolderEntry, MAX_BROWSE};
 pub use content::ContentReport;
 pub use db::backup::{BackupInfo, BackupPolicy};
 pub use error::{Error, Result};
 pub use fingerprint::Hash;
 pub use flow::FlowStore;
+pub use fulltext::{
+    BookHit, FULLTEXT_VERSION, FullTextResults, FullTextStatus, MAX_BOOKS_FOUND, PendingText,
+    TextSource, TextUnit, UnitHit, UnitKind, fulltext_dir,
+};
 pub use identity::ReconcileReport;
 pub use indexer::{Indexer, IndexerConfig, IndexerEvent};
 pub use ingest::{
@@ -58,6 +70,7 @@ pub use library::{Library, LibraryOptions, LibraryPaths};
 pub use lines::{
     LineModelRecord, MAX_LINE_MODEL_BYTES, MAX_OCR_LINE_BYTES, OcrLineRecord, OcrReading,
 };
+pub use merge::{DuplicatePair, DuplicateReason, MAX_DUPLICATES, Review, SuggestionReview};
 pub use metadata::{
     Credit, CustomValue, Identifier, ROLES, SCHEMES, WorkEdit, WorkMetadata, isbn, language_tag,
 };

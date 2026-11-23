@@ -239,6 +239,8 @@ pub fn open_session(
     args: OpenSessionArgs,
 ) -> Result<SessionInfo, OpenSessionError> {
     stop_and_release(&window, &state);
+    // A book open in the reader: the full-text indexer gives way.
+    state.shelf.set_reading(true);
 
     // Only the first bytes are read here, to choose the worker; nothing in them is interpreted.
     let format = FixedFormat::of_file(&args.document)
@@ -436,6 +438,7 @@ pub fn document_outline(
 #[tauri::command(async)]
 pub fn close_session(window: WebviewWindow, state: State<'_, AppState>) {
     stop_and_release(&window, &state);
+    state.shelf.set_reading(false);
 }
 
 /// Writes `value` into every probe buffer, and returns what scripts wrote back into them.

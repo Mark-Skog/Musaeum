@@ -5,7 +5,7 @@
  * change again; these checks only spare a person a round trip and an English message.
  */
 
-import type { BrowseFilter, Category, CustomField, CustomValue, FieldKind, Identifier, SmartRule, WorkEdit, WorkMetadata } from '../api';
+import type { BatchEdit, BrowseFilter, Category, CustomField, CustomValue, FieldKind, Identifier, SmartRule, WorkEdit, WorkMetadata } from '../api';
 
 /** What the side of the library has chosen. */
 export type Filter =
@@ -14,7 +14,9 @@ export type Filter =
   | { kind: 'category'; id: number }
   | { kind: 'tag'; id: number }
   | { kind: 'collection'; id: number }
-  | { kind: 'smart'; id: number };
+  | { kind: 'smart'; id: number }
+  /** What waits for the person's word: documents and works that may be one. Not a listing. */
+  | { kind: 'review' };
 
 export function filterArgs(filter: Filter): BrowseFilter {
   return {
@@ -27,7 +29,7 @@ export function filterArgs(filter: Filter): BrowseFilter {
 }
 
 export function sameFilter(a: Filter, b: Filter): boolean {
-  return a.kind === b.kind && (a.kind === 'all' || (b.kind !== 'all' && a.id === b.id));
+  return a.kind === b.kind && (!('id' in a) || ('id' in b && a.id === b.id));
 }
 
 export interface CategoryNode {
@@ -307,6 +309,7 @@ export interface Draft {
   identifiers: Identifier[];
   rating: number | null;
   status: string;
+  description: string;
   categories: number[];
   tags: string[];
   collections: number[];
@@ -324,6 +327,7 @@ export function draftOf(work: WorkMetadata): Draft {
     identifiers: work.identifiers.map((identifier) => ({ ...identifier })),
     rating: work.rating,
     status: work.status,
+    description: work.description ?? '',
     categories: [...work.categories],
     tags: [...work.tagNames],
     collections: [...work.collections],
@@ -407,6 +411,9 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
   if (draft.status !== original.status) {
     edit.status = draft.status;
   }
+  if (draft.description.trim() !== original.description.trim()) {
+    edit.description = draft.description.trim() === '' ? null : draft.description.trim();
+  }
   if (!sameSet(draft.categories, original.categories)) {
     edit.categories = draft.categories;
   }
@@ -489,6 +496,8 @@ export function provenanceLabel(origin: string | undefined): string | null {
       return 'editado';
     case 'embedded':
       return 'do arquivo';
+    case 'calibre':
+      return 'do Calibre';
     case 'filename':
       return 'do nome do arquivo';
     default:
@@ -523,3 +532,95 @@ export function named<T extends { text: string }>(options: readonly T[], typed: 
   const wanted = fold(typed);
   return wanted === '' ? undefined : options.find((option) => fold(option.text) === wanted);
 }
+
+/**
+ * What the panel changes on many books at once. A field is `undefined` until the person touches
+ * it: only what was touched is sent, and set on every book; categories, tags and collections are
+ * added to or taken from all of them.
+ */
+export interface BatchDraft {
+  /** Names, separated by `;`. */
+  creators?: string;
+  series?: string;
+  year?: string;
+  language?: string;
+  rating?: number | null;
+  status?: string;
+  addCategories: number[];
+  removeCategories: number[];
+  addTags: string[];
+  removeTags: number[];
+  addCollections: number[];
+  removeCollections: number[];
+}
+
+export const emptyBatch = (): BatchDraft => ({
+  addCategories: [],
+  removeCategories: [],
+  addTags: [],
+  removeTags: [],
+  addCollections: [],
+  removeCollections: [],
+});
+
+/** What a batch draft changes, and the problems that keep it from being saved. */
+export function batchEditOf(draft: BatchDraft): { edit: BatchEdit; problems: string[]; changed: boolean } {
+  const edit: BatchEdit = {};
+  const problems: string[] = [];
+  if (draft.creators !== undefined) {
+    const names = draft.creators
+      .split(';')
+      .map((name) => name.trim())
+      .filter((name) => name !== '');
+    edit.creators = names.map((name) => ({ name, role: 'author' }));
+  }
+  if (draft.series !== undefined) {
+    edit.series = draft.series.trim() === '' ? null : draft.series.trim();
+  }
+  if (draft.year !== undefined) {
+    const clean = draft.year.trim();
+    if (clean === '') {
+      edit.year = null;
+    } else {
+      const value = Number(clean);
+      if (!Number.isInteger(value) || value < -9999 || value > 9999) {
+        problems.push('O ano é um número inteiro de -9999 a 9999.');
+      } else {
+        edit.year = value;
+      }
+    }
+  }
+  if (draft.language !== undefined) {
+    if (draft.language.trim() === '') {
+      edit.language = null;
+    } else {
+      const tag = languageTag(draft.language);
+      if (tag === null) {
+        problems.push('O idioma é um código como pt, pt-BR ou en.');
+      } else {
+        edit.language = tag;
+      }
+    }
+  }
+  if (draft.rating !== undefined) {
+    edit.rating = draft.rating;
+  }
+  if (draft.status !== undefined) {
+    edit.status = draft.status;
+  }
+  const lists: [keyof BatchDraft & keyof BatchEdit, (number | string)[]][] = [
+    ['addCategories', draft.addCategories],
+    ['removeCategories', draft.removeCategories],
+    ['addTags', draft.addTags],
+    ['removeTags', draft.removeTags],
+    ['addCollections', draft.addCollections],
+    ['removeCollections', draft.removeCollections],
+  ];
+  for (const [key, values] of lists) {
+    if (values.length > 0) {
+      (edit as Record<string, unknown>)[key] = [...values];
+    }
+  }
+  return { edit, problems, changed: Object.keys(edit).length > 0 };
+}
+

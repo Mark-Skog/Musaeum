@@ -41,6 +41,8 @@ pub struct BrowseQuery {
     pub collection: Option<CollectionId>,
     /// Only books this smart collection's rule finds now.
     pub smart: Option<SmartCollectionId>,
+    /// Only the books of these works, in this order unless a collection gives one.
+    pub works: Option<Vec<WorkId>>,
     /// Books to skip, for a listing read in pages.
     pub offset: usize,
     /// Books to return, at most [`MAX_BROWSE`].
@@ -201,6 +203,9 @@ fn chosen_works(connection: &Connection, query: &BrowseQuery) -> Result<Option<V
     if let Some(tag) = query.tag {
         sets.push(list("SELECT work_id FROM work_tag WHERE tag_id = ?1", tag)?);
     }
+    if let Some(works) = &query.works {
+        sets.push(works.clone());
+    }
     if let Some(smart) = query.smart {
         let (condition, values) = smart_condition(connection, smart)?;
         sets.push(
@@ -234,7 +239,7 @@ fn browse(connection: &Connection, query: &BrowseQuery) -> Result<BrowsePage> {
         Some(works) => Some(serde_json::to_string(&works).expect("numbers are JSON")),
         None => None,
     };
-    let in_order = query.collection.is_some();
+    let in_order = query.collection.is_some() || query.works.is_some();
     let text = query.text.trim();
     let hits = if text.is_empty() {
         None

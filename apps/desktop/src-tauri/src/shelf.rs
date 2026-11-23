@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::covers::{CoverService, CoverWaker};
+use crate::fulltext::{FullTextService, FullTextWaker, Progress};
 use crate::picker::pick_folder;
 use crate::session::AppState;
 
@@ -27,9 +28,10 @@ use crate::session::AppState;
 pub const LIBRARY_CHANGED: &str = "library-changed";
 
 struct Opened {
-    // Both stop and join their threads when dropped, which happens first, in this order.
+    // These stop and join their threads when dropped, which happens first, in this order.
     indexer: Option<Indexer>,
     covers: Option<CoverService>,
+    fulltext: Option<FullTextService>,
     library: Arc<Library>,
     location: PathBuf,
 }
@@ -117,14 +119,15 @@ impl Shelf {
         match Library::open(paths, LibraryOptions::default()) {
             Ok(library) => {
                 let library = Arc::new(library);
-                let (indexer, covers) = if self.quiet {
-                    (None, None)
+                let (indexer, covers, fulltext) = if self.quiet {
+                    (None, None, None)
                 } else {
                     self.start_keeping(&library)
                 };
                 inner.opened = Some(Opened {
                     indexer,
                     covers,
+                    fulltext,
                     library,
                     location,
                 });
@@ -137,13 +140,22 @@ impl Shelf {
         }
     }
 
-    /// Starts the indexer and the covers, and passes what they report on to the page.
-    fn start_keeping(&self, library: &Arc<Library>) -> (Option<Indexer>, Option<CoverService>) {
+    /// Starts the indexer, the covers and the full text, and passes what they report on to the page.
+    fn start_keeping(
+        &self,
+        library: &Arc<Library>,
+    ) -> (
+        Option<Indexer>,
+        Option<CoverService>,
+        Option<FullTextService>,
+    ) {
         let Some(app) = self.app.get().cloned() else {
-            return (None, None);
+            return (None, None, None);
         };
         let covers = CoverService::start(Arc::clone(library), app.clone());
+        let fulltext = FullTextService::start(Arc::clone(library), app.clone());
         let waker = covers.waker();
+        let text_waker = fulltext.waker();
         let (sender, events) = mpsc::channel();
         let indexer =
             match Indexer::start(Arc::clone(library), IndexerConfig::default(), Some(sender)) {
@@ -155,11 +167,86 @@ impl Shelf {
             };
         let forwarded = thread::Builder::new()
             .name("library-events".to_owned())
-            .spawn(move || forward(&events, &app, &waker));
+            .spawn(move || forward(&events, &app, &waker, &text_waker));
         if let Err(error) = forwarded {
             eprintln!("the page will not hear about the library: {error}");
         }
-        (indexer, Some(covers))
+        (indexer, Some(covers), Some(fulltext))
+    }
+
+    fn fulltext_waker(&self) -> Option<FullTextWaker> {
+        self.lock()
+            .opened
+            .as_ref()?
+            .fulltext
+            .as_ref()
+            .map(FullTextService::waker)
+    }
+
+    /// What the full-text indexer is doing.
+    pub fn fulltext_progress(&self) -> Progress {
+        self.fulltext_waker()
+            .map(|waker| waker.progress())
+            .unwrap_or_default()
+    }
+
+    /// Has the full-text indexer look for books to read now.
+    pub fn wake_fulltext(&self) {
+        if let Some(waker) = self.fulltext_waker() {
+            waker.wake();
+        }
+    }
+
+    /// Tells the full-text indexer whether a book is open in the reader, so it gives way.
+    pub fn set_reading(&self, reading: bool) {
+        if let Some(waker) = self.fulltext_waker() {
+            waker.set_reading(reading);
+        }
+    }
+
+    /// Has the indexer look at every folder now.
+    pub fn reconcile_now(&self) {
+        if let Some(indexer) = self
+            .lock()
+            .opened
+            .as_ref()
+            .and_then(|opened| opened.indexer.as_ref())
+        {
+            indexer.reconcile_now();
+        }
+    }
+
+    /// Waits until the indexer has nothing left to do, at most `timeout`. True if it is idle.
+    pub fn wait_until_idle(&self, timeout: Duration) -> bool {
+        // Not holding the lock while waiting: the indexer's events reach the page meanwhile.
+        let indexer_idle = {
+            let inner = self.lock();
+            match inner
+                .opened
+                .as_ref()
+                .and_then(|opened| opened.indexer.as_ref())
+            {
+                Some(indexer) => indexer.wait_until_idle(Duration::ZERO),
+                None => return true,
+            }
+        };
+        if indexer_idle {
+            return true;
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+            let inner = self.lock();
+            if inner
+                .opened
+                .as_ref()
+                .and_then(|opened| opened.indexer.as_ref())
+                .is_none_or(|indexer| indexer.wait_until_idle(Duration::ZERO))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Opens the library a new folder goes into, creating it if needed, and starts following the
@@ -268,7 +355,12 @@ struct LibraryEvent {
     kind: &'static str,
 }
 
-fn forward(events: &mpsc::Receiver<IndexerEvent>, app: &AppHandle, covers: &CoverWaker) {
+fn forward(
+    events: &mpsc::Receiver<IndexerEvent>,
+    app: &AppHandle,
+    covers: &CoverWaker,
+    text: &FullTextWaker,
+) {
     while let Ok(event) = events.recv() {
         let kind = match &event {
             IndexerEvent::Reconciled(_) => "reconciled",
@@ -285,6 +377,7 @@ fn forward(events: &mpsc::Receiver<IndexerEvent>, app: &AppHandle, covers: &Cove
             IndexerEvent::ContentProcessed(_) | IndexerEvent::Reconciled(_)
         ) {
             covers.wake();
+            text.wake();
         }
         let _ = app.emit(LIBRARY_CHANGED, LibraryEvent { kind });
     }
@@ -328,11 +421,13 @@ pub struct BrowseArgs {
     #[serde(default)]
     smart: Option<i64>,
     #[serde(default)]
+    works: Option<Vec<i64>>,
+    #[serde(default)]
     offset: usize,
     limit: usize,
 }
 
-fn owner_of(window: &WebviewWindow) -> Option<isize> {
+pub fn owner_of(window: &WebviewWindow) -> Option<isize> {
     window.hwnd().ok().map(|hwnd| hwnd.0 as isize)
 }
 
@@ -397,10 +492,55 @@ pub fn library_browse(state: State<'_, AppState>, query: BrowseArgs) -> Result<B
             tag: query.tag,
             collection: query.collection,
             smart: query.smart,
+            works: query.works,
             offset: query.offset,
             limit: query.limit.min(MAX_BROWSE),
         })
         .map_err(|error| error.to_string())
+}
+
+/// A book of a listing, as a selection holds it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedBook {
+    document_id: i64,
+    work_id: i64,
+}
+
+/// Every book a listing has, not only the ones read so far: what selecting all selects.
+#[tauri::command(async)]
+pub fn library_select_all(
+    state: State<'_, AppState>,
+    query: BrowseArgs,
+) -> Result<Vec<SelectedBook>, String> {
+    let library = library_of(&state)?;
+    let mut selected = Vec::new();
+    loop {
+        let page = library
+            .browse(&BrowseQuery {
+                text: query.text.clone(),
+                folder: query.folder,
+                category: query.category,
+                tag: query.tag,
+                collection: query.collection,
+                smart: query.smart,
+                works: query.works.clone(),
+                offset: selected.len(),
+                limit: MAX_BROWSE,
+            })
+            .map_err(|error| error.to_string())?;
+        let got = page.rows.len();
+        selected.extend(page.rows.into_iter().map(|row| SelectedBook {
+            document_id: row.document_id,
+            work_id: row.work_id,
+        }));
+        if got == 0 || selected.len() >= page.total || selected.len() >= musaeum_library::MAX_BATCH
+        {
+            break;
+        }
+    }
+    selected.truncate(musaeum_library::MAX_BATCH);
+    Ok(selected)
 }
 
 /// The folders of every root.

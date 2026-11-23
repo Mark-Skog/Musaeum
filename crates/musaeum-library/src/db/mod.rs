@@ -61,6 +61,10 @@ pub(crate) const LIBRARY_MIGRATIONS: &[Migration] = &[
         version: 7,
         sql: include_str!("../../migrations/library/0007_taxonomy.sql"),
     },
+    Migration {
+        version: 8,
+        sql: include_str!("../../migrations/library/0008_beta.sql"),
+    },
 ];
 
 /// The migrations of `cache.db`, in order.
@@ -84,6 +88,10 @@ pub(crate) const CACHE_MIGRATIONS: &[Migration] = &[
     Migration {
         version: 5,
         sql: include_str!("../../migrations/cache/0005_ocr_line.sql"),
+    },
+    Migration {
+        version: 6,
+        sql: include_str!("../../migrations/cache/0006_fulltext.sql"),
     },
 ];
 

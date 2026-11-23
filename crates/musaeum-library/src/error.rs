@@ -47,6 +47,15 @@ pub enum Error {
     /// The thread that does all the writing has stopped, which only happens after a panic.
     #[error("the database writer has stopped")]
     WriterStopped,
+    /// The full-text index could not do what was asked. It can be made again from the books.
+    #[error("the full-text index: {0}")]
+    FullText(String),
+}
+
+impl From<tantivy::TantivyError> for Error {
+    fn from(error: tantivy::TantivyError) -> Self {
+        Error::FullText(error.to_string())
+    }
 }
 
 impl From<serde_json::Error> for Error {

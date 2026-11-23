@@ -126,6 +126,8 @@ pub struct Library {
     counters: ReadCounters,
     stop: AtomicBool,
     recovery: RecoveryReport,
+    /// The full-text index, opened when first needed; none for a library opened only to read.
+    fulltext: std::sync::OnceLock<Option<crate::fulltext::FullText>>,
     // Held for as long as this is open, so that only one process at a time can be the writer.
     _lock: Option<File>,
 }
@@ -167,6 +169,7 @@ impl Library {
             counters: ReadCounters::default(),
             stop: AtomicBool::new(false),
             recovery,
+            fulltext: std::sync::OnceLock::new(),
             _lock: Some(lock),
         })
     }
@@ -190,6 +193,7 @@ impl Library {
             counters: ReadCounters::default(),
             stop: AtomicBool::new(false),
             recovery: RecoveryReport::default(),
+            fulltext: std::sync::OnceLock::from(None),
             _lock: None,
         })
     }
@@ -234,6 +238,22 @@ impl Library {
 
     pub(crate) fn cache(&self) -> Option<&Database> {
         self.cache.as_ref()
+    }
+
+    /// The full-text index, opened the first time it is needed. None for a library opened only to
+    /// read, or if the index cannot be opened (it is said once, on standard error).
+    pub(crate) fn fulltext(&self) -> Option<&crate::fulltext::FullText> {
+        self.fulltext
+            .get_or_init(
+                || match crate::fulltext::FullText::open(&self.paths.cache_dir) {
+                    Ok(index) => Some(index),
+                    Err(error) => {
+                        eprintln!("the full-text index cannot be opened: {error}");
+                        None
+                    }
+                },
+            )
+            .as_ref()
     }
 
     fn context(&self) -> Context<'_> {
@@ -866,7 +886,7 @@ fn absolute_target(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn absolute_if_it_exists(path: &Path) -> PathBuf {
+pub(crate) fn absolute_if_it_exists(path: &Path) -> PathBuf {
     fs::canonicalize(path)
         .map(without_verbatim_prefix)
         .or_else(|_| std::path::absolute(path))
@@ -895,7 +915,7 @@ fn lowercase_path(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().to_lowercase())
 }
 
-fn locate_instance(connection: &Connection, path: &Path) -> Result<Option<InstanceId>> {
+pub(crate) fn locate_instance(connection: &Connection, path: &Path) -> Result<Option<InstanceId>> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Ok(None);
     };
