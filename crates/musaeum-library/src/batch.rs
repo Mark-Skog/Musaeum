@@ -6,6 +6,7 @@
 //! `user`, which no file read again writes over. A field left out keeps what each work had, and its
 //! provenance with it.
 
+use musaeum_i18n::{T, tr};
 use std::collections::{BTreeMap, HashSet};
 
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -98,12 +99,10 @@ fn unique(works: &[WorkId]) -> Result<Vec<WorkId>> {
         .filter(|work| seen.insert(*work))
         .collect();
     if works.is_empty() {
-        return Err(Error::Refused("no work was given".to_owned()));
+        return Err(Error::Refused(tr!(BatchNoWork)));
     }
     if works.len() > MAX_BATCH {
-        return Err(Error::Refused(format!(
-            "{MAX_BATCH} works at a time at most"
-        )));
+        return Err(Error::Refused(tr!(BatchTooMany, max = MAX_BATCH)));
     }
     Ok(works)
 }
@@ -133,7 +132,7 @@ fn apply_batch(
     let ids = json_ids(works);
     for &work in works {
         if !exists(transaction, "work", work)? {
-            return Err(Error::NotFound(format!("there is no work {work}")));
+            return Err(Error::NotFound(tr!(NoWork, id = work)));
         }
         if *scalar != WorkEdit::default() {
             apply_edit(transaction, work, scalar.clone())?;
@@ -141,7 +140,7 @@ fn apply_batch(
     }
     for &category in edit.add_categories.iter().chain(&edit.remove_categories) {
         if !exists(transaction, "category", category)? {
-            return Err(Error::NotFound(format!("there is no category {category}")));
+            return Err(Error::NotFound(tr!(NoCategory, id = category)));
         }
     }
     for &category in &edit.add_categories {
@@ -171,7 +170,7 @@ fn apply_batch(
     }
     for &tag in &edit.remove_tags {
         if !exists(transaction, "tag", tag)? {
-            return Err(Error::NotFound(format!("there is no tag {tag}")));
+            return Err(Error::NotFound(tr!(NoTag, id = tag)));
         }
         transaction
             .prepare_cached(
@@ -181,9 +180,7 @@ fn apply_batch(
     }
     for &collection in edit.add_collections.iter().chain(&edit.remove_collections) {
         if !exists(transaction, "collection", collection)? {
-            return Err(Error::NotFound(format!(
-                "there is no collection {collection}"
-            )));
+            return Err(Error::NotFound(tr!(NoCollection, id = collection)));
         }
     }
     for &collection in &edit.add_collections {
@@ -229,15 +226,13 @@ fn check_batch(edit: &BatchEdit) -> Result<WorkEdit> {
         ..WorkEdit::default()
     })?;
     for name in &edit.add_tags {
-        taxonomy::clean_name(name, MAX_TAG_NAME, "a tag")?;
+        taxonomy::clean_name(name, MAX_TAG_NAME, T::ThingTag)?;
     }
     let both = |added: &[i64], taken: &[i64]| added.iter().any(|id| taken.contains(id));
     if both(&edit.add_categories, &edit.remove_categories)
         || both(&edit.add_collections, &edit.remove_collections)
     {
-        return Err(Error::Refused(
-            "the same category or collection is both added and taken".to_owned(),
-        ));
+        return Err(Error::Refused(tr!(BatchAddAndTake)));
     }
     Ok(scalar)
 }
@@ -268,7 +263,7 @@ impl Library {
                 })?
                 .collect::<rusqlite::Result<_>>()?;
             if rows.len() != works.len() {
-                return Err(Error::NotFound("some of the works are not there".to_owned()));
+                return Err(Error::NotFound(tr!(BatchWorksGone)));
             }
             let mut creators: BTreeMap<WorkId, Vec<Credit>> = works.iter().map(|&work| (work, Vec::new())).collect();
             {

@@ -15,6 +15,8 @@ import { exchangeHooks } from './ExchangeSection';
 import type { ExchangeAction } from './exchange';
 import type { PdfAction } from './reader/annotations/AnnotationUi';
 import { type ReaderProbe, ReaderView } from './reader/ReaderView';
+import { PreferencesDialog } from './preferences/PreferencesDialog';
+import { currentPreferences, updatePreferences } from './preferences/store';
 
 export function App({ options }: { options: StartupOptions }): React.JSX.Element {
   const library = useLibrary();
@@ -31,6 +33,20 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
   });
   const probe = useRef<ReaderProbe | null>(null);
   const opened = useRef(0);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const openPreferences = useCallback(() => setPreferencesOpen(true), []);
+
+  // Ctrl+, opens the Preferences from anywhere, as in most programs.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === ',' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+        event.preventDefault();
+        setPreferencesOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
 
   const onRows = useCallback(
     (list: BookRow[], total: number, shown: { text: string; folder: number | null; filter: unknown }) => {
@@ -153,6 +169,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
        */
       exchange: (surface: string, action: string, path?: string, generatedAt?: number) => {
         const run = exchangeHooks.get(surface);
+        // i18n: not for people (only the end-to-end test reads it)
         return run === undefined ? Promise.resolve({ ok: false, error: `no ${surface} here` }) : run(action as ExchangeAction, path, generatedAt);
       },
       /** Each page's text of a PDF, as PDFium reads it. */
@@ -177,6 +194,14 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         const bytes = await invoke<ArrayBuffer>('line_model', { session: session.id, page });
         return Array.from(new Uint8Array(bytes));
       },
+      /** Every preference, as the interface applies them. */
+      preferences: () => currentPreferences(),
+      /** Changes preferences as the Preferences dialog would. */
+      setPreferences: (patch: Record<string, unknown>) => updatePreferences(patch),
+      /** Opens the Preferences, as Ctrl+, does. */
+      openPreferences: () => setPreferencesOpen(true),
+      /** What the open library's cache holds. */
+      cacheReport: () => api.cacheReport(),
       rects: () => ({
         canvas: document.querySelector('.reader-canvas')?.getBoundingClientRect().toJSON() ?? null,
         frame: document.querySelector('.reader-frame')?.getBoundingClientRect().toJSON() ?? null,
@@ -198,10 +223,12 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
           onRows={onRows}
           onSelection={onSelection}
           calibreRequest={calibreRequest}
+          onPreferences={openPreferences}
         />
       ) : (
-        <ReaderView key={`${book.documentId}-${opened.current}`} book={book} options={options} onBack={back} probe={probe} target={target} />
+        <ReaderView key={`${book.documentId}-${opened.current}`} book={book} options={options} onBack={back} probe={probe} target={target} onPreferences={openPreferences} />
       )}
+      {preferencesOpen ? <PreferencesDialog onClose={() => setPreferencesOpen(false)} /> : null}
     </div>
   );
 }

@@ -195,9 +195,7 @@ impl Database {
             migrate::check_owner(connection, spec.application_id, path)?;
             match migrate::version_gap(connection, spec.migrations)? {
                 0 => Ok(()),
-                _ => Err(Error::ReadOnly(
-                    "this library needs an upgrade, which takes opening it for writing",
-                )),
+                _ => Err(Error::ReadOnly(musaeum_i18n::T::NeedsUpgrade)),
             }
         })?;
         Ok(Self {
@@ -218,7 +216,7 @@ impl Database {
         let writer = self
             .writer
             .as_ref()
-            .ok_or(Error::ReadOnly("this library was opened for reading only"))?;
+            .ok_or(Error::ReadOnly(musaeum_i18n::T::OpenedReadOnly))?;
         let commits = Arc::clone(&writer.commits);
         let log = Arc::clone(&self.log);
         writer.call(move |connection| {
@@ -235,6 +233,20 @@ impl Database {
     /// Runs `work` on one of the read-only connections, waiting if all of them are in use.
     pub fn read<T>(&self, work: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.readers.with(work)
+    }
+
+    /// Gives the disk back what deleted rows left free: rewrites the file on the writer's thread,
+    /// then brings the log to an end. Readers keep reading meanwhile.
+    pub fn vacuum(&self) -> Result<()> {
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or(Error::ReadOnly(musaeum_i18n::T::OpenedReadOnly))?;
+        writer.call(|connection| {
+            connection.execute_batch("VACUUM")?;
+            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+            Ok(())
+        })
     }
 }
 

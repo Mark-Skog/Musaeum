@@ -8,6 +8,7 @@
 //! Nothing here overwrites a file or deletes one. A move fails if the target exists, and deleting
 //! goes to the system's Recycle Bin, and is refused where there is none.
 
+use musaeum_i18n::tr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -90,7 +91,7 @@ fn load_file(connection: &Connection, instance: InstanceId) -> Result<KnownFile>
             ))
         })
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no file {instance}")))?;
+        .ok_or_else(|| Error::NotFound(tr!(NoFile, id = instance)))?;
     let (folder_id, name, volume, file_id, mtime_ns, state, size) = row;
     Ok(KnownFile {
         id: instance,
@@ -108,16 +109,13 @@ fn load_file(connection: &Connection, instance: InstanceId) -> Result<KnownFile>
 /// could be moved or deleted on the strength of an old record.
 fn check_file_is_as_known(probe: &dyn FsProbe, file: &KnownFile) -> Result<()> {
     if file.state == InstanceState::Absent {
-        return Err(Error::Refused(format!(
-            "{} is not there, as far as the library knows",
-            file.path.display()
+        return Err(Error::Refused(tr!(
+            FileNotThere,
+            path = file.path.display()
         )));
     }
     let stat = probe.stat(&file.path).map_err(|error| {
-        Error::Refused(format!(
-            "{} cannot be looked at: {error}",
-            file.path.display()
-        ))
+        Error::Refused(tr!(CannotLookAt, path = file.path.display(), error = error))
     })?;
     let same = Some(stat.volume) == file.volume
         && stat.file_id == file.file_id
@@ -126,9 +124,9 @@ fn check_file_is_as_known(probe: &dyn FsProbe, file: &KnownFile) -> Result<()> {
     if same {
         Ok(())
     } else {
-        Err(Error::Refused(format!(
-            "{} is not the file the library knows: it needs a reconcile first",
-            file.path.display()
+        Err(Error::Refused(tr!(
+            NotTheKnownFile,
+            path = file.path.display()
         )))
     }
 }
@@ -231,14 +229,11 @@ fn fail(database: &Database, operation: OperationId, message: String) -> Error {
 
 fn describe_move_error(error: &MoveError, target: &Path) -> String {
     match error {
-        MoveError::TargetExists => format!("{} already exists", target.display()),
+        MoveError::TargetExists => tr!(TargetExists, path = target.display()),
         MoveError::OtherVolume => {
-            format!(
-                "{} is on another volume, which takes a copy",
-                target.display()
-            )
+            tr!(TargetOtherVolume, path = target.display())
         }
-        MoveError::Io(error) => format!("moving to {}: {error}", target.display()),
+        MoveError::Io(error) => tr!(MovingFailed, path = target.display(), error = error),
     }
 }
 
@@ -257,18 +252,18 @@ pub(crate) fn move_file(
         Ok((file, folder))
     })?;
     let Some((target_folder, _)) = target_folder else {
-        return Err(Error::Refused(format!(
-            "{} is not a folder inside a monitored root",
-            target.parent().unwrap_or(Path::new("")).display()
+        return Err(Error::Refused(tr!(
+            NotInsideRoot,
+            path = target.parent().unwrap_or(Path::new("")).display()
         )));
     };
     let Some(name) = target.file_name().map(std::ffi::OsStr::to_owned) else {
-        return Err(Error::Refused("the target has no file name".to_owned()));
+        return Err(Error::Refused(tr!(TargetNoName)));
     };
     if format_of(&name).is_none() {
-        return Err(Error::Refused(format!(
-            "with the name {}, the library would no longer see this file",
-            name.to_string_lossy()
+        return Err(Error::Refused(tr!(
+            NameHidesFile,
+            name = name.to_string_lossy()
         )));
     }
     check_file_is_as_known(probe, &file)?;
@@ -353,28 +348,24 @@ pub(crate) fn move_folder(
             .prepare_cached("SELECT parent_id IS NULL FROM folder WHERE id = ?1")?
             .query_row([folder], |row| row.get(0))
             .optional()?
-            .ok_or_else(|| Error::NotFound(format!("there is no folder {folder}")))?;
+            .ok_or_else(|| Error::NotFound(tr!(NoFolderId, id = folder)))?;
         let parent = target.parent().unwrap_or(Path::new(""));
         Ok((source, is_top, folder_at(connection, parent)?))
     })?;
     if is_top {
-        return Err(Error::Refused(
-            "a root's own folder is moved by relocating the root".to_owned(),
-        ));
+        return Err(Error::Refused(tr!(RootFolderMoved)));
     }
     let Some((target_parent, _)) = target_parent else {
-        return Err(Error::Refused(format!(
-            "{} is not a folder inside a monitored root",
-            target.parent().unwrap_or(Path::new("")).display()
+        return Err(Error::Refused(tr!(
+            NotInsideRoot,
+            path = target.parent().unwrap_or(Path::new("")).display()
         )));
     };
     if target.starts_with(&source) {
-        return Err(Error::Refused(
-            "a folder cannot move into itself".to_owned(),
-        ));
+        return Err(Error::Refused(tr!(FolderIntoItself)));
     }
     let stat = probe.stat(&source).map_err(|error| {
-        Error::Refused(format!("{} cannot be looked at: {error}", source.display()))
+        Error::Refused(tr!(CannotLookAt, path = source.display(), error = error))
     })?;
     let undo = UndoData {
         volume: Some(stat.volume),
@@ -452,33 +443,28 @@ pub(crate) fn recycle(
     let file = database.read(|connection| load_file(connection, instance))?;
     check_file_is_as_known(probe, &file)?;
     if !has_recycle_bin(&file.path) {
-        return Err(Error::Refused(format!(
-            "{} is on a volume with no Recycle Bin, where deleting cannot be undone",
-            file.path.display()
+        return Err(Error::Refused(tr!(
+            NoRecycleBin,
+            path = file.path.display()
         )));
     }
     if file.path.as_os_str().encode_wide().count() > LONGEST_PATH_THE_RECYCLE_BIN_RESTORES {
-        return Err(Error::Refused(format!(
-            "{} has a path too long for the Recycle Bin to give back, so it stays where it is",
-            file.path.display()
+        return Err(Error::Refused(tr!(
+            PathTooLongForBin,
+            path = file.path.display()
         )));
     }
     // One item with a name like this makes the crate that reads the Recycle Bin fail on all of it, so
     // it would take away the way back from every other file in there too.
     if file.path.to_str().is_none() {
-        return Err(Error::Refused(format!(
-            "{} has a name that is not valid Unicode, which the Recycle Bin cannot be asked about",
-            file.path.display()
+        return Err(Error::Refused(tr!(
+            NameNotUnicode,
+            path = file.path.display()
         )));
     }
     // The way back goes through reading the Recycle Bin. If that does not work now, nothing goes in.
-    on_com_thread(|| trash::os_limited::list().map_err(|error| error.to_string())).map_err(
-        |error| {
-            Error::Refused(format!(
-                "the Recycle Bin cannot be read, so this could not be undone: {error}"
-            ))
-        },
-    )?;
+    on_com_thread(|| trash::os_limited::list().map_err(|error| error.to_string()))
+        .map_err(|error| Error::Refused(tr!(BinUnreadable, error = error)))?;
     let undo = UndoData {
         volume: file.volume,
         file_id: file.file_id.map(hex_id),
@@ -599,21 +585,20 @@ pub(crate) fn undo(
 ) -> Result<OperationId> {
     let record = database.read(|connection| load_record(connection, operation))?;
     if record.state != "done" {
-        return Err(Error::Refused(format!(
-            "operation {operation} is {}, so there is nothing to undo",
-            record.state
+        return Err(Error::Refused(tr!(
+            NothingToUndo,
+            id = operation,
+            state = record.state
         )));
     }
     if record.undo_of.is_some() {
-        return Err(Error::Refused(format!(
-            "operation {operation} is itself an undo"
-        )));
+        return Err(Error::Refused(tr!(UndoOfUndo, id = operation)));
     }
     match record.kind.as_str() {
         KIND_MOVE_FILE => undo_move_file(database, probe, operation, &record),
         KIND_MOVE_FOLDER => undo_move_folder(database, probe, operation, &record),
         KIND_RECYCLE => undo_recycle(database, probe, operation, &record),
-        other => Err(Error::Refused(format!("a {other} cannot be undone"))),
+        other => Err(Error::Refused(tr!(CannotUndoKind, kind = other))),
     }
 }
 
@@ -636,7 +621,7 @@ fn load_record(connection: &Connection, operation: OperationId) -> Result<Record
         )?
         .query_row([operation], read_record)
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no operation {operation}")))
+        .ok_or_else(|| Error::NotFound(tr!(NoOperation, id = operation)))
 }
 
 fn read_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
@@ -663,11 +648,11 @@ fn undo_move_file(
 ) -> Result<OperationId> {
     let instance = record
         .instance
-        .ok_or_else(|| Error::Refused("the journal entry names no file".to_owned()))?;
+        .ok_or_else(|| Error::Refused(tr!(JournalNoFile)))?;
     let source_folder = record
         .undo
         .source_folder
-        .ok_or_else(|| Error::Refused("the journal entry names no folder".to_owned()))?;
+        .ok_or_else(|| Error::Refused(tr!(JournalNoFolder)))?;
     let file = database.read(|connection| load_file(connection, instance))?;
     check_file_is_as_known(probe, &file)?;
 
@@ -705,23 +690,20 @@ fn undo_move_folder(
 ) -> Result<OperationId> {
     let folder = record
         .folder
-        .ok_or_else(|| Error::Refused("the journal entry names no folder".to_owned()))?;
+        .ok_or_else(|| Error::Refused(tr!(JournalNoFolder)))?;
     let (current, parent) = database.read(|connection| {
         let current = folder_path(connection, folder)?;
         let parent = folder_at(connection, record.source.parent().unwrap_or(Path::new("")))?;
         Ok((current, parent))
     })?;
     let Some((parent, _)) = parent else {
-        return Err(Error::Refused(format!(
-            "the folder {} used to be in is gone",
-            current.display()
+        return Err(Error::Refused(tr!(
+            FormerFolderGone,
+            path = current.display()
         )));
     };
     probe.stat(&current).map_err(|error| {
-        Error::Refused(format!(
-            "{} cannot be looked at: {error}",
-            current.display()
-        ))
+        Error::Refused(tr!(CannotLookAt, path = current.display(), error = error))
     })?;
     let operation = write_intent(
         database,
@@ -753,21 +735,16 @@ fn undo_recycle(
 ) -> Result<OperationId> {
     let instance = record
         .instance
-        .ok_or_else(|| Error::Refused("the journal entry names no file".to_owned()))?;
+        .ok_or_else(|| Error::Refused(tr!(JournalNoFile)))?;
     if record.source.exists() {
-        return Err(Error::Refused(format!(
-            "{} already exists, and restoring would overwrite it",
-            record.source.display()
+        return Err(Error::Refused(tr!(
+            RestoreWouldOverwrite,
+            path = record.source.display()
         )));
     }
     let item = find_in_recycle_bin(&record.source, record.undo.time_deleted)
         .map_err(Error::Refused)?
-        .ok_or_else(|| {
-            Error::Refused(format!(
-                "{} is no longer in the Recycle Bin",
-                record.source.display()
-            ))
-        })?;
+        .ok_or_else(|| Error::Refused(tr!(NotInBin, path = record.source.display())))?;
     let operation = write_intent(
         database,
         KIND_RESTORE,

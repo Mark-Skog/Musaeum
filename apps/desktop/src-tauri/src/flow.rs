@@ -17,6 +17,7 @@ use musaeum_flow::cfi;
 use musaeum_flow::locator::{self, Found, Locator, LogicalDocument};
 use musaeum_flow::package::{Manifest, NavPoint};
 use musaeum_flow::xml;
+use musaeum_i18n::tr;
 use musaeum_ingest::protocol::Format;
 use musaeum_library::{
     FlowReadingState, Hash, IngestClient, IngestConfig, Library, NormalizeOutcome, ReadingMode,
@@ -206,7 +207,7 @@ pub fn normalized(
     let normalized = match outcome {
         NormalizeOutcome::Normalized(normalized) => normalized,
         NormalizeOutcome::Nothing(reason) | NormalizeOutcome::Unavailable(reason) => {
-            return Err(format!("o livro não pôde ser preparado: {reason}"));
+            return Err(tr!(BookNotPrepared, reason = reason));
         }
     };
     let dir = store
@@ -297,7 +298,7 @@ pub fn open_flow(
     let file = library
         .book_file(args.document)
         .map_err(|error| error.to_string())?
-        .ok_or("o arquivo deste livro não está mais na pasta")?;
+        .ok_or_else(|| tr!(BookFileGone))?;
     let format = Format::from_extension(&file.format)
         .filter(|format| format.flow().is_some())
         .ok_or_else(|| format!("{} is not a flowing format", file.format))?;

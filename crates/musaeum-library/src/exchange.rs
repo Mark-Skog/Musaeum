@@ -23,6 +23,7 @@
 //! the same title by the same first author), where it is found again by the anchoring cascade the
 //! next time the document is read, exact, approximate or an orphan, and never lost.
 
+use musaeum_i18n::tr;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -454,11 +455,7 @@ fn hash_of_iri(iri: &str) -> Result<[u8; 32]> {
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
-        .ok_or_else(|| {
-            refused(format!(
-                "{iri:?} não é o nome de um arquivo (urn:blake3: e 64 dígitos)"
-            ))
-        })?;
+        .ok_or_else(|| refused(tr!(NotABlake3Name, iri = format!("{:?}", iri))))?;
     let mut hash = [0u8; 32];
     for (index, byte) in hash.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).unwrap_or(0);
@@ -522,7 +519,7 @@ fn json_selector(selector: &Selector, revisions: &HashMap<RevisionId, String>) -
 /// What a selector of the file is, once checked: one of the library's, or the page fragment added
 /// for other readers (`Ok(None)`).
 fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>)>> {
-    let bad = |why: &str| refused(format!("um seletor {} {why}", json.kind));
+    let bad = |why: String| refused(tr!(SelectorBad, kind = json.kind, why = why));
     let only = |allowed: &[&str]| -> Result<()> {
         let present = [
             ("exact", json.exact.is_some()),
@@ -544,7 +541,7 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
             .iter()
             .find(|(name, here)| *here && !allowed.contains(name))
         {
-            Some((name, _)) => Err(bad(&format!("não leva {name}"))),
+            Some((name, _)) => Err(bad(tr!(SelectorTakesNo, name = name))),
             None => Ok(()),
         }
     };
@@ -562,7 +559,7 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
                     })
                 })
             {
-                return Err(bad("só pode dizer a página de um PDF"));
+                return Err(bad(tr!(SelectorPdfPageOnly)));
             }
             return Ok(None);
         }
@@ -571,7 +568,11 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
             let mut data = serde_json::Map::new();
             data.insert(
                 "exact".into(),
-                Value::String(json.exact.clone().ok_or_else(|| bad("sem exact"))?),
+                Value::String(
+                    json.exact
+                        .clone()
+                        .ok_or_else(|| bad(tr!(SelectorWithout, name = "exact")))?,
+                ),
             );
             if let Some(prefix) = &json.prefix {
                 data.insert("prefix".into(), Value::String(prefix.clone()));
@@ -584,10 +585,10 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
         "TextPositionSelector" => {
             only(&with_place(&["start", "end", "musaeum:unit"]))?;
             if json.unit.as_deref() != Some("utf-16") {
-                return Err(bad("conta em unidades de UTF-16 (musaeum:unit)"));
+                return Err(bad(tr!(SelectorUtf16)));
             }
             let (Some(start), Some(end)) = (json.start, json.end) else {
-                return Err(bad("sem start e end"));
+                return Err(bad(tr!(SelectorNoStartEnd)));
             };
             (
                 SelectorKind::TextPosition,
@@ -597,7 +598,7 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
         "RangeSelector" => {
             only(&with_place(&["startSelector", "endSelector"]))?;
             let point = |part: &Option<Box<JsonSelector>>| -> Result<String> {
-                let part = part.as_deref().ok_or_else(|| bad("sem as duas pontas"))?;
+                let part = part.as_deref().ok_or_else(|| bad(tr!(SelectorNoEnds)))?;
                 let fine = part.kind == "FragmentSelector"
                     && part.conforms_to.as_deref() == Some(CFI)
                     && part.value.is_some()
@@ -608,7 +609,7 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
                         ..JsonSelector::default()
                     } == *part;
                 if !fine {
-                    return Err(bad("tem pontas que não são CFIs de EPUB"));
+                    return Err(bad(tr!(SelectorNotCfi)));
                 }
                 Ok(part.value.clone().unwrap_or_default())
             };
@@ -618,18 +619,23 @@ fn read_selector(json: &JsonSelector) -> Result<Option<(Selector, Option<String>
         }
         name => {
             let kind = kind_of_own(name)
-                .ok_or_else(|| refused(format!("um seletor de tipo desconhecido: {name:?}")))?;
+                .ok_or_else(|| refused(tr!(SelectorUnknownKind, name = format!("{:?}", name))))?;
             only(&with_place(&["musaeum:value"]))?;
-            let data = json.data.clone().ok_or_else(|| bad("sem musaeum:value"))?;
+            let data = json
+                .data
+                .clone()
+                .ok_or_else(|| bad(tr!(SelectorWithout, name = "musaeum:value")))?;
             if depth_of(&data) > 8 {
-                return Err(bad("aninhado fundo demais"));
+                return Err(bad(tr!(SelectorTooDeep)));
             }
             (kind, data)
         }
     };
-    let priority = json.priority.ok_or_else(|| bad("sem musaeum:priority"))?;
+    let priority = json
+        .priority
+        .ok_or_else(|| bad(tr!(SelectorWithout, name = "musaeum:priority")))?;
     if !(-1000..=1000).contains(&priority) {
-        return Err(bad("com uma prioridade fora do lugar"));
+        return Err(bad(tr!(SelectorPriority)));
     }
     Ok(Some((
         Selector {
@@ -720,7 +726,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 /// An `xsd:dateTime`: `YYYY-MM-DDTHH:MM:SS`, a fraction of a second if any, and `Z` or an offset.
 fn parse_date(text: &str) -> Result<i64> {
-    let bad = || refused(format!("{text:?} não é uma data"));
+    let bad = || refused(tr!(NotADate, text = format!("{:?}", text)));
     let bytes = text.as_bytes();
     if bytes.len() < 20 || bytes.len() > 40 {
         return Err(bad());
@@ -934,7 +940,7 @@ fn document_facts(connection: &Connection, document: DocumentId) -> Result<Docum
             })
         })
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no document {document}")))
+        .ok_or_else(|| Error::NotFound(tr!(NoDocument, id = document)))
 }
 
 fn source_of(connection: &Connection, facts: &DocumentFacts) -> Result<Source> {
@@ -1110,13 +1116,16 @@ fn label_ok(text: &str) -> bool {
 
 fn check_source(source: &Source) -> Result<()> {
     if source.kind != "Text" {
-        return Err(refused(format!(
-            "a fonte de uma anotação é de tipo {:?}, e não Text",
-            source.kind
+        return Err(refused(tr!(
+            SourceNotText,
+            kind = format!("{:?}", source.kind)
         )));
     }
     if !matches!(source.layout.as_str(), "fixed" | "flow") {
-        return Err(refused(format!("{:?} não é um layout", source.layout)));
+        return Err(refused(tr!(
+            NotALayout,
+            layout = format!("{:?}", source.layout)
+        )));
     }
     let texts = [
         Some(&source.title),
@@ -1133,25 +1142,23 @@ fn check_source(source: &Source) -> Result<()> {
     .chain(source.isbn.iter());
     for text in texts {
         if !label_ok(text) {
-            return Err(refused(
-                "um título, um nome ou um identificador longo demais",
-            ));
+            return Err(refused(tr!(WorkTextTooLong)));
         }
     }
     if source.creators.len() > 256
         || source.identifiers.len() > 256
         || source.creator_names.len() > 256
     {
-        return Err(refused("pessoas ou identificadores demais numa obra"));
+        return Err(refused(tr!(WorkTooManyPeople)));
     }
     for person in &source.creators {
         if !label_ok(&person.name) || !label_ok(&person.role) {
-            return Err(refused("um nome longo demais"));
+            return Err(refused(tr!(PlainNameTooLong)));
         }
     }
     for code in &source.identifiers {
         if !label_ok(&code.scheme) || !label_ok(&code.value) {
-            return Err(refused("um identificador longo demais"));
+            return Err(refused(tr!(IdentifierTooLong)));
         }
     }
     if let Some(id) = &source.id {
@@ -1162,15 +1169,15 @@ fn check_source(source: &Source) -> Result<()> {
 
 fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
     if json.kind != "Annotation" {
-        return Err(refused(format!(
-            "um item de tipo {:?}, e não Annotation",
-            json.kind
+        return Err(refused(tr!(
+            ItemNotAnnotation,
+            kind = format!("{:?}", json.kind)
         )));
     }
     let text = json
         .id
         .strip_prefix("urn:uuid:")
-        .ok_or_else(|| refused(format!("{:?} não é urn:uuid:", json.id)))?;
+        .ok_or_else(|| refused(tr!(NotUrnUuid, id = format!("{:?}", json.id))))?;
     let uuid = annotations::uuid_bytes(text)?;
     let uuid_text = uuid::Uuid::from_bytes(uuid).hyphenated().to_string();
     let motivation = if json.mark == AnnotationKind::Note {
@@ -1179,9 +1186,12 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
         "highlighting"
     };
     if json.motivation != motivation {
-        return Err(refused(format!(
-            "a anotação {uuid_text} diz {:?}, e uma de tipo {:?} é {motivation}",
-            json.motivation, json.mark
+        return Err(refused(tr!(
+            MotivationMismatch,
+            uuid = uuid_text,
+            said = format!("{:?}", json.motivation),
+            mark = format!("{:?}", json.mark),
+            motivation = motivation
         )));
     }
     let note = match &json.body {
@@ -1191,25 +1201,24 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
                 || body.purpose != "commenting"
                 || body.value.is_empty()
             {
-                return Err(refused(format!(
-                    "a nota da anotação {uuid_text} não é um TextualBody em text/markdown"
-                )));
+                return Err(refused(tr!(NoteNotMarkdown, uuid = uuid_text)));
             }
             body.value.clone()
         }
         None => String::new(),
     };
     if json.target.is_empty() || json.target.len() > annotations::MAX_SEGMENTS {
-        return Err(refused(format!(
-            "a anotação {uuid_text} tem alvos de menos ou demais"
-        )));
+        return Err(refused(tr!(TargetCount, uuid = uuid_text)));
     }
     let first = &json.target[0].source;
     let whole = json.target.len() == 1 && json.target[0].ordinal.is_none();
     let mut segments = Vec::new();
     for target in &json.target {
         if target.kind != "SpecificResource" {
-            return Err(refused(format!("um alvo de tipo {:?}", target.kind)));
+            return Err(refused(tr!(
+                TargetKind,
+                kind = format!("{:?}", target.kind)
+            )));
         }
         check_source(&target.source)?;
         let same_work = Source {
@@ -1220,9 +1229,7 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
             ..first.clone()
         };
         if !same_work {
-            return Err(refused(format!(
-                "a anotação {uuid_text} está em duas obras"
-            )));
+            return Err(refused(tr!(TwoWorks, uuid = uuid_text)));
         }
         if whole {
             if !target.selector.is_empty()
@@ -1231,19 +1238,15 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
                 || target.clip.is_some()
                 || target.anchor_state.is_some()
             {
-                return Err(refused(format!(
-                    "a anotação {uuid_text} sobre o livro todo tem um lugar"
-                )));
+                return Err(refused(tr!(WholeBookHasPlace, uuid = uuid_text)));
             }
             continue;
         }
-        let ordinal = target.ordinal.ok_or_else(|| {
-            refused(format!(
-                "um trecho da anotação {uuid_text} sem musaeum:ordinal"
-            ))
-        })?;
+        let ordinal = target
+            .ordinal
+            .ok_or_else(|| refused(tr!(SegmentNoOrdinal, uuid = uuid_text)))?;
         if target.selector.len() > MAX_SELECTORS {
-            return Err(refused("seletores demais num trecho"));
+            return Err(refused(tr!(SegmentTooManySelectors)));
         }
         let mut selectors = Vec::new();
         let mut revisions = Vec::new();
@@ -1263,9 +1266,7 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
                     .page
                     .map(|page| format!("page={}", u64::from(page) + 1))
         {
-            return Err(refused(format!(
-                "um trecho da anotação {uuid_text} diz duas páginas"
-            )));
+            return Err(refused(tr!(SegmentTwoPages, uuid = uuid_text)));
         }
         let segment = Segment {
             ordinal,
@@ -1274,19 +1275,17 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
             clip: target.clip,
             anchor_state: target
                 .anchor_state
-                .ok_or_else(|| refused(format!("um trecho da anotação {uuid_text} sem estado")))?,
+                .ok_or_else(|| refused(tr!(SegmentNoState, uuid = uuid_text)))?,
             selectors,
         };
         segments.push((segment, revisions));
     }
     let hash = |iri: &Option<String>| iri.as_deref().map(hash_of_iri).transpose();
     if json.color.len() > 32 || json.pdf_name.as_ref().is_some_and(|name| name.len() > 256) {
-        return Err(refused(format!(
-            "a cor ou o nome PDF da anotação {uuid_text}"
-        )));
+        return Err(refused(tr!(ColorOrPdfName, uuid = uuid_text)));
     }
     if json.progression.is_some_and(|value| !value.is_finite()) {
-        return Err(refused("uma posição que não é um número"));
+        return Err(refused(tr!(PositionNotNumber)));
     }
     Ok(Incoming {
         uuid,
@@ -1311,47 +1310,39 @@ fn incoming_of(json: &JsonAnnotation) -> Result<Incoming> {
 /// Reads a file of annotations, strictly, and checks every one of them.
 fn read_file(bytes: &[u8]) -> Result<(Collection, Vec<Incoming>)> {
     if bytes.len() as u64 > MAX_JSONLD_BYTES {
-        return Err(refused("o arquivo é grande demais"));
+        return Err(refused(tr!(FileTooLarge)));
     }
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     if nesting(bytes) > MAX_DEPTH {
-        return Err(refused(format!(
-            "o arquivo aninha objetos mais fundo que {MAX_DEPTH} níveis"
-        )));
+        return Err(refused(tr!(FileTooDeep, max = MAX_DEPTH)));
     }
-    let mut collection: Collection = serde_json::from_slice(bytes).map_err(|error| {
-        refused(format!(
-            "o arquivo não é um JSON-LD de anotações do Musaeum: {error}"
-        ))
-    })?;
+    let mut collection: Collection = serde_json::from_slice(bytes)
+        .map_err(|error| refused(tr!(NotMusaeumJsonLd, error = error)))?;
     if collection.context != context() {
-        return Err(refused(
-            "o @context não é o do Musaeum: nenhum outro é lido, e nenhum é buscado na rede",
-        ));
+        return Err(refused(tr!(ContextNotOurs)));
     }
     if collection.kind != "AnnotationCollection"
         || collection.first.kind != "AnnotationPage"
         || collection.first.start_index != 0
     {
-        return Err(refused(
-            "o arquivo não é uma AnnotationCollection com uma página",
-        ));
+        return Err(refused(tr!(NotACollection)));
     }
     if collection.format_version != FORMAT_VERSION {
-        return Err(refused(format!(
-            "o arquivo é da versão {} do formato, e esta lê a {FORMAT_VERSION}",
-            collection.format_version
+        return Err(refused(tr!(
+            FormatVersion,
+            found = collection.format_version,
+            known = FORMAT_VERSION
         )));
     }
     if !matches!(collection.scope.as_str(), "document" | "works" | "library")
         || collection.generator.kind != "Software"
     {
-        return Err(refused("o arquivo não diz o que contém"));
+        return Err(refused(tr!(FileSaysNothing)));
     }
     if collection.first.items.len() > MAX_EXCHANGED
         || collection.total != collection.first.items.len()
     {
-        return Err(refused("o número de anotações do arquivo não confere"));
+        return Err(refused(tr!(CountMismatch)));
     }
     let items = std::mem::take(&mut collection.first.items);
     let incoming = items.iter().map(incoming_of).collect::<Result<Vec<_>>>()?;
@@ -1718,7 +1709,7 @@ impl Library {
                 context: context(),
                 id: format!("urn:uuid:{}", annotations::new_uuid()),
                 kind: "AnnotationCollection".to_owned(),
-                label: "Anotações do Musaeum".to_owned(),
+                label: tr!(CollectionLabel),
                 total: count,
                 generator: Generator {
                     kind: "Software".to_owned(),

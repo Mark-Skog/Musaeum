@@ -164,6 +164,7 @@ async function openPackage(): Promise<void> {
             style: message.style,
             sandbox: sectionSandbox,
             reducedMotion: message.reducedMotion,
+            sectionTitle: message.sectionTitle,
           },
           send,
         );
@@ -178,6 +179,12 @@ async function openPackage(): Promise<void> {
         return;
       case 'set-animation':
         engine?.setAnimated(message.animated);
+        return;
+      case 'set-reduced-motion':
+        engine?.setReducedMotion(message.on);
+        return;
+      case 'set-section-title':
+        engine?.setSectionTitle(message.template);
         return;
       case 'set-style':
         void engine?.setStyle(message.style).catch(fail);

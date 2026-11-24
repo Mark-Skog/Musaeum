@@ -44,9 +44,14 @@ export type ToReader =
       sections: SectionPlan[];
       totalText: number;
       reducedMotion: boolean;
+      /** A section's frame title, with `{number}` where its number goes, in the person's language. */
+      sectionTitle: string;
     }
   | { type: 'set-mode'; mode: FlowMode }
   | { type: 'set-animation'; animated: boolean }
+  | { type: 'set-reduced-motion'; on: boolean }
+  /** The language changed: the frames' titles, as in `open`. */
+  | { type: 'set-section-title'; template: string }
   | { type: 'set-style'; style: ReadingStyle }
   | { type: 'go-to'; target: ReaderTarget }
   | { type: 'turn'; step: 1 | -1 }

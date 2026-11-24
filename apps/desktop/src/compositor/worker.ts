@@ -278,6 +278,9 @@ class Compositor {
       case 'set-animation':
         reader.setAnimation(message.on);
         break;
+      case 'set-reduced-motion':
+        reader.setReducedMotion(message.on);
+        break;
       case 'set-spreads':
         reader.setSpreads(message.spreads);
         break;

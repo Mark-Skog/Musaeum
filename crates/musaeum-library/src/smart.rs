@@ -16,6 +16,7 @@
 //! `"historia"` finds "História". A category takes the works of its subcategories too, and a
 //! folder those of the folders below it. A rule with nothing in it matches no work.
 
+use musaeum_i18n::{T, text, tr};
 use std::collections::HashMap;
 
 use rusqlite::types::Value;
@@ -72,10 +73,12 @@ enum Kind {
     Boolean,
 }
 
-fn bad(rule: &Rule, why: &str) -> Error {
-    Error::Refused(format!(
-        "a smart collection's rule ({} {}): {why}",
-        rule.field, rule.op
+fn bad(rule: &Rule, why: T) -> Error {
+    Error::Refused(tr!(
+        SmartRule,
+        field = rule.field,
+        op = rule.op,
+        why = text(why, &[])
     ))
 }
 
@@ -142,13 +145,13 @@ fn source_of(rule: &Rule, custom: &CustomKinds) -> Result<Source> {
             let id: i64 = other
                 .strip_prefix("custom:")
                 .and_then(|id| id.parse().ok())
-                .ok_or_else(|| bad(rule, "no such field"))?;
+                .ok_or_else(|| bad(rule, T::SmartNoField))?;
             let kind = match custom.get(&id).copied() {
                 Some("text" | "url" | "choice") => Kind::Text,
                 Some("number") => Kind::Number,
                 Some("date") => Kind::Day,
                 Some("boolean") => Kind::Boolean,
-                _ => return Err(bad(rule, "no such custom field")),
+                _ => return Err(bad(rule, T::SmartNoCustomField)),
             };
             Source {
                 kind,
@@ -167,20 +170,20 @@ fn text_value(rule: &Rule) -> Result<String> {
         .as_str()
         .map(str::to_owned)
         .filter(|text| !text.trim().is_empty() && text.chars().count() <= 400)
-        .ok_or_else(|| bad(rule, "the value is a text of 1 to 400 characters"))
+        .ok_or_else(|| bad(rule, T::SmartValueText))
 }
 
 fn number_of(rule: &Rule, value: &serde_json::Value) -> Result<f64> {
     value
         .as_f64()
         .filter(|number| number.is_finite())
-        .ok_or_else(|| bad(rule, "the value is a number"))
+        .ok_or_else(|| bad(rule, T::SmartValueNumber))
 }
 
 fn id_value(rule: &Rule) -> Result<i64> {
     rule.value
         .as_i64()
-        .ok_or_else(|| bad(rule, "the value is an id"))
+        .ok_or_else(|| bad(rule, T::SmartValueId))
 }
 
 /// One rule as SQL on the work `w`, and its parameters in order.
@@ -230,7 +233,7 @@ fn compile_rule(rule: &Rule, custom: &CustomKinds, now_ms: i64) -> Result<(Strin
                 .value
                 .as_array()
                 .filter(|pair| pair.len() == 2)
-                .ok_or_else(|| bad(rule, "the value is two numbers"))?;
+                .ok_or_else(|| bad(rule, T::SmartValueTwoNumbers))?;
             let (low, high) = (number_of(rule, &pair[0])?, number_of(rule, &pair[1])?);
             params.push(Value::Real(low.min(high)));
             params.push(Value::Real(low.max(high)));
@@ -239,7 +242,7 @@ fn compile_rule(rule: &Rule, custom: &CustomKinds, now_ms: i64) -> Result<(Strin
         (Kind::Moment | Kind::Day, "in_last_days") => {
             let days = number_of(rule, &rule.value)?;
             if !(0.0..=36_500.0).contains(&days) {
-                return Err(bad(rule, "the value is a number of days, up to 36500"));
+                return Err(bad(rule, T::SmartValueDays));
             }
             let since = now_ms - (days * 86_400_000.0) as i64;
             if source.kind == Kind::Day {
@@ -254,7 +257,7 @@ fn compile_rule(rule: &Rule, custom: &CustomKinds, now_ms: i64) -> Result<(Strin
                 .value
                 .as_str()
                 .filter(|text| date_ms(text).is_some())
-                .ok_or_else(|| bad(rule, "the value is a date, YYYY-MM-DD"))?;
+                .ok_or_else(|| bad(rule, T::SmartValueDate))?;
             if source.kind == Kind::Day {
                 params.push(Value::Text(text.to_owned()));
                 some(if op == "before" { "{v} < ?" } else { "{v} > ?" })
@@ -276,7 +279,7 @@ fn compile_rule(rule: &Rule, custom: &CustomKinds, now_ms: i64) -> Result<(Strin
         (Kind::Status, "is" | "is_not") => {
             let status = text_value(rule)?;
             if !matches!(status.as_str(), "unread" | "reading" | "read" | "abandoned") {
-                return Err(bad(rule, "the value is unread, reading, read or abandoned"));
+                return Err(bad(rule, T::SmartValueStatus));
             }
             params.push(Value::Text(status));
             some(if op == "is" { "{v} = ?" } else { "{v} <> ?" })
@@ -326,7 +329,7 @@ fn compile_rule(rule: &Rule, custom: &CustomKinds, now_ms: i64) -> Result<(Strin
                 format!("NOT {inside}")
             }
         }
-        _ => return Err(bad(rule, "this operator does not go with this field")),
+        _ => return Err(bad(rule, T::SmartWrongOperator)),
     };
     Ok((sql, params))
 }
@@ -357,9 +360,7 @@ pub fn check(rules: &Rules, custom: &CustomKinds) -> Result<String> {
 /// The rule as one SQL condition on the work `w`, and its parameters in order.
 pub fn compile(rules: &Rules, custom: &CustomKinds, now_ms: i64) -> Result<(String, Vec<Value>)> {
     if rules.rules.len() > MAX_RULES {
-        return Err(Error::Refused(format!(
-            "a smart collection has {MAX_RULES} rules at most"
-        )));
+        return Err(Error::Refused(tr!(SmartTooManyRules, max = MAX_RULES)));
     }
     if rules.rules.is_empty() {
         return Ok(("0".into(), Vec::new()));

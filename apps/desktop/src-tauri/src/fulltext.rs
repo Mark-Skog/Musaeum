@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use musaeum_core::{DeliveryMode, FixedFormat, PoolConfig, RenderPool};
 use musaeum_flow::package::Manifest;
+use musaeum_i18n::tr;
 use musaeum_ingest::protocol::Format;
 use musaeum_library::anchoring::flow::reader_range;
 use musaeum_library::{
@@ -535,8 +536,8 @@ pub fn fulltext_flow_place(
     let file = library
         .book_file(document)
         .map_err(|error| error.to_string())?
-        .ok_or("the book has no file now")?;
-    let blake3 = file.blake3.ok_or("the book has not been read yet")?;
+        .ok_or_else(|| tr!(BookFileGone))?;
+    let blake3 = file.blake3.ok_or_else(|| tr!(BookNotReadYet))?;
     let format = Format::from_extension(&file.format).ok_or("not a flowing book")?;
     let client = Arc::new(Mutex::new(None::<IngestClient>));
     crate::flow::on_large_stack(move || {
@@ -544,7 +545,7 @@ pub fn fulltext_flow_place(
             crate::flow::normalized(&library, &client, &file.path, format, &blake3)?;
         let document = crate::flow::assemble(&dir, &manifest, unit as usize)?;
         let (start, end) = reader_range(&manifest, &document, position, position + length.max(1))
-            .ok_or("the match is not in the book as it is now")?;
+            .ok_or_else(|| tr!(MatchNotInBook))?;
         Ok(FlowPlace { start, end })
     })
 }

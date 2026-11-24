@@ -37,8 +37,10 @@ import {
 } from 'react-aria-components';
 
 import { type BookRow, coverUrl, type FolderEntry, type LibraryInfo, type ReaderTarget, type SelectedBook, api } from '../api';
+import { tn, useLocale, useT } from '../i18n';
 import type { ExchangeAction } from '../exchange';
 import { useExchange } from '../ExchangeSection';
+import { onEscape, useFocusReturn } from '../focus';
 import { BatchPanel } from './BatchPanel';
 import { CalibreDialog } from './CalibreDialog';
 import { reasonOf } from './dialogs';
@@ -106,17 +108,19 @@ function Cover({ book, version }: { book: BookRow; version: number }): React.JSX
 }
 
 function Progress({ value }: { value: number | null }): React.JSX.Element | null {
+  const t = useT();
   if (value === null || value <= 0) {
     return null;
   }
   return (
-    <div className="progress" aria-label={`Lido ${Math.round(value * 100)}%`}>
+    <div className="progress" aria-label={t('library.progress', { percent: Math.round(value * 100) })}>
       <div className="progress-fill" style={{ width: `${Math.max(2, value * 100)}%` }} />
     </div>
   );
 }
 
-function Welcome({ info, onChanged }: { info: LibraryInfo | null; onChanged(): void }): React.JSX.Element {
+function Welcome({ info, onChanged, onPreferences }: { info: LibraryInfo | null; onChanged(): void; onPreferences?(): void }): React.JSX.Element {
+  const t = useT();
   const [error, setError] = useState<string | null>(info?.error ?? null);
   const run = (action: () => Promise<unknown>): void => {
     setError(null);
@@ -127,13 +131,16 @@ function Welcome({ info, onChanged }: { info: LibraryInfo | null; onChanged(): v
   return (
     <div className="welcome">
       <h1>Musaeum</h1>
-      <p>Escolha a pasta onde estão os seus livros. Eles ficam onde estão: a biblioteca só os lê.</p>
+      <p>{t('library.welcome.text')}</p>
       <div className="welcome-actions">
         <Button className="button primary" onPress={() => run(api.chooseRoot)}>
-          Escolher pasta de livros…
+          {t('library.welcome.choose')}
         </Button>
         <Button className="button" onPress={() => run(api.chooseExisting)}>
-          Abrir biblioteca existente…
+          {t('library.welcome.existing')}
+        </Button>
+        <Button id="open-preferences" className="button" onPress={onPreferences} aria-keyshortcuts="Control+Comma">
+          {t('prefs.open')}
         </Button>
       </div>
       {error !== null ? <p className="error">{error}</p> : null}
@@ -176,9 +183,13 @@ export interface LibraryViewProps {
   onSelection?(books: SelectedBook[]): void;
   /** For tests: a Calibre library to bring in, without the system's folder dialog. */
   calibreRequest?: { folder: string; at: number } | null;
+  /** Opens the Preferences. */
+  onPreferences?(): void;
 }
 
-export function LibraryView({ info, folders, generation, onChanged, onOpen, memory, onRows, onSelection, calibreRequest = null }: LibraryViewProps): React.JSX.Element {
+export function LibraryView({ info, folders, generation, onChanged, onOpen, memory, onRows, onSelection, calibreRequest = null, onPreferences }: LibraryViewProps): React.JSX.Element {
+  const t = useT();
+  const locale = useLocale();
   const remembered = memory?.current ?? FRESH_LIBRARY;
   const [typed, setTyped] = useState(remembered.typed);
   const [query, setQuery] = useState(remembered.typed);
@@ -286,12 +297,19 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     [chosen, byId],
   );
   useEffect(() => onSelection?.(current.map(({ documentId, workId }) => ({ documentId, workId }))), [current, onSelection]);
+  // The details beside the books: when they close with the focus in them, it goes back to the books.
+  const shelf = useRef<HTMLElement>(null);
+  const focusShelf = useCallback(() => {
+    const root = shelf.current;
+    (root?.querySelector<HTMLElement>('[aria-selected="true"]') ?? root?.querySelector<HTMLElement>('[role="grid"], [role="treegrid"]'))?.focus();
+  }, []);
+  useFocusReturn(current.length > 0 && filter.kind !== 'review', focusShelf);
 
   if (info === null) {
-    return <div className="loading">Abrindo a biblioteca…</div>;
+    return <div className="loading">{t('library.loading')}</div>;
   }
   if (!info.open) {
-    return <Welcome info={info} onChanged={onChanged} />;
+    return <Welcome info={info} onChanged={onChanged} onPreferences={onPreferences} />;
   }
 
   const openBook = (key: Key): void => {
@@ -373,79 +391,84 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     const kept = current.find((book) => book.workId === keep) ?? current[0];
     allAsked.current++;
     setChosen(kept === undefined ? new Map() : new Map([[kept.documentId, { ...kept, workId: keep }]]));
-    setNotice('Os livros foram fundidos em um.');
+    setNotice(t('library.merged'));
     changed();
   };
-  const count = `${books.total} ${books.total === 1 ? 'livro' : 'livros'}`;
+  const status = [
+    ...(chosen.size > 1 ? [t('library.chosen', { count: chosen.size })] : []),
+    books.total === info.books || filtered ? tn('library.books', books.total) : t('library.booksOf', { shown: books.total, total: info.books }),
+    ...(info.indexing ? [t('library.indexing')] : []),
+    ...(everything.busy !== null ? [t('library.exchanging')] : []),
+  ].join(' · ');
 
   return (
     <div className="library">
       <header className="toolbar">
-        <h1 className="toolbar-title">Biblioteca</h1>
-        <SearchField className="search" aria-label="Buscar livros" value={typed} onChange={setTyped} onSubmit={setQuery}>
-          <Input placeholder={searchIn === 'text' ? 'Buscar no texto dos livros' : 'Buscar por título, autor ou série'} />
-          <Button className="search-clear" aria-label="Limpar busca">
+        <h1 className="toolbar-title">{t('library.title')}</h1>
+        <SearchField className="search" aria-label={t('library.search.label')} value={typed} onChange={setTyped} onSubmit={setQuery}>
+          <Input placeholder={searchIn === 'text' ? t('library.search.text') : t('library.search.titles')} />
+          <Button className="search-clear" aria-label={t('library.search.clear')}>
             ×
           </Button>
         </SearchField>
         {typed !== '' || searchIn === 'text' ? (
           <ToggleButtonGroup
             className="segmented"
-            aria-label="Buscar em"
+            aria-label={t('library.search.in')}
             selectionMode="single"
             disallowEmptySelection
             selectedKeys={[searchIn]}
             onSelectionChange={(keys) => setSearchIn([...keys][0] as SearchIn)}
           >
             <ToggleButton id="titles" className="segment">
-              Títulos
+              {t('library.search.inTitles')}
             </ToggleButton>
             <ToggleButton id="text" className="segment">
-              No texto
+              {t('library.search.inText')}
             </ToggleButton>
           </ToggleButtonGroup>
         ) : null}
         <ToggleButtonGroup
           className="segmented"
-          aria-label="Modo de exibição"
+          aria-label={t('library.view.label')}
           selectionMode="single"
           disallowEmptySelection
           selectedKeys={[view]}
           onSelectionChange={(keys) => setView([...keys][0] as 'grid' | 'table')}
         >
           <ToggleButton id="grid" className="segment">
-            Capas
+            {t('library.view.grid')}
           </ToggleButton>
           <ToggleButton id="table" className="segment">
-            Lista
+            {t('library.view.table')}
           </ToggleButton>
         </ToggleButtonGroup>
         <Button className="button" onPress={() => void api.chooseRoot().then(onChanged)}>
-          Adicionar pasta…
+          {t('library.addFolder')}
         </Button>
         <Button className="button" onPress={() => setCalibre({ folder: null })}>
-          Importar do Calibre…
+          {t('library.calibre')}
         </Button>
         <MenuTrigger>
           <Button id="library-annotations" className="button" isDisabled={everything.busy !== null}>
-            Anotações ▾
+            {t('library.annotations.menu')}
           </Button>
           <Popover className="popover select-popover">
-            <Menu className="select-list" aria-label="Anotações da biblioteca" onAction={(key) => void everything.run(String(key) as ExchangeAction)}>
+            <Menu className="select-list" aria-label={t('library.annotations.label')} onAction={(key) => void everything.run(String(key) as ExchangeAction)}>
               <MenuItem id="export-jsonld" className="select-item">
-                Exportar todas as anotações (JSON-LD)…
+                {t('library.annotations.export')}
               </MenuItem>
               <MenuItem id="import-jsonld" className="select-item">
-                Importar anotações (JSON-LD)…
+                {t('library.annotations.import')}
               </MenuItem>
             </Menu>
           </Popover>
         </MenuTrigger>
-        <span className="toolbar-status" aria-live="polite">
-          {chosen.size > 1 ? `${chosen.size} escolhidos · ` : ''}
-          {books.total === info.books || filtered ? count : `${books.total} de ${info.books} livros`}
-          {info.indexing ? ' · lendo a pasta…' : ''}
-          {everything.busy !== null ? ' · lendo e gravando as anotações…' : ''}
+        <Button id="open-preferences" className="button" onPress={onPreferences} aria-keyshortcuts="Control+Comma">
+          {t('prefs.open')}
+        </Button>
+        <span className="toolbar-status" aria-live="polite" aria-busy={info.indexing || everything.busy !== null}>
+          {status}
         </span>
       </header>
       {notice !== null ? (
@@ -456,7 +479,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
       <div className={panel === null ? 'library-body' : 'library-body with-inspector'}>
         <Sidebar info={info} folders={folders} taxonomy={taxonomy} filter={filter} onFilter={setFilter} onChanged={changed} notice={setNotice} waiting={waiting} />
         {/* Caught on the way down: the items of a grid stop some keys before they reach the shelf. */}
-        <main className="shelf" onKeyDownCapture={putAway}>
+        <main ref={shelf} className="shelf" onKeyDownCapture={putAway}>
           {reviewing ? (
             <ReviewView generation={generation + version} onChanged={changed} />
           ) : inText ? (
@@ -464,12 +487,12 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
           ) : books.rows.length === 0 && !books.loading ? (
             <p className="empty">
               {books.error !== null
-                ? `Esta coleção inteligente não pôde ser lida: ${books.error.replace(/^Error:\s*/, '')}`
+                ? t('library.smartFailed', { reason: books.error.replace(/^Error:\s*/, '') })
                 : query !== ''
-                  ? `Nada encontrado para “${query}”.`
+                  ? t('library.nothingFound', { query })
                   : info.indexing
-                    ? 'Lendo a pasta…'
-                    : 'Nenhum livro aqui.'}
+                    ? t('library.readingFolder')
+                    : t('library.empty')}
             </p>
           ) : view === 'grid' ? (
             <Virtualizer
@@ -482,7 +505,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
               }}
             >
               <GridList
-                aria-label="Livros"
+                aria-label={t('library.books.label')}
                 className="book-grid"
                 layout="grid"
                 selectionMode="multiple"
@@ -492,7 +515,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
                 onSelectionChange={select}
                 onAction={openBook}
               >
-                <Collection items={books.rows} dependencies={[versions]}>
+                <Collection items={books.rows} dependencies={[versions, locale]}>
                   {(book) => (
                     <GridListItem id={book.documentId} textValue={book.title} className="book-card" data-document={book.documentId}>
                       <Cover book={book} version={book.blake3 !== null ? (versions.get(book.blake3) ?? 0) : 0} />
@@ -507,14 +530,14 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
                   )}
                 </Collection>
                 <GridListLoadMoreItem onLoadMore={books.loadMore} isLoading={books.loading}>
-                  <span className="loading-more">Carregando…</span>
+                  <span className="loading-more">{t('common.loading')}</span>
                 </GridListLoadMoreItem>
               </GridList>
             </Virtualizer>
           ) : (
             <Virtualizer layout={TableLayout} layoutOptions={{ rowHeight: 36, headingHeight: 34 }}>
               <Table
-                aria-label="Livros"
+                aria-label={t('library.books.label')}
                 className="book-table"
                 selectionMode="multiple"
                 selectionBehavior="replace"
@@ -525,19 +548,19 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
               >
                 <TableHeader>
                   <Column isRowHeader id="title" width="2fr">
-                    Título
+                    {t('library.column.title')}
                   </Column>
                   <Column id="creators" width="1.2fr">
-                    Autor
+                    {t('library.column.creators')}
                   </Column>
                   <Column id="format" width={96}>
-                    Formato
+                    {t('library.column.format')}
                   </Column>
                   <Column id="progress" width={90}>
-                    Lido
+                    {t('library.column.progress')}
                   </Column>
                   <Column id="path" width="2fr">
-                    Arquivo
+                    {t('library.column.path')}
                   </Column>
                 </TableHeader>
                 <TableBody>
@@ -557,14 +580,19 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
                     )}
                   </Collection>
                   <TableLoadMoreItem onLoadMore={books.loadMore} isLoading={books.loading}>
-                    <span className="loading-more">Carregando…</span>
+                    <span className="loading-more">{t('common.loading')}</span>
                   </TableLoadMoreItem>
                 </TableBody>
               </Table>
             </Virtualizer>
           )}
         </main>
-        {panel}
+        {panel === null ? null : (
+          // Escape in the details goes back to the books; Escape there puts the details away.
+          <div className="panel-host" onKeyDown={onEscape(focusShelf)}>
+            {panel}
+          </div>
+        )}
       </div>
       {merging !== null ? <MergeDialog works={merging} onClose={() => setMerging(null)} onMerged={merged} /> : null}
       {calibre !== null ? (
@@ -572,7 +600,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
           folder={calibre.folder}
           onClose={() => setCalibre(null)}
           onImported={(report) => {
-            setNotice(`Do Calibre: ${report.imported} de ${report.books} livros trazidos.`);
+            setNotice(t('library.calibreDone', { imported: report.imported, books: report.books }));
             changed();
             onChanged();
           }}

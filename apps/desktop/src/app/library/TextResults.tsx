@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { Button } from 'react-aria-components';
 
 import { api, type BookHit, type BookRow, type BrowseFilter, type FullTextResults, type FullTextStatus, type ReaderTarget, type UnitHit } from '../api';
+import { t, tn, useT } from '../i18n';
 import { reasonOf } from './dialogs';
 
 /** The snippet, with what matched marked. */
@@ -29,9 +30,10 @@ function Snippet({ hit }: { hit: UnitHit }): React.JSX.Element {
 
 function unitLabel(hit: UnitHit): string {
   if (hit.kind === 'page') {
-    return `p. ${hit.index + 1}${hit.source === 'ocr' ? ' · OCR' : ''}`;
+    const page = t('library.text.page', { page: hit.index + 1 });
+    return hit.source === 'ocr' ? `${page} · ${t('library.text.ocr')}` : page;
   }
-  return hit.label ?? `Seção ${hit.index + 1}`;
+  return hit.label ?? t('library.text.section', { number: hit.index + 1 });
 }
 
 /** Where to open a book for a match. */
@@ -45,10 +47,10 @@ export function statusLine(status: FullTextStatus): string {
   const read = status.indexed + status.empty + status.failed;
   const all = read + status.pending;
   if (status.pending === 0) {
-    return `Texto de ${status.indexed} ${status.indexed === 1 ? 'livro' : 'livros'} no índice.`;
+    return tn('library.text.indexed', status.indexed);
   }
-  const now = status.running && status.current !== null ? ` Lendo “${status.current}”.` : '';
-  return `Lendo o texto dos livros: ${read} de ${all}.${now}`;
+  const progress = t('library.text.progress', { read, total: all });
+  return status.running && status.current !== null ? `${progress} ${t('library.text.reading', { title: status.current })}` : progress;
 }
 
 export interface TextResultsProps {
@@ -65,6 +67,7 @@ interface Found {
 }
 
 export function TextResults({ query, filter, generation, onOpenAt }: TextResultsProps): React.JSX.Element {
+  const t = useT();
   const [status, setStatus] = useState<FullTextStatus | null>(null);
   const [found, setFound] = useState<Found | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +123,7 @@ export function TextResults({ query, filter, generation, onOpenAt }: TextResults
   };
 
   return (
-    <div className="text-results" aria-label="No texto dos livros">
+    <div className="text-results" aria-label={t('library.text.label')}>
       {status !== null ? (
         <p className="muted fulltext-status" aria-live="polite" data-pending={status.pending}>
           {statusLine(status)}
@@ -131,7 +134,7 @@ export function TextResults({ query, filter, generation, onOpenAt }: TextResults
           {error}
         </p>
       ) : null}
-      {found !== null && found.results.books.every((book) => rowOf(book) === undefined) ? <p className="empty">Nada encontrado no texto dos livros para “{query}”.</p> : null}
+      {found !== null && found.results.books.every((book) => rowOf(book) === undefined) ? <p className="empty">{t('library.text.nothing', { query })}</p> : null}
       {found?.results.books.map((book) => {
         const row = rowOf(book);
         if (row === undefined) {

@@ -19,12 +19,14 @@
 
 use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use musaeum_core::{BackgroundWork, FixedFormat, MAX_REGION_PIXELS, RegionRequest};
+use musaeum_i18n::tr;
 use musaeum_library::anchoring::region::{self, Region, RegionLine, RegionTool};
+use musaeum_library::preferences::DEFAULT_OCR_LANGUAGES;
 use musaeum_library::{
     Annotation, Library, OcrLineRecord, OcrReading, QuoteSource, Selector, SelectorKind,
 };
@@ -42,8 +44,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::annotations::{CharCache, RegionArgs, found_region};
 use crate::session::{AppState, Session};
 
-/// The languages read, of those there are models for: Portuguese and English, the ones shipped.
-const PREFERRED: [&str; 2] = ["por", "eng"];
 /// The height of the small letters Tesseract reads best, in pixels; a page is drawn for it at the
 /// resolution that gives its lines about that, within what a scan holds.
 const TARGET_X_HEIGHT: f32 = 22.0;
@@ -70,7 +70,11 @@ struct Job {
 #[derive(Default)]
 pub struct Ocr {
     client: Mutex<Option<OcrClient>>,
-    languages: OnceLock<Option<String>>,
+    /// The languages chosen in the preferences, in the order they are tried.
+    chosen: Mutex<Vec<String>>,
+    /// Those of them there are trusted models for, as Tesseract takes them (`por+eng`), worked out
+    /// once per choice; `Some(None)` when there are no models at all.
+    languages: Mutex<Option<Option<String>>>,
     jobs: Mutex<Option<Sender<Job>>>,
     queued: Mutex<HashSet<String>>,
 }
@@ -106,23 +110,62 @@ impl Ocr {
         self.release();
     }
 
-    /// The languages the OCR reads, as Tesseract names them (`por+eng`), or none without models.
+    /// The languages the OCR reads, as Tesseract names them (`por+eng`): those chosen that there
+    /// are trusted models for, else the shipped ones there are, else any trusted one; none without
+    /// models.
     fn languages(&self, policy: Policy) -> Option<String> {
-        self.languages
-            .get_or_init(|| {
-                let available = OcrClient::new(config(policy)).languages();
-                let chosen: Vec<&str> = PREFERRED
-                    .iter()
-                    .copied()
-                    .filter(|wanted| available.iter().any(|name| name == wanted))
-                    .collect();
-                if chosen.is_empty() {
-                    available.first().cloned()
-                } else {
-                    Some(chosen.join("+"))
-                }
-            })
-            .clone()
+        let mut known = self
+            .languages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(languages) = known.as_ref() {
+            return languages.clone();
+        }
+        let trusted = self.trusted_languages(policy);
+        let chosen = self
+            .chosen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let pick = |wanted: &[String]| -> Vec<String> {
+            wanted
+                .iter()
+                .filter(|code| trusted.contains(code))
+                .cloned()
+                .collect()
+        };
+        let mut read = pick(&chosen);
+        if read.is_empty() {
+            read = pick(&DEFAULT_OCR_LANGUAGES.map(str::to_owned));
+        }
+        if read.is_empty() {
+            read.extend(trusted.first().cloned());
+        }
+        let languages = (!read.is_empty()).then(|| read.join("+"));
+        *known = Some(languages.clone());
+        languages
+    }
+
+    /// The languages there are trusted models for in the program's folder.
+    pub fn trusted_languages(&self, policy: Policy) -> Vec<String> {
+        OcrClient::new(config(policy)).languages()
+    }
+
+    /// Reads `codes` from now on, those of them there are trusted models for. What was read in
+    /// other languages is read again when needed: the cache keeps a line by the languages too.
+    pub fn choose_languages(&self, codes: &[String]) {
+        *self.chosen.lock().unwrap_or_else(PoisonError::into_inner) = codes.to_vec();
+        *self
+            .languages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        // The worker loaded the models of the old choice; the next line starts one with these.
+        self.release();
+    }
+
+    /// The languages read now, as Tesseract names them.
+    pub fn reading(&self, policy: Policy) -> Option<String> {
+        self.languages(policy)
     }
 
     /// Reads a mark's quote in the background, once, unless it is already waiting to be read.
@@ -188,11 +231,7 @@ fn config(policy: Policy) -> OcrConfig {
 }
 
 fn policy_of(state: &AppState) -> Policy {
-    if state.options().no_sandbox {
-        Policy::Unrestricted
-    } else {
-        Policy::LockdownParser
-    }
+    state.ocr_policy()
 }
 
 /// The quotes' thread: one mark after another, until the app closes.
@@ -379,7 +418,7 @@ fn read_region_by_ocr(
     };
     let policy = policy_of(state);
     let Some(languages) = state.ocr.languages(policy) else {
-        return Err("there is no OCR model: run tools/fetch-ocr.ps1".to_owned());
+        return Err(tr!(NoOcrModel));
     };
     let Some(model) = wait_for_model(&library, session, found.page, wait)? else {
         return Ok(Reading::NotYet);

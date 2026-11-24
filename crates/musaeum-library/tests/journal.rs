@@ -104,7 +104,8 @@ fn a_move_never_overwrites_anything() {
             .error
             .as_deref()
             .unwrap()
-            .contains("exists")
+            // "já existe", or "already exists": the message is in the app's language.
+            .contains("exist")
     );
 }
 

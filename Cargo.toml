@@ -20,6 +20,7 @@ members = [
     "crates/musaeum-ocr-worker",
     "crates/musaeum-pdf-annot",
     "crates/musaeum-report",
+    "crates/musaeum-i18n",
     "apps/cli",
     "apps/desktop/src-tauri",
     "tools/corpus-check",
@@ -51,10 +52,13 @@ musaeum-tesseract = { path = "crates/musaeum-tesseract" }
 musaeum-ocr = { path = "crates/musaeum-ocr" }
 musaeum-pdf-annot = { path = "crates/musaeum-pdf-annot" }
 musaeum-report = { path = "crates/musaeum-report" }
+musaeum-i18n = { path = "crates/musaeum-i18n" }
 musaeum-worker = { path = "crates/musaeum-worker" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 
 blake3 = "1"
+# Checks the OCR models against their pinned SHA-256, the hashes tools/fetch-ocr.ps1 checks too.
+sha2 = "0.10"
 flate2 = "1"
 memmap2 = "0.9"
 # Only the raw FPDF_* bindings are used, so the image and mutex features stay off.

@@ -15,6 +15,7 @@ import {
   reasonText,
   runExchange,
 } from './exchange';
+import { t as translate, useT } from './i18n';
 
 export interface ExchangeControls {
   busy: ExchangeAction | null;
@@ -54,7 +55,7 @@ export function useExchange(where: ExchangeWhere | null, onDone?: (action: Excha
         return { ok: true, done: result };
       } catch (reason: unknown) {
         const message = reasonText(reason);
-        setReport({ text: `Não foi possível: ${message}`, failed: true });
+        setReport({ text: translate('common.couldNot', { reason: message }), failed: true });
         return { ok: false, error: message };
       } finally {
         setBusy(null);
@@ -89,6 +90,7 @@ export interface ExchangeSectionProps {
 }
 
 export function ExchangeSection({ heading, controls, actions, idle, id, className }: ExchangeSectionProps): React.JSX.Element {
+  const t = useT();
   const shown = EXCHANGE_ACTIONS.filter((action) => actions === undefined || actions.includes(action.id));
   return (
     <section className={`pdf-exchange exchange-section${className !== undefined ? ` ${className}` : ''}`} aria-label={heading}>
@@ -98,12 +100,12 @@ export function ExchangeSection({ heading, controls, actions, idle, id, classNam
       <div className="pdf-exchange-actions">
         {shown.map((action) => (
           <Button key={action.id} id={`${id}-${action.id}`} className="button small" isDisabled={controls.busy !== null} onPress={() => void controls.run(action.id)}>
-            {action.label}
+            {t(action.label)}
           </Button>
         ))}
       </div>
-      <p className={`exchange-status${controls.report?.failed === true ? ' failed' : ''}`} role="status" data-busy={controls.busy ?? ''} id={`${id}-status`}>
-        {controls.busy !== null ? EXCHANGE_ACTIONS.find((action) => action.id === controls.busy)?.busy : (controls.report?.text ?? idle)}
+      <p className={`exchange-status${controls.report?.failed === true ? ' failed' : ''}`} role="status" aria-live="polite" aria-busy={controls.busy !== null} data-busy={controls.busy ?? ''} id={`${id}-status`}>
+        {controls.busy !== null ? t(EXCHANGE_ACTIONS.find((action) => action.id === controls.busy)?.busy ?? 'common.loading') : (controls.report?.text ?? idle)}
       </p>
     </section>
   );

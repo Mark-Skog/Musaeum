@@ -15,6 +15,7 @@ blake3.workspace = true
 musaeum-core.workspace = true
 musaeum-flow.workspace = true
 musaeum-fs.workspace = true
+musaeum-i18n.workspace = true
 musaeum-ingest.workspace = true
 musaeum-library.workspace = true
 musaeum-ocr.workspace = true

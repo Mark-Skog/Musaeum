@@ -177,6 +177,8 @@ export class ContinuousView {
     style: ReadingStyle,
     css: string,
     private readonly events: ViewEvents,
+    /** A section's frame title, for the screen reader, in the person's language. */
+    private readonly titleOf: (index: number) => string,
   ) {
     this.style = style;
     this.css = css;
@@ -223,6 +225,16 @@ export class ContinuousView {
       this.unload(slot);
     }
     this.root.remove();
+  }
+
+  /** The frames shown take their titles again: the language changed. */
+  retitle(): void {
+    for (const frame of this.root.querySelectorAll<HTMLIFrameElement>('iframe.continuous-frame')) {
+      const index = Number(frame.dataset.section);
+      if (Number.isInteger(index)) {
+        frame.title = this.titleOf(index);
+      }
+    }
   }
 
   /** The anchor, as of the last time the reader stopped. */
@@ -363,7 +375,8 @@ export class ContinuousView {
       frame.setAttribute('sandbox', this.sandbox);
       frame.setAttribute('scrolling', 'no');
       frame.className = 'continuous-frame';
-      frame.title = `Seção ${slot.index + 1}`;
+      frame.dataset.section = String(slot.index);
+      frame.title = this.titleOf(slot.index);
       await new Promise<void>((resolve) => {
         frame.addEventListener('load', () => resolve(), { once: true });
         frame.src = src;

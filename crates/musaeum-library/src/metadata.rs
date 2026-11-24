@@ -7,6 +7,7 @@
 //! elsewhere) writes over it (`content::apply_extraction`). Where the person put a work has no
 //! provenance: no file says anything about it.
 
+use musaeum_i18n::{T, tr};
 use std::collections::BTreeMap;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -181,19 +182,22 @@ pub(crate) fn clean_description(value: Option<String>) -> Result<Option<String>>
         return Ok(None);
     }
     if out.chars().count() > MAX_DESCRIPTION {
-        return Err(Error::Refused(format!(
-            "a description is {MAX_DESCRIPTION} characters at most"
+        return Err(Error::Refused(tr!(
+            DescriptionTooLong,
+            max = MAX_DESCRIPTION
         )));
     }
     Ok(Some(out))
 }
 
 /// A text field: trimmed, nothing for empty, `max` characters at most.
-fn optional_text(value: Option<String>, max: usize, what: &str) -> Result<Option<String>> {
+fn optional_text(value: Option<String>, max: usize, what: T) -> Result<Option<String>> {
     match value.map(|text| text.trim().to_owned()) {
         Some(text) if text.is_empty() => Ok(None),
-        Some(text) if text.chars().count() > max => Err(Error::Refused(format!(
-            "{what} is {max} characters at most"
+        Some(text) if text.chars().count() > max => Err(Error::Refused(tr!(
+            TextTooLong,
+            what = musaeum_i18n::text(what, &[]),
+            max = max
         ))),
         other => Ok(other),
     }
@@ -259,26 +263,25 @@ pub fn isbn(text: &str) -> Option<String> {
 
 fn clean_identifiers(identifiers: Vec<Identifier>) -> Result<Vec<Identifier>> {
     if identifiers.len() > MAX_IDENTIFIERS {
-        return Err(Error::Refused(format!(
-            "a work has {MAX_IDENTIFIERS} identifiers at most"
+        return Err(Error::Refused(tr!(
+            TooManyIdentifiers,
+            max = MAX_IDENTIFIERS
         )));
     }
     let mut out: Vec<Identifier> = Vec::with_capacity(identifiers.len());
     for identifier in identifiers {
         if !SCHEMES.contains(&identifier.scheme.as_str()) {
-            return Err(Error::Refused(format!(
-                "{} is not a scheme of identifiers",
-                identifier.scheme
+            return Err(Error::Refused(tr!(
+                SchemeUnknown,
+                scheme = identifier.scheme
             )));
         }
         let value = identifier.value.trim();
         if value.is_empty() || value.chars().count() > 400 {
-            return Err(Error::Refused(
-                "an identifier is 1 to 400 characters".to_owned(),
-            ));
+            return Err(Error::Refused(tr!(IdentifierLength)));
         }
         let value = if identifier.scheme == "isbn" {
-            isbn(value).ok_or_else(|| Error::Refused(format!("{value} is not a valid ISBN")))?
+            isbn(value).ok_or_else(|| Error::Refused(tr!(IsbnInvalid, value = value)))?
         } else {
             value.to_owned()
         };
@@ -295,17 +298,15 @@ fn clean_identifiers(identifiers: Vec<Identifier>) -> Result<Vec<Identifier>> {
 
 fn clean_credits(credits: Vec<Credit>) -> Result<Vec<Credit>> {
     if credits.len() > MAX_CREATORS {
-        return Err(Error::Refused(format!(
-            "a work has {MAX_CREATORS} creators at most"
-        )));
+        return Err(Error::Refused(tr!(TooManyCreators, max = MAX_CREATORS)));
     }
     credits
         .into_iter()
         .map(|credit| {
             if !ROLES.contains(&credit.role.as_str()) {
-                return Err(Error::Refused(format!("{} is not a role", credit.role)));
+                return Err(Error::Refused(tr!(RoleUnknown, role = credit.role)));
             }
-            let name = taxonomy::clean_name(&credit.name, 300, "a creator")?;
+            let name = taxonomy::clean_name(&credit.name, 300, T::ThingCreator)?;
             Ok(Credit {
                 name,
                 role: credit.role,
@@ -321,36 +322,38 @@ pub(crate) fn custom_sql(
     value: &serde_json::Value,
 ) -> Result<rusqlite::types::Value> {
     use rusqlite::types::Value;
-    let refused = |why: &str| Error::Refused(format!("a {kind} field's value {why}"));
+    let refused = |message: T| Error::Refused(musaeum_i18n::text(message, &[("kind", &kind)]));
     Ok(match kind {
         "number" => Value::Real(
             value
                 .as_f64()
                 .filter(|number| number.is_finite())
-                .ok_or_else(|| refused("is a number"))?,
+                .ok_or_else(|| refused(T::FieldValueNumber))?,
         ),
         "boolean" => Value::Integer(i64::from(
-            value.as_bool().ok_or_else(|| refused("is true or false"))?,
+            value
+                .as_bool()
+                .ok_or_else(|| refused(T::FieldValueBoolean))?,
         )),
         _ => {
             let text = value
                 .as_str()
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
-                .ok_or_else(|| refused("is a text"))?;
+                .ok_or_else(|| refused(T::FieldValueText))?;
             match kind {
-                "date" if date_ms(text).is_none() => return Err(refused("is a date, YYYY-MM-DD")),
+                "date" if date_ms(text).is_none() => return Err(refused(T::FieldValueDate)),
                 "choice" if !choices.iter().any(|choice| choice == text) => {
-                    return Err(refused("is one of its choices"));
+                    return Err(refused(T::FieldValueChoice));
                 }
                 "url"
                     if !(text.starts_with("https://") || text.starts_with("http://"))
                         || text.contains(char::is_whitespace) =>
                 {
-                    return Err(refused("is an http or https address"));
+                    return Err(refused(T::FieldValueUrl));
                 }
                 _ if text.chars().count() > MAX_CUSTOM_TEXT => {
-                    return Err(refused("is too long"));
+                    return Err(refused(T::FieldValueTooLong));
                 }
                 _ => Value::Text(text.to_owned()),
             }
@@ -551,7 +554,7 @@ pub(crate) fn work_metadata(connection: &Connection, work: WorkId) -> Result<Wor
             ))
         })
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no work {work}")))?;
+        .ok_or_else(|| Error::NotFound(tr!(NoWork, id = work)))?;
     let (title, series, series_position, year, language, rating, status, description) = row;
     let list = |sql: &str| -> Result<Vec<i64>> {
         Ok(connection
@@ -645,32 +648,30 @@ pub(crate) fn work_metadata(connection: &Connection, work: WorkId) -> Result<Wor
 pub(crate) fn check_edit(edit: WorkEdit) -> Result<WorkEdit> {
     let mut edit = edit;
     if let Some(title) = &edit.title {
-        edit.title = Some(taxonomy::clean_name(title, 1000, "a work")?);
+        edit.title = Some(taxonomy::clean_name(title, 1000, T::ThingWork)?);
     }
     if let Some(credits) = edit.creators.take() {
         edit.creators = Some(clean_credits(credits)?);
     }
     if let Some(series) = edit.series.take() {
-        edit.series = Some(optional_text(series, 300, "a series")?);
+        edit.series = Some(optional_text(series, 300, T::ThingSeries)?);
     }
     if let Some(Some(position)) = edit.series_position
         && !(position.is_finite() && (0.0..=1_000_000.0).contains(&position))
     {
-        return Err(Error::Refused(
-            "a position in a series goes from 0 to 1000000".to_owned(),
-        ));
+        return Err(Error::Refused(tr!(SeriesPositionRange)));
     }
     if let Some(Some(year)) = edit.year
         && !(-9999..=9999).contains(&year)
     {
-        return Err(Error::Refused("a year goes from -9999 to 9999".to_owned()));
+        return Err(Error::Refused(tr!(YearRange)));
     }
     if let Some(language) = edit.language.take() {
-        edit.language = Some(match optional_text(language, 35, "a language")? {
+        edit.language = Some(match optional_text(language, 35, T::ThingLanguage)? {
             None => None,
             Some(text) => Some(
                 language_tag(&text)
-                    .ok_or_else(|| Error::Refused(format!("{text} is not a language tag")))?,
+                    .ok_or_else(|| Error::Refused(tr!(LanguageTagInvalid, text = text)))?,
             ),
         });
     }
@@ -680,12 +681,12 @@ pub(crate) fn check_edit(edit: WorkEdit) -> Result<WorkEdit> {
     if let Some(Some(rating)) = edit.rating
         && !(1..=5).contains(&rating)
     {
-        return Err(Error::Refused("a rating goes from 1 to 5".to_owned()));
+        return Err(Error::Refused(tr!(RatingRange)));
     }
     if let Some(status) = &edit.status
         && !["unread", "reading", "read", "abandoned"].contains(&status.as_str())
     {
-        return Err(Error::Refused(format!("{status} is not a status")));
+        return Err(Error::Refused(tr!(StatusUnknown, status = status)));
     }
     if let Some(description) = edit.description.take() {
         edit.description = Some(clean_description(description)?);
@@ -704,7 +705,7 @@ pub(crate) fn apply_edit(
         .query_row([work], |row| row.get(0))
         .optional()?;
     if exists.is_none() {
-        return Err(Error::NotFound(format!("there is no work {work}")));
+        return Err(Error::NotFound(tr!(NoWork, id = work)));
     }
     let mut changed: Vec<&str> = Vec::new();
     // The columns of the work itself. Each name comes from this list, not from the edit.
@@ -760,7 +761,7 @@ pub(crate) fn apply_edit(
                 .optional()?
                 .is_none()
             {
-                return Err(Error::NotFound(format!("there is no category {category}")));
+                return Err(Error::NotFound(tr!(NoCategory, id = category)));
             }
         }
         transaction
@@ -803,9 +804,7 @@ pub(crate) fn apply_edit(
                 .optional()?
                 .is_none()
             {
-                return Err(Error::NotFound(format!(
-                    "there is no collection {collection}"
-                )));
+                return Err(Error::NotFound(tr!(NoCollection, id = collection)));
             }
             if !current.contains(&collection) {
                 put_in_collection(transaction, collection, &[work], Place::Last)?;
@@ -826,7 +825,7 @@ pub(crate) fn apply_edit(
                 .query_row([field_id], |row| Ok((row.get(0)?, row.get(1)?)))
                 .optional()?;
             let Some((kind, choices)) = field else {
-                return Err(Error::NotFound(format!("there is no field {field_id}")));
+                return Err(Error::NotFound(tr!(NoField, id = field_id)));
             };
             if value.is_null() {
                 transaction

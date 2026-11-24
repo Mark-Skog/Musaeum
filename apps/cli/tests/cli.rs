@@ -214,6 +214,16 @@ fn the_whole_cycle_from_the_command_line() {
     );
 }
 
+/// A child that is killed when it goes out of scope, so that a failed assertion leaves no process.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 fn looking_works_while_something_else_is_writing() {
     let workspace = Workspace::new();
@@ -221,14 +231,16 @@ fn looking_works_while_something_else_is_writing() {
     workspace.write("book.pdf", &pdf(1));
     workspace.run(&["reconcile"]);
 
-    let mut watcher = workspace
-        .command(&["watch"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut watcher = KillOnDrop(
+        workspace
+            .command(&["watch"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     // Up and running once it says so, and whatever it says after that has to go somewhere.
-    let mut output = BufReader::new(watcher.stdout.take().unwrap());
+    let mut output = BufReader::new(watcher.0.stdout.take().unwrap());
     let mut first_line = String::new();
     output.read_line(&mut first_line).unwrap();
     assert!(first_line.contains("watching"), "{first_line}");
@@ -251,8 +263,8 @@ fn looking_works_while_something_else_is_writing() {
     }
     assert_eq!(workspace.status()["works"], 2);
 
-    watcher.kill().unwrap();
-    watcher.wait().unwrap();
+    watcher.0.kill().unwrap();
+    watcher.0.wait().unwrap();
     // And the lock went with it.
     workspace.run(&["reconcile"]);
 }

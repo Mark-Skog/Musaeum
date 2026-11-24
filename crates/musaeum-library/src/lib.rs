@@ -12,6 +12,7 @@
 pub mod anchoring;
 pub mod annotations;
 mod batch;
+mod cache_report;
 pub mod calibre;
 pub mod catalog;
 mod content;
@@ -32,6 +33,7 @@ mod merge;
 mod metadata;
 mod model;
 pub mod order;
+pub mod preferences;
 mod probe;
 mod reading;
 mod reconcile;
@@ -48,6 +50,7 @@ pub use annotations::{
     SelectorKind,
 };
 pub use batch::{BatchEdit, BatchSummary, MAX_BATCH, Shared};
+pub use cache_report::CacheReport;
 pub use calibre::{
     CalibreBook, CalibreColumn, CalibreFile, CalibreLibrary, CalibreReport, read_calibre,
 };
@@ -86,6 +89,7 @@ pub use model::{
     RevisionOrigin, RootId, RootInfo, SuggestionId, SuggestionInfo, SuggestionKind, WorkId,
     WorkInfo,
 };
+pub use preferences::{Motion, Preferences, PreferencesPatch, PreferencesStore, Theme};
 pub use probe::{FsProbe, RealFileSystem};
 pub use reading::{
     CONTENT_MAJORITY_PERCENT, CONTENT_RULES_VERSION, DocumentContent, DocumentGeometry,

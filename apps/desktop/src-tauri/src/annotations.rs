@@ -14,6 +14,7 @@ use musaeum_core::FixedFormat;
 use musaeum_flow::NORMALIZER_VERSION;
 use musaeum_flow::cfi;
 use musaeum_flow::locator;
+use musaeum_i18n::tr;
 use musaeum_library::anchoring::region::{self, Region, RegionLine, RegionTool};
 use musaeum_library::anchoring::{self, fixed, flow as flow_anchor};
 use musaeum_library::{
@@ -427,11 +428,9 @@ pub fn create_fixed_annotation(
     let session = state
         .session(session)
         .ok_or("that document is no longer open")?;
-    let (document, revision) = session
-        .document
-        .ok_or("este documento não está na biblioteca, e só os da biblioteca guardam anotações")?;
+    let (document, revision) = session.document.ok_or_else(|| tr!(DocumentNotInLibrary))?;
     if spans.is_empty() || spans.len() > MAX_SPANS {
-        return Err("a selection covers from one page to a few dozen".to_owned());
+        return Err(tr!(SelectionTooManyPages));
     }
     let count = session.pool.pages().len() as u32;
     let mut segments = Vec::with_capacity(spans.len());
@@ -561,9 +560,7 @@ pub fn create_region_annotation(
     let session = state
         .session(session)
         .ok_or("that document is no longer open")?;
-    let (document, revision) = session
-        .document
-        .ok_or("este documento não está na biblioteca, e só os da biblioteca guardam anotações")?;
+    let (document, revision) = session.document.ok_or_else(|| tr!(DocumentNotInLibrary))?;
     let count = session.pool.pages().len() as u32;
     let library = library(&state)?;
     let found = found_region(Some(&library), &session, region)?;
@@ -764,9 +761,7 @@ pub fn create_flow_annotation(
 ) -> Result<FlowAnnotationView, String> {
     let book = book::open_flow_book(&books, document)
         .ok_or_else(|| format!("document {document} is not the one open"))?;
-    let revision = book
-        .revision_id
-        .ok_or("este livro não está na biblioteca, e só os da biblioteca guardam anotações")?;
+    let revision = book.revision_id.ok_or_else(|| tr!(BookNotInLibrary))?;
     let library = library(&state)?;
     let (new, ranges) = on_large_stack(move || {
         let (mut first, mut from) = flow_offset(&book, &start)?;
@@ -776,7 +771,7 @@ pub fn create_flow_annotation(
             std::mem::swap(&mut from, &mut to);
         }
         if last - first >= MAX_SPANS {
-            return Err("a selection covers from one chapter to a few dozen".to_owned());
+            return Err(tr!(SelectionTooManyChapters));
         }
         let manifest = &book.manifest;
         let mut segments = Vec::new();
@@ -806,7 +801,7 @@ pub fn create_flow_annotation(
             segments.push(segment);
         }
         if segments.is_empty() {
-            return Err("nada foi selecionado".to_owned());
+            return Err(tr!(NothingSelected));
         }
         let total = manifest.total_text().max(1);
         let progression =
@@ -872,7 +867,7 @@ pub fn search_annotations(
     limit: Option<usize>,
 ) -> Result<Vec<AnnotationHit>, String> {
     if query.len() > MAX_QUERY {
-        return Err("that search is too long".to_owned());
+        return Err(tr!(SearchTooLong));
     }
     library(&state)?
         .search_annotations(document, &query, limit.unwrap_or(200).min(1000))

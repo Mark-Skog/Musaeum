@@ -11,7 +11,9 @@
 //! `/Highlight` or `/Underline` with its quads; a box `/Square`; a stroke `/Ink`; a pinned note
 //! `/Text`. Its UUID is its `/NM`, so it comes back as itself; one that covers several pages is one
 //! PDF annotation per page, the first named by the UUID and the others `UUID#2`, `UUID#3`. Its kind
-//! goes as `/Subj` (Realce, Sublinhado, Nota) and its color as `/C`, as drawn.
+//! goes as `/Subj` in the interface's language (Realce, Sublinhado, Nota; Highlight, Underline,
+//! Note), read back in either, and its color as `/C`, as drawn. Each is signed (`/T`, an XFDF
+//! `title`) with the name chosen in the preferences, or the system's user name.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
@@ -38,7 +40,10 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, State, WebviewWindow};
 
+use musaeum_i18n::{Locale, T, text, text_in, tr};
+
 use crate::annotations::{CharCache, awaits_quote, fixed_annotations};
+use crate::exchange::check_outside_library;
 use crate::picker::{FileKind, pick_file, pick_save};
 use crate::session::{AppState, Session};
 use crate::shelf::owner_of;
@@ -48,11 +53,11 @@ const STROKE_PT: f64 = 9.0;
 /// The largest XFDF file read.
 const MAX_XFDF: u64 = 64 << 20;
 const PDF: FileKind = FileKind {
-    name: "PDF",
+    name: T::FileKindPdf,
     pattern: "*.pdf",
 };
 const XFDF: FileKind = FileKind {
-    name: "XFDF (anotações do Acrobat)",
+    name: T::FileKindXfdf,
     pattern: "*.xfdf",
 };
 
@@ -73,22 +78,34 @@ const INK: [(&str, [f64; 3]); 5] = [
     ("purple", [0.45, 0.25, 0.85]),
 ];
 
-/// The name each kind goes as, in `/Subj`, and comes back by.
-fn subject_of(kind: AnnotationKind) -> &'static str {
+/// The message each kind goes as, in `/Subj`.
+fn subject_message(kind: AnnotationKind) -> T {
     match kind {
-        AnnotationKind::Highlight => "Realce",
-        AnnotationKind::Underline => "Sublinhado",
-        AnnotationKind::Note => "Nota",
+        AnnotationKind::Highlight => T::SubjectHighlight,
+        AnnotationKind::Underline => T::SubjectUnderline,
+        AnnotationKind::Note => T::SubjectNote,
     }
 }
 
+/// The name each kind goes as, in `/Subj`, in the interface's language.
+fn subject_of(kind: AnnotationKind) -> String {
+    text(subject_message(kind), &[])
+}
+
+/// The kind a `/Subj` names, in any language the app writes it in.
 fn kind_of_subject(subject: Option<&str>) -> Option<AnnotationKind> {
-    match subject?.trim() {
-        "Realce" => Some(AnnotationKind::Highlight),
-        "Sublinhado" => Some(AnnotationKind::Underline),
-        "Nota" => Some(AnnotationKind::Note),
-        _ => None,
-    }
+    let subject = subject?.trim();
+    [
+        AnnotationKind::Highlight,
+        AnnotationKind::Underline,
+        AnnotationKind::Note,
+    ]
+    .into_iter()
+    .find(|kind| {
+        Locale::ALL
+            .iter()
+            .any(|locale| text_in(*locale, subject_message(*kind), &[]) == subject)
+    })
 }
 
 /// A color as the reader keeps it: a name of the palette, or `#rrggbb`, or `#rrggbbaa` with an
@@ -258,7 +275,7 @@ pub fn pdf_annots_of(annotation: &Annotation, name: &str) -> Vec<Annot> {
                 fill
             }),
             opacity,
-            subject: Some(subject_of(annotation.kind).to_owned()),
+            subject: Some(subject_of(annotation.kind)),
             created: Some(annotation.created_at),
             modified: Some(annotation.updated_at),
             ..Annot::default()
@@ -881,17 +898,17 @@ fn check_target(library: &Library, source: &Path, target: &Path) -> Result<(), S
             && file_identity(source).is_some()
             && file_identity(source) == file_identity(target))
     {
-        return Err("a cópia não pode ser o próprio livro: escolha outro nome".to_owned());
+        return Err(tr!(CopyIsTheBook));
     }
     if target.exists() && matches!(library.opened_file(target), Ok(Some(_))) {
-        return Err("esse arquivo é um livro da biblioteca, e a cópia não é gravada sobre ele: escolha outro nome".to_owned());
+        return Err(tr!(CopyOverLibraryBook));
     }
     Ok(())
 }
 
 /// Writes `parts` into a new temporary file beside `target`, flushed to the disk, and returns it.
 fn temporary_beside(target: &Path) -> Result<(PathBuf, File), String> {
-    let folder = target.parent().ok_or("o destino não tem pasta")?;
+    let folder = target.parent().ok_or_else(|| tr!(TargetHasNoFolder))?;
     let stem = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -903,14 +920,15 @@ fn temporary_beside(target: &Path) -> Result<(PathBuf, File), String> {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(format!(
-                    "a cópia não pôde ser criada em {}: {error}",
-                    folder.display()
+                return Err(tr!(
+                    CopyNotCreated,
+                    folder = folder.display(),
+                    error = error
                 ));
             }
         }
     }
-    Err("a cópia não pôde ser criada: nomes temporários em uso".to_owned())
+    Err(tr!(CopyTemporaryNamesInUse))
 }
 
 /// Copies `source` into `out` and returns its BLAKE3 and length.
@@ -942,7 +960,7 @@ fn pdf_session(state: &AppState, session: u32) -> Result<Arc<Session>, String> {
         .session(session)
         .ok_or("that document is no longer open")?;
     if session.format != FixedFormat::Pdf {
-        return Err("anotações nativas só existem em PDFs".to_owned());
+        return Err(tr!(NativeAnnotationsPdfOnly));
     }
     Ok(session)
 }
@@ -952,12 +970,6 @@ fn client() -> AnnotClient {
 }
 
 /// The author written in `/T`: the person's name on this computer.
-fn author() -> Option<String> {
-    std::env::var("USERNAME")
-        .ok()
-        .filter(|name| !name.trim().is_empty())
-}
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -971,9 +983,7 @@ fn current_annotations(
     cache: &State<'_, CharCache>,
     session: &Session,
 ) -> Result<Vec<Annotation>, String> {
-    let (document, _) = session
-        .document
-        .ok_or("este documento não está na biblioteca, e só os da biblioteca guardam anotações")?;
+    let (document, _) = session.document.ok_or_else(|| tr!(DocumentNotInLibrary))?;
     // Listing them anchors them on the document as it is, and records where.
     fixed_annotations(app.clone(), state.clone(), cache.clone(), session.id)?;
     library(state)?
@@ -1024,22 +1034,23 @@ pub fn pdf_annotations_export(
     let library = library(&state)?;
     let annotations = current_annotations(&app, &state, &cache, &session)?;
     if annotations.is_empty() {
-        return Err("este livro não tem anotações para levar ao PDF".to_owned());
+        return Err(tr!(NoAnnotationsForPdf));
     }
     let source = session.path.clone();
-    let suggested = format!(
-        "{} (anotado).pdf",
-        source
+    let suggested = tr!(
+        NamePdfCopy,
+        name = source
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default()
     );
     let Some(target) = chosen(&state, target, || {
+        // Not the book's own folder: the library follows it, and nothing is written there.
         pick_save(
             owner_of(&window),
-            "Exportar PDF com anotações (cópia)",
+            &tr!(PickExportPdfCopy),
             PDF,
-            source.parent(),
+            None,
             &suggested,
         )
     })?
@@ -1047,10 +1058,10 @@ pub fn pdf_annotations_export(
         return Ok(None);
     };
     check_target(&library, &source, &target)?;
+    check_outside_library(&library, &target)?;
 
     let mut client = client();
-    let mut book =
-        open_to_read(&source).map_err(|error| format!("o livro não pôde ser lido: {error}"))?;
+    let mut book = open_to_read(&source).map_err(|error| tr!(BookNotRead, error = error))?;
     let before = client.read(&book, Reader::Auto)?;
     // What came from the book itself is in it already: it is not written again.
     let in_pdf: std::collections::HashSet<String> = before
@@ -1070,33 +1081,33 @@ pub fn pdf_annotations_export(
     let (annots, exported, left_out) = exported_annots(&ours);
     if annots.is_empty() {
         return Err(if from_pdf.is_empty() {
-            "nenhuma anotação deste livro tem lugar numa página".to_owned()
+            tr!(NoAnnotationOnAPage)
         } else {
-            "as anotações deste livro já estão todas no PDF".to_owned()
+            tr!(AnnotationsAlreadyInPdf)
         });
     }
     let update = client.export(
         &book,
         annots.clone(),
         WriteOptions {
-            author: author(),
+            author: state.preferences.author(),
             now: now_ms(),
         },
     )?;
     let (temporary, mut out) = temporary_beside(&target)?;
     let written = (|| -> Result<u64, String> {
         let (hash, length) = copy_hashing(&mut book, &mut out)
-            .map_err(|error| format!("a cópia não pôde ser escrita: {error}"))?;
+            .map_err(|error| tr!(CopyNotWritten, error = error))?;
         if session
             .blake3
             .is_some_and(|known| known != *hash.as_bytes())
             || length != update.base
         {
-            return Err("o livro mudou no disco enquanto era copiado: nada foi gravado".to_owned());
+            return Err(tr!(BookChangedWhileCopied));
         }
         out.write_all(&update.tail)
             .and_then(|()| out.sync_all())
-            .map_err(|error| format!("a cópia não pôde ser escrita: {error}"))?;
+            .map_err(|error| tr!(CopyNotWritten, error = error))?;
         drop(out);
         // PDFium reads the copy back: every annotation where it was put, and what was there before.
         let copy = open_to_read(&temporary).map_err(|error| error.to_string())?;
@@ -1113,7 +1124,7 @@ pub fn pdf_annotations_export(
     };
     if let Err(error) = std::fs::rename(&temporary, &target) {
         let _ = std::fs::remove_file(&temporary);
-        return Err(format!("a cópia não pôde tomar o nome escolhido: {error}"));
+        return Err(tr!(CopyNotRenamed, error = error));
     }
     Ok(Some(ExportReport {
         path: target.to_string_lossy().into_owned(),
@@ -1129,7 +1140,7 @@ pub fn pdf_annotations_export(
 /// and everything the book had.
 fn verify(before: &Found, after: &Found, written: &[Annot]) -> Result<(), String> {
     if after.reading.frames.len() != before.reading.frames.len() {
-        return Err("a cópia não tem as páginas do livro: nada foi gravado".to_owned());
+        return Err(tr!(CopyLacksPages));
     }
     let mut by_name: HashMap<&str, Vec<&Annot>> = HashMap::new();
     for annot in &after.reading.annots {
@@ -1141,9 +1152,7 @@ fn verify(before: &Found, after: &Found, written: &[Annot]) -> Result<(), String
         let name = want.name.as_deref().unwrap_or_default();
         let found = by_name.get(name).map(Vec::as_slice).unwrap_or_default();
         let [got] = found else {
-            return Err(format!(
-                "o PDFium não acha a anotação {name} na cópia: nada foi gravado"
-            ));
+            return Err(tr!(CopyLacksAnnotation, name = name));
         };
         let near = |a: &[f64], b: &[f64]| {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-3)
@@ -1155,9 +1164,7 @@ fn verify(before: &Found, after: &Found, written: &[Annot]) -> Result<(), String
             && (!matches!(want.subtype, Some(Subtype::Square | Subtype::Text))
                 || near(&got.rect, &want.rect));
         if !same_place {
-            return Err(format!(
-                "o PDFium lê a anotação {name} em outro lugar da cópia: nada foi gravado"
-            ));
+            return Err(tr!(CopyMovedAnnotation, name = name));
         }
     }
     for old in &before.reading.annots {
@@ -1168,9 +1175,7 @@ fn verify(before: &Found, after: &Found, written: &[Annot]) -> Result<(), String
                 && annot.contents == old.contents
         });
         if !kept {
-            return Err(
-                "uma anotação que o livro já tinha não está na cópia: nada foi gravado".to_owned(),
-            );
+            return Err(tr!(CopyLostAnnotation));
         }
     }
     Ok(())
@@ -1244,9 +1249,7 @@ fn import_found(
     path: &Path,
     other_document: bool,
 ) -> Result<ImportReport, String> {
-    let (document, revision) = session
-        .document
-        .ok_or("este documento não está na biblioteca, e só os da biblioteca guardam anotações")?;
+    let (document, revision) = session.document.ok_or_else(|| tr!(DocumentNotInLibrary))?;
     let library = library(state)?;
     let mut skipped = found.reading.skipped.clone();
     for quiet in ["Popup", "Link", "Widget"] {
@@ -1322,7 +1325,7 @@ pub fn pdf_annotations_import(
     let Some(source) = chosen(&state, source, || {
         pick_file(
             owner_of(&window),
-            "Importar anotações de um PDF",
+            &tr!(PickImportFromPdf),
             PDF,
             session.path.parent(),
         )
@@ -1330,14 +1333,10 @@ pub fn pdf_annotations_import(
     else {
         return Ok(None);
     };
-    let file =
-        open_to_read(&source).map_err(|error| format!("o PDF não pôde ser lido: {error}"))?;
+    let file = open_to_read(&source).map_err(|error| tr!(PdfNotRead, error = error))?;
     let found = client().read(&file, Reader::Auto)?;
     if !same_pages(&found, &session) {
-        return Err(
-            "esse PDF não tem as mesmas páginas deste livro: as anotações cairiam fora do lugar"
-                .to_owned(),
-        );
+        return Err(tr!(PdfOtherPages));
     }
     import_found(&app, &state, &cache, &session, &found, &source, false).map(Some)
 }
@@ -1353,10 +1352,18 @@ pub fn xfdf_export(
     target: Option<String>,
 ) -> Result<Option<ExportReport>, String> {
     let session = pdf_session(&state, session)?;
+    let library = library(&state)?;
     let annotations = current_annotations(&app, &state, &cache, &session)?;
-    let (annots, exported, left_out) = exported_annots(&annotations.iter().collect::<Vec<_>>());
+    let (mut annots, exported, left_out) = exported_annots(&annotations.iter().collect::<Vec<_>>());
     if annots.is_empty() {
-        return Err("este livro não tem anotações para levar ao XFDF".to_owned());
+        return Err(tr!(NoAnnotationsForXfdf));
+    }
+    // Signed as in a PDF copy: another program's keep their own author.
+    let author = state.preferences.author();
+    for annot in &mut annots {
+        if annot.author.is_none() {
+            annot.author.clone_from(&author);
+        }
     }
     let source = session.path.clone();
     let href = source
@@ -1372,27 +1379,26 @@ pub fn xfdf_export(
     let Some(target) = chosen(&state, target, || {
         pick_save(
             owner_of(&window),
-            "Exportar anotações em XFDF",
+            &tr!(PickExportXfdf),
             XFDF,
-            source.parent(),
+            None,
             &suggested,
         )
     })?
     else {
         return Ok(None);
     };
-    let book =
-        open_to_read(&source).map_err(|error| format!("o livro não pôde ser lido: {error}"))?;
+    check_outside_library(&library, &target)?;
+    let book = open_to_read(&source).map_err(|error| tr!(BookNotRead, error = error))?;
     let bytes = client().write_xfdf(&book, annots.clone(), href)?;
     let (temporary, mut out) = temporary_beside(&target)?;
     let done = out
         .write_all(&bytes)
         .and_then(|()| out.sync_all())
-        .map_err(|error| format!("o XFDF não pôde ser escrito: {error}"));
+        .map_err(|error| tr!(XfdfNotWritten, error = error));
     drop(out);
     if let Err(reason) = done.and_then(|()| {
-        std::fs::rename(&temporary, &target)
-            .map_err(|error| format!("o XFDF não pôde tomar o nome escolhido: {error}"))
+        std::fs::rename(&temporary, &target).map_err(|error| tr!(XfdfNotRenamed, error = error))
     }) {
         let _ = std::fs::remove_file(&temporary);
         return Err(reason);
@@ -1421,7 +1427,7 @@ pub fn xfdf_import(
     let Some(source) = chosen(&state, source, || {
         pick_file(
             owner_of(&window),
-            "Importar anotações de um XFDF",
+            &tr!(PickImportXfdf),
             XFDF,
             session.path.parent(),
         )
@@ -1432,12 +1438,11 @@ pub fn xfdf_import(
     let mut xfdf = Vec::new();
     open_to_read(&source)
         .and_then(|file| file.take(MAX_XFDF + 1).read_to_end(&mut xfdf))
-        .map_err(|error| format!("o XFDF não pôde ser lido: {error}"))?;
+        .map_err(|error| tr!(XfdfNotRead, error = error))?;
     if xfdf.len() as u64 > MAX_XFDF {
-        return Err("o XFDF é grande demais".to_owned());
+        return Err(tr!(XfdfTooLarge));
     }
-    let book = open_to_read(&session.path)
-        .map_err(|error| format!("o livro não pôde ser lido: {error}"))?;
+    let book = open_to_read(&session.path).map_err(|error| tr!(BookNotRead, error = error))?;
     let found = client().read_xfdf(&book, &xfdf)?;
     let other_document = match (&found.xfdf_ids, &found.id) {
         (Some((theirs, _)), Some((ours, _))) => !theirs.eq_ignore_ascii_case(ours),

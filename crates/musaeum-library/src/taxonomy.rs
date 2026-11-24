@@ -11,6 +11,7 @@
 //! row. Names are compared folded ([`crate::sql::fold`]): "Física" and "fisica" are the same name,
 //! and two siblings, two tags or two custom fields may not share one.
 
+use musaeum_i18n::{T, text, tr};
 use std::collections::BTreeMap;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -117,20 +118,17 @@ pub struct CustomField {
 }
 
 /// A name as typed, trimmed, checked.
-pub(crate) fn clean_name(name: &str, max: usize, what: &str) -> Result<String> {
+pub(crate) fn clean_name(name: &str, max: usize, what: T) -> Result<String> {
     let name = name.trim();
+    let what = text(what, &[]);
     if name.is_empty() {
-        return Err(Error::Refused(format!("{what} needs a name")));
+        return Err(Error::Refused(tr!(NameNeeded, what = what)));
     }
     if name.chars().count() > max {
-        return Err(Error::Refused(format!(
-            "the name of {what} is {max} characters at most"
-        )));
+        return Err(Error::Refused(tr!(NameTooLong, what = what, max = max)));
     }
     if name.chars().any(char::is_control) {
-        return Err(Error::Refused(format!(
-            "the name of {what} has a control character"
-        )));
+        return Err(Error::Refused(tr!(NameControl, what = what)));
     }
     Ok(name.to_owned())
 }
@@ -141,7 +139,7 @@ pub(crate) fn key_for(siblings: &[(i64, String)], place: Place) -> Result<String
         siblings
             .iter()
             .position(|(sibling, _)| *sibling == id)
-            .ok_or_else(|| Error::Refused(format!("{id} is not in that list")))
+            .ok_or_else(|| Error::Refused(tr!(NotInList, id = id)))
     };
     let key = |index: usize| siblings.get(index).map(|(_, key)| key.as_str());
     let result = match place {
@@ -192,17 +190,17 @@ fn exists(connection: &Connection, table: &str, id: i64) -> Result<bool> {
         .is_some())
 }
 
-fn must_exist(connection: &Connection, table: &str, id: i64, what: &str) -> Result<()> {
+fn must_exist(connection: &Connection, table: &str, id: i64, missing: T) -> Result<()> {
     if exists(connection, table, id)? {
         Ok(())
     } else {
-        Err(Error::NotFound(format!("there is no {what} {id}")))
+        Err(Error::NotFound(text(missing, &[("id", &id)])))
     }
 }
 
 fn works_exist(connection: &Connection, works: &[WorkId]) -> Result<()> {
     for &work in works {
-        must_exist(connection, "work", work, "work")?;
+        must_exist(connection, "work", work, T::NoWork)?;
     }
     Ok(())
 }
@@ -213,7 +211,7 @@ fn path_of(connection: &Connection, id: CategoryId) -> Result<String> {
         .prepare_cached("SELECT path FROM category WHERE id = ?1")?
         .query_row([id], |row| row.get(0))
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no category {id}")))
+        .ok_or_else(|| Error::NotFound(tr!(NoCategory, id = id)))
 }
 
 fn depth_of(path: &str) -> usize {
@@ -328,14 +326,15 @@ fn insert_category(
     name: &str,
     place: Place,
 ) -> Result<CategoryId> {
-    let name = clean_name(name, MAX_NAME, "a category")?;
+    let name = clean_name(name, MAX_NAME, T::ThingCategory)?;
     let parent_path = match parent {
         Some(parent) => path_of(transaction, parent)?,
         None => "/".to_owned(),
     };
     if depth_of(&parent_path) + usize::from(parent.is_some()) >= MAX_CATEGORY_DEPTH {
-        return Err(Error::Refused(format!(
-            "categories go {MAX_CATEGORY_DEPTH} levels deep at most"
+        return Err(Error::Refused(tr!(
+            CategoriesTooDeep,
+            max = MAX_CATEGORY_DEPTH
         )));
     }
     let siblings = sibling_categories(transaction, parent, None)?;
@@ -359,11 +358,7 @@ fn insert_category(
             key,
             now
         ])
-        .map_err(|error| {
-            constraint_to(error, || {
-                format!("there is already a category named {name} there")
-            })
-        })?;
+        .map_err(|error| constraint_to(error, || tr!(CategoryNameTaken, name = name)))?;
     Ok(id)
 }
 
@@ -416,7 +411,7 @@ pub(crate) fn tags(connection: &Connection) -> Result<Vec<Tag>> {
 fn check_color(color: Option<&str>) -> Result<()> {
     match color {
         Some(color) if !TAG_COLORS.contains(&color) => {
-            Err(Error::Refused(format!("{color} is not a tag's color")))
+            Err(Error::Refused(tr!(TagColorUnknown, color = color)))
         }
         _ => Ok(()),
     }
@@ -424,7 +419,7 @@ fn check_color(color: Option<&str>) -> Result<()> {
 
 /// The tag named `name`, made if there is none.
 pub(crate) fn tag_named(transaction: &Transaction<'_>, name: &str) -> Result<TagId> {
-    let name = clean_name(name, MAX_TAG_NAME, "a tag")?;
+    let name = clean_name(name, MAX_TAG_NAME, T::ThingTag)?;
     let key = fold(&name);
     if let Some(id) = transaction
         .prepare_cached("SELECT id FROM tag WHERE name_key = ?1")?
@@ -534,7 +529,7 @@ pub(crate) fn smart_condition(
         .prepare_cached("SELECT rules FROM smart_collection WHERE id = ?1")?
         .query_row([id], |row| row.get(0))
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no smart collection {id}")))?;
+        .ok_or_else(|| Error::NotFound(tr!(NoSmartCollection, id = id)))?;
     let rules: Rules = serde_json::from_str(&rules)?;
     smart::compile(&rules, &custom_kinds(connection)?, now_ms())
 }
@@ -616,9 +611,7 @@ pub(crate) fn insert_custom_field(
             key,
             now_ms()
         ])
-        .map_err(|error| {
-            constraint_to(error, || format!("there is already a field named {name}"))
-        })?;
+        .map_err(|error| constraint_to(error, || tr!(FieldNameTaken, name = name)))?;
     Ok(transaction.last_insert_rowid())
 }
 
@@ -627,22 +620,18 @@ pub(crate) fn clean_choices(kind: &str, choices: &[String]) -> Result<Vec<String
         if choices.is_empty() {
             return Ok(Vec::new());
         }
-        return Err(Error::Refused(format!("a {kind} field has no choices")));
+        return Err(Error::Refused(tr!(FieldNoChoices, kind = kind)));
     }
     if choices.is_empty() || choices.len() > MAX_CHOICES {
-        return Err(Error::Refused(format!(
-            "a choice field has 1 to {MAX_CHOICES} choices"
-        )));
+        return Err(Error::Refused(tr!(ChoiceCount, max = MAX_CHOICES)));
     }
     let mut seen = std::collections::HashSet::new();
     choices
         .iter()
         .map(|choice| {
-            let choice = clean_name(choice, MAX_NAME, "a choice")?;
+            let choice = clean_name(choice, MAX_NAME, T::ThingChoice)?;
             if !seen.insert(fold(&choice)) {
-                return Err(Error::Refused(format!(
-                    "the choice {choice} is there twice"
-                )));
+                return Err(Error::Refused(tr!(ChoiceTwice, choice = choice)));
             }
             Ok(choice)
         })
@@ -669,20 +658,16 @@ impl Library {
 
     /// Renames a category.
     pub fn rename_category(&self, id: CategoryId, name: &str) -> Result<()> {
-        let name = clean_name(name, MAX_NAME, "a category")?;
+        let name = clean_name(name, MAX_NAME, T::ThingCategory)?;
         self.database().write(move |transaction| {
             let changed = transaction
                 .prepare_cached(
                     "UPDATE category SET name = ?2, name_key = ?3, updated_at = ?4 WHERE id = ?1",
                 )?
                 .execute(params![id, name, fold(&name), now_ms()])
-                .map_err(|error| {
-                    constraint_to(error, || {
-                        format!("there is already a category named {name} there")
-                    })
-                })?;
+                .map_err(|error| constraint_to(error, || tr!(CategoryNameTaken, name = name)))?;
             if changed == 0 {
-                return Err(Error::NotFound(format!("there is no category {id}")));
+                return Err(Error::NotFound(tr!(NoCategory, id = id)));
             }
             Ok(())
         })
@@ -704,7 +689,7 @@ impl Library {
             };
             if parent_path.starts_with(&old) {
                 return Err(Error::Refused(
-                    "a category cannot go under itself or under one of its own".to_owned(),
+                    tr!(CategoryUnderItself),
                 ));
             }
             let new = format!("{parent_path}{id}/");
@@ -717,9 +702,7 @@ impl Library {
                 .query_row([&old], |row| row.get(0))?;
             let below = (below as usize).saturating_sub(old.matches('/').count());
             if depth_of(&new) + below >= MAX_CATEGORY_DEPTH {
-                return Err(Error::Refused(format!(
-                    "categories go {MAX_CATEGORY_DEPTH} levels deep at most"
-                )));
+                return Err(Error::Refused(tr!(CategoriesTooDeep, max = MAX_CATEGORY_DEPTH)));
             }
             let siblings = sibling_categories(transaction, parent, Some(id))?;
             let key = key_for(&siblings, place)?;
@@ -731,7 +714,7 @@ impl Library {
                 .execute(params![id, parent, key, now])
                 .map_err(|error| {
                     constraint_to(error, || {
-                        "there is already a category with that name there".to_owned()
+                        tr!(CategoryNameTakenThere)
                     })
                 })?;
             if new != old {
@@ -759,7 +742,7 @@ impl Library {
     pub fn set_category(&self, works: &[WorkId], category: CategoryId, member: bool) -> Result<()> {
         let works = works.to_vec();
         self.database().write(move |transaction| {
-            must_exist(transaction, "category", category, "category")?;
+            must_exist(transaction, "category", category, T::NoCategory)?;
             works_exist(transaction, &works)?;
             let now = now_ms();
             for work in works {
@@ -790,7 +773,7 @@ impl Library {
     /// Makes a tag.
     pub fn create_tag(&self, name: &str, color: Option<&str>) -> Result<TagId> {
         check_color(color)?;
-        let name = clean_name(name, MAX_TAG_NAME, "a tag")?;
+        let name = clean_name(name, MAX_TAG_NAME, T::ThingTag)?;
         let color = color.map(str::to_owned);
         self.database().write(move |transaction| {
             transaction
@@ -798,9 +781,7 @@ impl Library {
                     "INSERT INTO tag (name, name_key, color, created_at) VALUES (?1, ?2, ?3, ?4)",
                 )?
                 .execute(params![name, fold(&name), color, now_ms()])
-                .map_err(|error| {
-                    constraint_to(error, || format!("there is already a tag named {name}"))
-                })?;
+                .map_err(|error| constraint_to(error, || tr!(TagNameTaken, name = name)))?;
             Ok(transaction.last_insert_rowid())
         })
     }
@@ -816,18 +797,16 @@ impl Library {
             check_color(color)?;
         }
         let name = name
-            .map(|name| clean_name(name, MAX_TAG_NAME, "a tag"))
+            .map(|name| clean_name(name, MAX_TAG_NAME, T::ThingTag))
             .transpose()?;
         let color = color.map(|color| color.map(str::to_owned));
         self.database().write(move |transaction| {
-            must_exist(transaction, "tag", id, "tag")?;
+            must_exist(transaction, "tag", id, T::NoTag)?;
             if let Some(name) = &name {
                 transaction
                     .prepare_cached("UPDATE tag SET name = ?2, name_key = ?3 WHERE id = ?1")?
                     .execute(params![id, name, fold(name)])
-                    .map_err(|error| {
-                        constraint_to(error, || format!("there is already a tag named {name}"))
-                    })?;
+                    .map_err(|error| constraint_to(error, || tr!(TagNameTaken, name = name)))?;
             }
             if let Some(color) = color {
                 transaction
@@ -841,7 +820,7 @@ impl Library {
     /// Removes a tag from every work, and the tag.
     pub fn delete_tag(&self, id: TagId) -> Result<()> {
         self.database().write(move |transaction| {
-            must_exist(transaction, "tag", id, "tag")?;
+            must_exist(transaction, "tag", id, T::NoTag)?;
             transaction
                 .prepare_cached("DELETE FROM work_tag WHERE tag_id = ?1")?
                 .execute([id])?;
@@ -856,7 +835,7 @@ impl Library {
     pub fn set_tag(&self, works: &[WorkId], tag: TagId, member: bool) -> Result<()> {
         let works = works.to_vec();
         self.database().write(move |transaction| {
-            must_exist(transaction, "tag", tag, "tag")?;
+            must_exist(transaction, "tag", tag, T::NoTag)?;
             works_exist(transaction, &works)?;
             let now = now_ms();
             for work in works {
@@ -889,7 +868,7 @@ impl Library {
         description: &str,
         place: Place,
     ) -> Result<CollectionId> {
-        let name = clean_name(name, MAX_NAME, "a collection")?;
+        let name = clean_name(name, MAX_NAME, T::ThingCollection)?;
         let description = clean_description(description)?;
         self.database().write(move |transaction| {
             let siblings = ordered(
@@ -917,11 +896,11 @@ impl Library {
         description: Option<&str>,
     ) -> Result<()> {
         let name = name
-            .map(|name| clean_name(name, MAX_NAME, "a collection"))
+            .map(|name| clean_name(name, MAX_NAME, T::ThingCollection))
             .transpose()?;
         let description = description.map(clean_description).transpose()?;
         self.database().write(move |transaction| {
-            must_exist(transaction, "collection", id, "collection")?;
+            must_exist(transaction, "collection", id, T::NoCollection)?;
             transaction
                 .prepare_cached(
                     "UPDATE collection SET name = coalesce(?2, name),
@@ -936,7 +915,7 @@ impl Library {
     /// Moves a collection among the others.
     pub fn move_collection(&self, id: CollectionId, place: Place) -> Result<()> {
         self.database().write(move |transaction| {
-            must_exist(transaction, "collection", id, "collection")?;
+            must_exist(transaction, "collection", id, T::NoCollection)?;
             let mut siblings = ordered(
                 transaction,
                 "SELECT id, sort_key FROM collection WHERE ?1 IS NULL ORDER BY sort_key, id",
@@ -954,7 +933,7 @@ impl Library {
     /// Removes a collection. Its works stay in the library.
     pub fn delete_collection(&self, id: CollectionId) -> Result<()> {
         self.database().write(move |transaction| {
-            must_exist(transaction, "collection", id, "collection")?;
+            must_exist(transaction, "collection", id, T::NoCollection)?;
             transaction
                 .prepare_cached("DELETE FROM collection_item WHERE collection_id = ?1")?
                 .execute([id])?;
@@ -975,7 +954,7 @@ impl Library {
     ) -> Result<()> {
         let works = works.to_vec();
         self.database().write(move |transaction| {
-            must_exist(transaction, "collection", collection, "collection")?;
+            must_exist(transaction, "collection", collection, T::NoCollection)?;
             works_exist(transaction, &works)?;
             put_in_collection(transaction, collection, &works, place)
         })
@@ -985,7 +964,7 @@ impl Library {
     pub fn remove_from_collection(&self, collection: CollectionId, works: &[WorkId]) -> Result<()> {
         let works = works.to_vec();
         self.database().write(move |transaction| {
-            must_exist(transaction, "collection", collection, "collection")?;
+            must_exist(transaction, "collection", collection, T::NoCollection)?;
             for work in works {
                 transaction
                     .prepare_cached(
@@ -1000,7 +979,7 @@ impl Library {
     /// The works of a collection, in its order.
     pub fn collection_works(&self, collection: CollectionId) -> Result<Vec<WorkId>> {
         self.database().read(move |connection| {
-            must_exist(connection, "collection", collection, "collection")?;
+            must_exist(connection, "collection", collection, T::NoCollection)?;
             Ok(collection_items(connection, collection)?
                 .into_iter()
                 .map(|(work, _)| work)
@@ -1020,7 +999,7 @@ impl Library {
         rules: &Rules,
         place: Place,
     ) -> Result<SmartCollectionId> {
-        let name = clean_name(name, MAX_NAME, "a smart collection")?;
+        let name = clean_name(name, MAX_NAME, T::ThingSmartCollection)?;
         let rules = rules.clone();
         self.database().write(move |transaction| {
             let json = smart::check(&rules, &custom_kinds(transaction)?)?;
@@ -1049,11 +1028,11 @@ impl Library {
         rules: Option<&Rules>,
     ) -> Result<()> {
         let name = name
-            .map(|name| clean_name(name, MAX_NAME, "a smart collection"))
+            .map(|name| clean_name(name, MAX_NAME, T::ThingSmartCollection))
             .transpose()?;
         let rules = rules.cloned();
         self.database().write(move |transaction| {
-            must_exist(transaction, "smart_collection", id, "smart collection")?;
+            must_exist(transaction, "smart_collection", id, T::NoSmartCollection)?;
             let json = rules
                 .map(|rules| smart::check(&rules, &custom_kinds(transaction)?))
                 .transpose()?;
@@ -1071,7 +1050,7 @@ impl Library {
     /// Removes a smart collection; the works it matched are untouched.
     pub fn delete_smart_collection(&self, id: SmartCollectionId) -> Result<()> {
         self.database().write(move |transaction| {
-            must_exist(transaction, "smart_collection", id, "smart collection")?;
+            must_exist(transaction, "smart_collection", id, T::NoSmartCollection)?;
             transaction
                 .prepare_cached("DELETE FROM smart_collection WHERE id = ?1")?
                 .execute([id])?;
@@ -1109,9 +1088,9 @@ impl Library {
         choices: &[String],
     ) -> Result<CustomFieldId> {
         if !FIELD_KINDS.contains(&kind) {
-            return Err(Error::Refused(format!("{kind} is not a kind of field")));
+            return Err(Error::Refused(tr!(FieldKindUnknown, kind = kind)));
         }
-        let name = clean_name(name, MAX_TAG_NAME, "a field")?;
+        let name = clean_name(name, MAX_TAG_NAME, T::ThingField)?;
         let choices = clean_choices(kind, choices)?;
         let kind = kind.to_owned();
         self.database()
@@ -1127,7 +1106,7 @@ impl Library {
         choices: Option<&[String]>,
     ) -> Result<()> {
         let name = name
-            .map(|name| clean_name(name, MAX_TAG_NAME, "a field"))
+            .map(|name| clean_name(name, MAX_TAG_NAME, T::ThingField))
             .transpose()?;
         let choices = choices.map(<[String]>::to_vec);
         self.database().write(move |transaction| {
@@ -1135,16 +1114,14 @@ impl Library {
                 .prepare_cached("SELECT kind FROM custom_field WHERE id = ?1")?
                 .query_row([id], |row| row.get(0))
                 .optional()?
-                .ok_or_else(|| Error::NotFound(format!("there is no field {id}")))?;
+                .ok_or_else(|| Error::NotFound(tr!(NoField, id = id)))?;
             if let Some(name) = &name {
                 transaction
                     .prepare_cached(
                         "UPDATE custom_field SET name = ?2, name_key = ?3 WHERE id = ?1",
                     )?
                     .execute(params![id, name, fold(name)])
-                    .map_err(|error| {
-                        constraint_to(error, || format!("there is already a field named {name}"))
-                    })?;
+                    .map_err(|error| constraint_to(error, || tr!(FieldNameTaken, name = name)))?;
             }
             if let Some(choices) = choices {
                 let choices = clean_choices(&kind, &choices)?;
@@ -1155,9 +1132,7 @@ impl Library {
                     .query_map([id], |row| row.get(0))?
                     .collect::<rusqlite::Result<_>>()?;
                 if let Some(missing) = used.iter().find(|value| !choices.contains(value)) {
-                    return Err(Error::Refused(format!(
-                        "some work has the choice {missing}, which would go"
-                    )));
+                    return Err(Error::Refused(tr!(ChoiceInUse, choice = missing)));
                 }
                 transaction
                     .prepare_cached("UPDATE custom_field SET choices = ?2 WHERE id = ?1")?
@@ -1171,7 +1146,7 @@ impl Library {
     /// longer matches anything, and says so.
     pub fn delete_custom_field(&self, id: CustomFieldId) -> Result<()> {
         self.database().write(move |transaction| {
-            must_exist(transaction, "custom_field", id, "field")?;
+            must_exist(transaction, "custom_field", id, T::NoField)?;
             transaction
                 .prepare_cached("DELETE FROM work_custom_value WHERE field_id = ?1")?
                 .execute([id])?;
@@ -1186,8 +1161,9 @@ impl Library {
 fn clean_description(description: &str) -> Result<String> {
     let description = description.trim();
     if description.chars().count() > MAX_DESCRIPTION {
-        return Err(Error::Refused(format!(
-            "a description is {MAX_DESCRIPTION} characters at most"
+        return Err(Error::Refused(tr!(
+            DescriptionTooLong,
+            max = MAX_DESCRIPTION
         )));
     }
     Ok(description.to_owned())
@@ -1218,10 +1194,10 @@ mod tests {
 
     #[test]
     fn names_are_trimmed_and_checked() {
-        assert_eq!(clean_name("  Física ", 10, "x").unwrap(), "Física");
-        assert!(clean_name("   ", 10, "x").is_err());
-        assert!(clean_name("abcdefghijk", 10, "x").is_err());
-        assert!(clean_name("a\u{7}b", 10, "x").is_err());
+        assert_eq!(clean_name("  Física ", 10, T::ThingTag).unwrap(), "Física");
+        assert!(clean_name("   ", 10, T::ThingTag).is_err());
+        assert!(clean_name("abcdefghijk", 10, T::ThingTag).is_err());
+        assert!(clean_name("a\u{7}b", 10, T::ThingTag).is_err());
     }
 
     #[test]

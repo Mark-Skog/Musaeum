@@ -452,6 +452,15 @@ async function run(work) {
     );
     step('nothing but the copy is left in its folder', readdirSync(exported).length === 1, { files: readdirSync(exported) });
 
+    // 2b. Nothing goes into a folder of the library: not the copy, not the XFDF (ADR 0013, point 9).
+    const intoShelf = await pdf(main, 'export-pdf', join(shelf, 'dentro (anotado).pdf'));
+    const xfdfIntoShelf = await pdf(main, 'export-xfdf', join(shelf, 'dentro.xfdf'));
+    step(
+      'a copy or an XFDF inside a folder of the library is refused, and nothing appears there',
+      !intoShelf.ok && /pasta da biblioteca/.test(intoShelf.error) && !xfdfIntoShelf.ok && /pasta da biblioteca/.test(xfdfIntoShelf.error) && JSON.stringify(listTree(shelf)) === JSON.stringify(shelfBefore),
+      { intoShelf, xfdfIntoShelf, shelf: readdirSync(shelf) },
+    );
+
     // 3. The copy's objects, as PDFium reads them.
     const found = await main.evaluate(`window.musaeumApp.pdfAnnotations(${JSON.stringify(copyPath)})`);
     const native = found.reading.annots;
@@ -555,7 +564,11 @@ async function run(work) {
     originals = after.map(essence);
 
     // A second copy: the book's own two are in its bytes already, and are not written again.
-    const secondPath = join(exported, 'livro (segunda).pdf');
+    // Not into `exportados`: the library follows it since the first copy was opened there, so
+    // nothing is written in it any more (ADR 0014, D11).
+    const secondFolder = join(work, 'exportados-2');
+    mkdirSync(secondFolder, { recursive: true });
+    const secondPath = join(secondFolder, 'livro (segunda).pdf');
     const second = await pdf(main, 'export-pdf', secondPath);
     const secondFound = second.ok ? await main.evaluate(`window.musaeumApp.pdfAnnotations(${JSON.stringify(secondPath)})`) : null;
     const secondNative = secondFound?.reading.annots ?? [];
@@ -645,7 +658,10 @@ async function runReal(work) {
     return;
   }
   const shelf = join(work, 'reais');
+  // Copies go outside the library's folders, which are never written.
+  const copies = join(work, 'reais-copias');
   mkdirSync(shelf, { recursive: true });
+  mkdirSync(copies, { recursive: true });
   const sources = books.map((source, index) => {
     const before = statSync(source, { bigint: true });
     const name = `real-${index}.pdf`;
@@ -671,7 +687,7 @@ async function runReal(work) {
         brought.ok && brought.report.added === kept && again.ok && again.report.added === 0 && again.report.already === kept && shown.length === kept,
         { brought: brought.report ?? brought.error, again: again.report ?? again.error, shown: shown.length, kinds: held.reading.annots.map((annot) => annot.subtype) },
       );
-      const copyPath = join(shelf, `${book.name}.copia.pdf`);
+      const copyPath = join(copies, `${book.name}.copia.pdf`);
       const out = await pdf(main, 'export-pdf', copyPath);
       step(
         `${book.source.split('\\').pop()}: a copy exported after does not write them again`,

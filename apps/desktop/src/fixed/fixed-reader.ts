@@ -28,6 +28,7 @@ import {
 import { RingPump } from '../ring-pump';
 import { createSabRing, SabRingProducer } from '../sab-ring';
 import { SharedBufferInbox, type WebviewApi } from '../shared-buffer-inbox';
+import { isMotionReduced } from '../app/preferences/store';
 
 /** A power of two, in tiles. Holds about two screens' worth of tiles in transit. */
 const SAB_RING_CAPACITY = 32;
@@ -556,7 +557,7 @@ export class FixedReader {
         bench: measuringMemory ? null : bench,
         devicePixelRatio,
         comfortableScale: bench?.zoom ?? 1.5 * devicePixelRatio,
-        prefersReducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        prefersReducedMotion: isMotionReduced(),
         screenWidth: Math.round(screen.width * devicePixelRatio),
         screenHeight: Math.round(screen.height * devicePixelRatio),
         tileBudgetBytes,
@@ -641,6 +642,11 @@ export class FixedReader {
   }
 
   /** What a press on a page does: select text, or draw on the picture along lines, a box or a stroke. */
+  /** The person's motion preference changed: true holds every page turn still. */
+  setReducedMotion(on: boolean): void {
+    this.send({ type: 'set-reduced-motion', on });
+  }
+
   setTool(tool: Tool): void {
     this.send({ type: 'set-tool', tool });
   }

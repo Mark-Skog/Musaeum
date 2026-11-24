@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 
 import type { StartupOptions } from '../protocol';
 import { App } from './App';
+import { loadPreferences } from './preferences/store';
 import './app.css';
 
 export function mountApp(options: StartupOptions): void {
@@ -15,9 +16,13 @@ export function mountApp(options: StartupOptions): void {
     document.body.append(host);
   }
   document.body.classList.add('app-mode');
-  createRoot(host).render(
-    <StrictMode>
-      <App options={options} />
-    </StrictMode>,
+  const root = createRoot(host);
+  // The first words drawn are already in the person's language, in their colors.
+  void loadPreferences().finally(() =>
+    root.render(
+      <StrictMode>
+        <App options={options} />
+      </StrictMode>,
+    ),
   );
 }

@@ -443,6 +443,60 @@ export interface AnnotationHit {
   matched: 'title_start' | 'word_start' | 'substring';
 }
 
+/** The interface's colors. */
+export type ThemeChoice = 'system' | 'light' | 'dark';
+/** How much the interface moves. */
+export type MotionChoice = 'system' | 'reduce';
+
+/** Every preference (`preferences.db`). */
+export interface Preferences {
+  language: string;
+  theme: ThemeChoice;
+  motion: MotionChoice;
+  /** The name annotations are signed with; empty for the system's user name. */
+  annotationAuthor: string;
+  /** The OCR's languages, as Tesseract names them, in order. */
+  ocrLanguages: string[];
+}
+
+export interface PreferencesView {
+  preferences: Preferences;
+  systemAuthor: string | null;
+  path: string | null;
+  problem: string | null;
+}
+
+export type PreferencesPatch = Partial<Preferences>;
+
+export interface OcrModel {
+  code: string;
+  bcp47: string | null;
+  bytes: number;
+  verified: boolean;
+  shipped: boolean;
+}
+
+export interface OcrModels {
+  folder: string | null;
+  models: OcrModel[];
+  fetchable: OcrModel[];
+  reading: string | null;
+}
+
+/** What a library's cache holds, by part, and what it weighs on the disk. */
+export interface CacheReport {
+  folder: string;
+  linePages: number;
+  lineBytes: number;
+  ocrLines: number;
+  ocrBytes: number;
+  fulltextBytes: number;
+  flowBytes: number;
+  thumbnailBytes: number;
+  databaseBytes: number;
+  totalBytes: number;
+}
+
 export const api = {
   libraryInfo: () => invoke<LibraryInfo>('library_info'),
   chooseRoot: () => invoke<LibraryInfo | null>('library_choose_root'),
@@ -560,6 +614,16 @@ export const api = {
     }),
   /** Under a test: each page's text of a PDF, as PDFium reads it. */
   e2ePdfText: (path: string) => invoke<string[]>('e2e_pdf_text', { path }),
+  /** Every preference, the system's user name, and where they are kept. */
+  preferences: () => invoke<PreferencesView>('preferences_get'),
+  /** Changes some preferences, all or none; answers with all of them. */
+  setPreferences: (patch: PreferencesPatch) => invoke<PreferencesView>('preferences_set', { patch }),
+  /** The OCR's models in the program's folder, verified or not, and those it could fetch. */
+  ocrModels: () => invoke<OcrModels>('ocr_models'),
+  /** What the open library's cache holds; null without a library. */
+  cacheReport: () => invoke<CacheReport | null>('cache_report'),
+  /** Forgets the pages' lines and what the OCR read; answers with the cache as it is after. */
+  cacheClearLines: () => invoke<CacheReport | null>('cache_clear_lines'),
 };
 
 /** Which annotations an export writes. */

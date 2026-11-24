@@ -18,6 +18,8 @@ import {
 import type { FlowMark } from '../../reader/annotations';
 import type { ReaderRect } from '../../reader/messages';
 import type { ReadingStyle } from '../../reader/typography';
+import { template } from '../i18n';
+import { isMotionReduced } from '../preferences/store';
 
 const READER_SANDBOX = 'allow-scripts allow-same-origin';
 /** How long the position has to stay still before it is kept. */
@@ -126,7 +128,8 @@ export class FlowReader {
           position: this.info.saved?.readerCfi ?? null,
           sections: this.info.sections,
           totalText: this.info.totalText,
-          reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          reducedMotion: isMotionReduced(),
+          sectionTitle: template('reader.section'),
         });
         return;
       case 'opened':
@@ -241,6 +244,16 @@ export class FlowReader {
     this.animated = animated;
     this.post({ type: 'set-animation', animated });
     this.scheduleSave();
+  }
+
+  /** The person's motion preference changed: true holds every page still. */
+  setReducedMotion(on: boolean): void {
+    this.post({ type: 'set-reduced-motion', on });
+  }
+
+  /** The language changed: the sections' frames are named in the new one. */
+  setLanguage(): void {
+    this.post({ type: 'set-section-title', template: template('reader.section') });
   }
 
   setStyle(style: ReadingStyle): void {

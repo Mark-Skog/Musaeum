@@ -155,6 +155,9 @@ export class Reader {
   mode: ReadingMode;
   /** The paginated mode's page turn, kept while reading continuously. */
   animationPreference: boolean;
+  /** Whether the person wants as little motion as possible: no page turn moves while it holds,
+   * whatever the page turn preference, which is kept for when it no longer does. */
+  private reducedMotion: boolean;
   spreads: SpreadsSetting;
   locator: Locator;
 
@@ -204,10 +207,11 @@ export class Reader {
     this.pageCount = document.widths.length;
     this.hints = { pageLayout: document.pageLayout, direction: document.direction };
     this.animationPreference = saved?.pageTurnAnimation ?? !options.prefersReducedMotion;
+    this.reducedMotion = options.prefersReducedMotion;
     this.mode =
       saved?.mode === 'continuous'
         ? { kind: 'continuous' }
-        : { kind: 'paginated', animate: this.animationPreference };
+        : { kind: 'paginated', animate: this.animates };
     this.spreads = saved?.spreads ?? 'auto';
     this.zoom = clamp(saved?.zoom ?? 1, MIN_ZOOM, MAX_ZOOM);
     this.zoomTarget = this.zoom;
@@ -215,6 +219,11 @@ export class Reader {
       ? { page: clamp(saved.page, 0, Math.max(0, this.pageCount - 1)), u: saved.u, v: saved.v }
       : { page: 0, u: 0, v: 0 };
     this.relayout();
+  }
+
+  /** Whether a page turn moves now. */
+  private get animates(): boolean {
+    return this.animationPreference && !this.reducedMotion;
   }
 
   private get dpr(): number {
@@ -293,16 +302,26 @@ export class Reader {
     this.mode =
       kind === 'continuous'
         ? { kind: 'continuous' }
-        : { kind: 'paginated', animate: this.animationPreference };
+        : { kind: 'paginated', animate: this.animates };
     this.moveTo(this.locator);
   }
 
   /** Sets the page turn preference, which only paginated reading has a use for. */
   setAnimation(on: boolean): void {
     this.animationPreference = on;
+    this.applyAnimation();
+  }
+
+  /** Holds every page turn still, or lets them move again as the preference says. */
+  setReducedMotion(on: boolean): void {
+    this.reducedMotion = on;
+    this.applyAnimation();
+  }
+
+  private applyAnimation(): void {
     if (this.mode.kind === 'paginated') {
-      this.mode = { kind: 'paginated', animate: on };
-      if (!on) {
+      this.mode = { kind: 'paginated', animate: this.animates };
+      if (!this.animates) {
         this.strip.snap(this.screen * this.stride);
       }
     }

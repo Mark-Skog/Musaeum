@@ -23,6 +23,7 @@ use crate::background::{self, Pending};
 use crate::memory::MemorySampler;
 use crate::ocr::Ocr;
 use crate::options::{DeliveryFault, DeliveryPath, StartupOptions};
+use crate::preferences::PreferencesState;
 use crate::reading::{self, SavedReading};
 use crate::shelf::Shelf;
 use crate::webview2;
@@ -72,6 +73,8 @@ pub struct AppState {
     pub flow_client: Mutex<Option<IngestClient>>,
     /// The OCR worker that reads the text under marks on scans, kept while a document is open.
     pub ocr: Ocr,
+    /// The person's preferences.
+    pub preferences: PreferencesState,
 }
 
 impl AppState {
@@ -82,6 +85,9 @@ impl AppState {
 
     /// Creates the state with no session open.
     pub fn new(options: StartupOptions) -> Self {
+        let preferences = PreferencesState::open(options.library.as_deref());
+        let ocr = Ocr::default();
+        ocr.choose_languages(&preferences.current().ocr_languages);
         Self {
             memory: options
                 .bench
@@ -91,7 +97,8 @@ impl AppState {
             started: Instant::now(),
             shelf: Shelf::new(options.library.clone(), options.bench.is_some()),
             flow_client: Mutex::new(None),
-            ocr: Ocr::default(),
+            ocr,
+            preferences,
             options,
             current: RwLock::new(None),
             next_id: AtomicU32::new(1),
@@ -147,6 +154,15 @@ impl AppState {
     /// The command-line options.
     pub fn options(&self) -> &StartupOptions {
         &self.options
+    }
+
+    /// The sandbox the OCR worker runs in: the strictest, unless the command line turned it off.
+    pub fn ocr_policy(&self) -> Policy {
+        if self.options.no_sandbox {
+            Policy::Unrestricted
+        } else {
+            Policy::LockdownParser
+        }
     }
 
     /// Fails the way a runtime without shared buffers would, if that is being simulated.

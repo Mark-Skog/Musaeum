@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Fixture, TempDir, options, pdf, pdf_with_id};
+use common::{Fixture, TempDir, anchored_highlight, options, pdf, pdf_with_id};
 use musaeum_library::{
     DocumentGeometry, Error, Library, LibraryPaths, LineModelRecord, OcrLineRecord, OcrReading,
     PageContentClass, PageContentRecord, PageOrientation, PageRecord, ReadingMode, ReadingState,
@@ -615,4 +615,106 @@ fn what_the_ocr_read_is_a_scanned_page_s_text_for_the_full_text_index() {
         "each page's lines in the model's order, a line with no words left out"
     );
     assert!(library.ocr_page_texts(&[8u8; 32]).unwrap().is_empty());
+}
+
+#[test]
+fn clearing_the_lines_and_the_ocr_forgets_them_and_keeps_every_annotation() {
+    let fixture = Fixture::new();
+    let path = fixture.write("escaneado.pdf", &pdf(31));
+    fixture.settle();
+    let book = fixture.identity(&path);
+    let library = fixture.library();
+    let hash = fixture.document_at(&path).revisions[0]
+        .blake3
+        .clone()
+        .unwrap();
+    let hash: [u8; 32] = (0..32)
+        .map(|at| u8::from_str_radix(&hash[at * 2..at * 2 + 2], 16).unwrap())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    library
+        .store_page_geometry(
+            &hash,
+            &DocumentGeometry {
+                pages: vec![
+                    PageRecord {
+                        width_pt: 595.0,
+                        height_pt: 842.0,
+                        orientation: PageOrientation::Portrait,
+                    };
+                    2
+                ],
+                ..DocumentGeometry::default()
+            },
+        )
+        .unwrap();
+    library
+        .store_line_models(
+            &hash,
+            &[LineModelRecord {
+                page: 0,
+                version: 2,
+                page_hash: 7,
+                model: vec![1; 300],
+            }],
+        )
+        .unwrap();
+    let reading = OcrReading {
+        lines_version: 2,
+        ocr_version: 1,
+        languages: "por+eng",
+    };
+    library
+        .store_ocr_lines(
+            &hash,
+            0,
+            reading,
+            &[OcrLineRecord {
+                line: 0,
+                words: r#"{"confidence":90.0,"flipped":false,"words":[["lido",0.0,1.0,90.0]]}"#
+                    .to_owned(),
+            }],
+        )
+        .unwrap();
+    let mut marked = anchored_highlight(book.document, book.revision);
+    marked.quote = Some("lido pelo OCR".to_owned());
+    marked.quote_source = musaeum_library::QuoteSource::Ocr;
+    let made = library.create_annotation(marked).unwrap();
+
+    let before = library.cache_report().unwrap();
+    assert_eq!((before.line_pages, before.ocr_lines), (1, 1));
+    assert_eq!(before.line_bytes, 300);
+    assert!(before.ocr_bytes > 0 && before.database_bytes > 0);
+    assert!(before.total_bytes >= before.database_bytes);
+
+    assert_eq!(library.clear_lines_and_ocr().unwrap(), (1, 1));
+    let after = library.cache_report().unwrap();
+    assert_eq!(
+        (
+            after.line_pages,
+            after.line_bytes,
+            after.ocr_lines,
+            after.ocr_bytes
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(library.line_model(&hash, 0, 2).unwrap().is_none());
+    assert!(
+        library
+            .ocr_lines(&hash, 0, reading, &[0])
+            .unwrap()
+            .is_empty()
+    );
+
+    // The annotation and its quote are the library's, untouched.
+    let kept = library.annotations(book.document, true).unwrap();
+    let again = kept
+        .iter()
+        .find(|annotation| annotation.uuid == made.uuid)
+        .unwrap();
+    assert_eq!(again.quote.as_deref(), Some("lido pelo OCR"));
+    assert_eq!(again, &made);
+    // Cleared again: nothing to forget.
+    assert_eq!(library.clear_lines_and_ocr().unwrap(), (0, 0));
 }

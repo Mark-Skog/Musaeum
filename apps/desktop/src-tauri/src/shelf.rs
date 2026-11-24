@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use musaeum_i18n::tr;
 use musaeum_library::{
     BrowsePage, BrowseQuery, FolderEntry, Indexer, IndexerConfig, IndexerEvent, Library,
     LibraryOptions, LibraryPaths, MAX_BROWSE,
@@ -450,7 +451,7 @@ pub fn library_choose_root(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<LibraryInfo>, String> {
-    let Some(folder) = pick_folder(owner_of(&window), "Pasta de livros")? else {
+    let Some(folder) = pick_folder(owner_of(&window), &tr!(PickBooksFolder))? else {
         return Ok(None);
     };
     state.shelf.add_root(&folder)?;
@@ -471,8 +472,7 @@ pub fn library_choose_existing(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<LibraryInfo>, String> {
-    let Some(folder) = pick_folder(owner_of(&window), "Pasta da biblioteca (com library.db)")?
-    else {
+    let Some(folder) = pick_folder(owner_of(&window), &tr!(PickLibraryFolder))? else {
         return Ok(None);
     };
     state.stop_current_session();

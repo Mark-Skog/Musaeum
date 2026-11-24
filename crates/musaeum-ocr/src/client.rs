@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
 
+use crate::models::{KNOWN_MODELS, ModelFile, verified};
 use crate::protocol::{
     MAX_MODEL, MAX_MODELS, Mode, ModelHeader, PROTOCOL_VERSION, Reply, Request, Word, is_language,
     picture_fits, read_frame, write_frame,
@@ -120,22 +121,54 @@ impl OcrClient {
         }
     }
 
-    /// The languages there are models for, by Tesseract's names.
-    pub fn languages(&self) -> Vec<String> {
+    /// The folder the models are read from: `tessdata` next to the worker, unless configured.
+    pub fn models_folder(&self) -> Option<PathBuf> {
+        self.config.models_folder()
+    }
+
+    /// Every model file in the models' folder, by name, with whether its bytes are the ones this
+    /// program trusts under that name ([`crate::models`]). Reads and hashes each one.
+    pub fn models(&self) -> Vec<ModelFile> {
         let Some(folder) = self.config.models_folder() else {
             return Vec::new();
         };
-        let mut found: Vec<String> = std::fs::read_dir(folder)
+        let mut found: Vec<ModelFile> = std::fs::read_dir(&folder)
             .into_iter()
             .flatten()
             .filter_map(|entry| {
-                let name = entry.ok()?.file_name().into_string().ok()?;
-                let language = name.strip_suffix(".traineddata")?;
-                is_language(language).then(|| language.to_owned())
+                let entry = entry.ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                let code = name.strip_suffix(".traineddata")?;
+                if !is_language(code) {
+                    return None;
+                }
+                let bytes = entry.metadata().ok()?.len();
+                let known = KNOWN_MODELS
+                    .iter()
+                    .find(|model| model.code == code)
+                    .copied();
+                let verified = known.is_some()
+                    && bytes <= MAX_MODEL
+                    && std::fs::read(entry.path()).is_ok_and(|read| verified(code, &read));
+                Some(ModelFile {
+                    code: code.to_owned(),
+                    bytes,
+                    known,
+                    verified,
+                })
             })
             .collect();
-        found.sort();
+        found.sort_by(|a, b| a.code.cmp(&b.code));
         found
+    }
+
+    /// The languages there are trusted models for, by Tesseract's names.
+    pub fn languages(&self) -> Vec<String> {
+        self.models()
+            .into_iter()
+            .filter(|model| model.verified)
+            .map(|model| model.code)
+            .collect()
     }
 
     /// How many workers had to be thrown away.
@@ -282,8 +315,16 @@ impl OcrClient {
                 path.display()
             )));
         }
-        std::fs::read(&path)
-            .map_err(|error| OcrError::Unavailable(format!("{}: {error}", path.display())))
+        let bytes = std::fs::read(&path)
+            .map_err(|error| OcrError::Unavailable(format!("{}: {error}", path.display())))?;
+        // Only the bytes pinned for this name reach the worker.
+        if !verified(language, &bytes) {
+            return Err(OcrError::Unavailable(format!(
+                "{} is not a model this program trusts",
+                path.display()
+            )));
+        }
+        Ok(bytes)
     }
 
     fn discard(&mut self, reason: &str) -> OcrError {

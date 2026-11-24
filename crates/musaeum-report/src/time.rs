@@ -1,6 +1,10 @@
 //! Dates as the reports show them, worked out from Unix milliseconds and an offset from UTC, with
 //! no clock and no time zone database: the same instant gives the same text everywhere.
 
+use musaeum_i18n::tr_in;
+
+use crate::Locale;
+
 /// Days since 1970-01-01 of a date of the proleptic Gregorian calendar.
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
@@ -78,18 +82,29 @@ fn offset_parts(offset: i32) -> (char, i32, i32) {
     (sign, minutes / 60, minutes % 60)
 }
 
-/// `23/11/2026`, as dates are written in Portuguese.
-pub fn date(ms: i64, offset: i32) -> String {
+/// `23/11/2026` in Portuguese, `2026-11-23` in English.
+pub fn date(ms: i64, offset: i32, locale: Locale) -> String {
     let at = moment(ms, offset);
-    format!("{:02}/{:02}/{:04}", at.day, at.month, at.year)
+    tr_in!(
+        locale,
+        ReportDate,
+        day = format!("{:02}", at.day),
+        month = format!("{:02}", at.month),
+        year = format!("{:04}", at.year)
+    )
 }
 
-/// `23/11/2026 às 17:40`.
-pub fn date_time(ms: i64, offset: i32) -> String {
+/// `23/11/2026 às 17:40` in Portuguese, `2026-11-23 at 17:40` in English.
+pub fn date_time(ms: i64, offset: i32, locale: Locale) -> String {
     let at = moment(ms, offset);
-    format!(
-        "{:02}/{:02}/{:04} às {:02}:{:02}",
-        at.day, at.month, at.year, at.hour, at.minute
+    tr_in!(
+        locale,
+        ReportDateTime,
+        day = format!("{:02}", at.day),
+        month = format!("{:02}", at.month),
+        year = format!("{:04}", at.year),
+        hour = format!("{:02}", at.hour),
+        minute = format!("{:02}", at.minute)
     )
 }
 
@@ -133,15 +148,17 @@ mod tests {
     fn dates_are_written_on_the_person_s_clock() {
         // 2026-11-23 20:40:05.123 UTC.
         let ms = 1_795_466_405_123;
-        assert_eq!(date(ms, -180), "23/11/2026");
-        assert_eq!(date_time(ms, -180), "23/11/2026 às 17:40");
+        assert_eq!(date(ms, -180, Locale::PtBr), "23/11/2026");
+        assert_eq!(date_time(ms, -180, Locale::PtBr), "23/11/2026 às 17:40");
+        assert_eq!(date(ms, -180, Locale::English), "2026-11-23");
+        assert_eq!(date_time(ms, -180, Locale::English), "2026-11-23 at 17:40");
         assert_eq!(iso_local(ms, -180), "2026-11-23T17:40:05-03:00");
         assert_eq!(pdf_date(ms, -180), "D:20261123174005-03'00'");
         assert_eq!(pdf_date(ms, 0), "D:20261123204005Z");
         assert_eq!(offset_label(-180), "UTC\u{2212}03:00");
         assert_eq!(offset_label(330), "UTC+05:30");
         assert_eq!(
-            date(ms, 240),
+            date(ms, 240, Locale::PtBr),
             "24/11/2026",
             "past midnight four hours ahead"
         );

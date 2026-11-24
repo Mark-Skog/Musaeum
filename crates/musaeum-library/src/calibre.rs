@@ -19,6 +19,7 @@
 //! Calibre's tags are added to the work's; its custom columns become custom fields, and a value the
 //! work already has for one is left alone.
 
+use musaeum_i18n::{T, tr};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -143,18 +144,13 @@ pub struct CalibreReport {
 pub fn read_calibre(folder: &Path) -> Result<CalibreLibrary> {
     let source = absolute_if_it_exists(folder);
     if !source.is_dir() {
-        return Err(Error::NotFound(format!(
-            "there is no folder {}",
-            source.display()
-        )));
+        return Err(Error::NotFound(tr!(NoFolderAt, path = source.display())));
     }
     let database = source.join("metadata.db");
     if database.is_file() {
         for busy in ["metadata.db-journal", "metadata.db-wal"] {
             if source.join(busy).exists() {
-                return Err(Error::Refused(
-                    "Calibre is writing to this library (close it and try again)".to_owned(),
-                ));
+                return Err(Error::Refused(tr!(CalibreWriting)));
             }
         }
         let connection = open_immutable(&database)?;
@@ -168,9 +164,9 @@ pub fn read_calibre(folder: &Path) -> Result<CalibreLibrary> {
     }
     let (books, columns) = read_opfs(&source)?;
     if books.is_empty() {
-        return Err(Error::NotFound(format!(
-            "{} has neither a metadata.db nor books with a metadata.opf",
-            source.display()
+        return Err(Error::NotFound(tr!(
+            CalibreNothing,
+            path = source.display()
         )));
     }
     Ok(CalibreLibrary {
@@ -499,9 +495,7 @@ type Books = (Vec<CalibreBook>, Vec<CalibreColumn>);
 
 fn read_database(connection: &Connection, source: &Path) -> Result<Books> {
     if !has_table(connection, "books")? {
-        return Err(Error::Refused(
-            "metadata.db has no books table: it is not a Calibre library".to_owned(),
-        ));
+        return Err(Error::Refused(tr!(CalibreNoBooksTable)));
     }
     let mut books: Vec<CalibreBook> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
@@ -523,9 +517,7 @@ fn read_database(connection: &Connection, source: &Path) -> Result<Books> {
         for row in rows {
             let (id, title, path, series_index, pubdate, uuid, legacy_isbn) = row?;
             if books.len() >= MAX_BOOKS {
-                return Err(Error::Refused(format!(
-                    "{MAX_BOOKS} books at a time at most"
-                )));
+                return Err(Error::Refused(tr!(CalibreTooMany, max = MAX_BOOKS)));
             }
             let title = title
                 .map(|title| title.trim().to_owned())
@@ -534,7 +526,7 @@ fn read_database(connection: &Connection, source: &Path) -> Result<Books> {
                 id,
                 uuid: uuid.filter(|uuid| uuid.len() <= 64),
                 title: title
-                    .unwrap_or_else(|| "Sem título".to_owned())
+                    .unwrap_or_else(|| tr!(Untitled))
                     .chars()
                     .take(1000)
                     .collect(),
@@ -1012,7 +1004,7 @@ fn fields_for(
     let mut fields = HashMap::new();
     for column in columns {
         let Some(kind) = &column.kind else { continue };
-        let Ok(name) = taxonomy::clean_name(&column.name, MAX_TAG_NAME, "a field") else {
+        let Ok(name) = taxonomy::clean_name(&column.name, MAX_TAG_NAME, T::ThingField) else {
             continue;
         };
         let choices = clean_choices(kind, &column.choices).unwrap_or_default();

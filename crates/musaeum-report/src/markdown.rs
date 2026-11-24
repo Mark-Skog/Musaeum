@@ -8,10 +8,12 @@
 //! again from that, so a fence it never closed is closed and a heading in it stays below the
 //! report's own.
 
+use musaeum_i18n::{T, count_in, text_in, tr_in};
+
 use crate::notes::{self, Block, Inline};
 use crate::order::{self, Ordered};
 use crate::text::clean;
-use crate::{Found, Heading, Item, Layout, Mark, Report, WorkReport, color_name, time};
+use crate::{Found, Heading, Item, Layout, Locale, Mark, Report, WorkReport, color_name, time};
 
 /// A string as YAML writes it double-quoted, which is how JSON writes it.
 fn yaml_string(text: &str) -> String {
@@ -195,21 +197,22 @@ fn note_markdown(source: &str, shift: u8) -> String {
     out.join("\n\n")
 }
 
-fn role_label(role: &str) -> Option<&str> {
+fn role_label(role: &str, locale: Locale) -> Option<String> {
+    let short = |message: T| Some(text_in(locale, message, &[]));
     match role {
         "author" | "" => None,
-        "editor" => Some("org."),
-        "translator" => Some("trad."),
-        "illustrator" => Some("il."),
-        other => Some(other),
+        "editor" => short(T::RoleEditorShort),
+        "translator" => short(T::RoleTranslatorShort),
+        "illustrator" => short(T::RoleIllustratorShort),
+        other => Some(other.to_owned()),
     }
 }
 
 /// `A; B (trad.)`.
-pub fn byline(work: &WorkReport) -> String {
+pub fn byline(work: &WorkReport, locale: Locale) -> String {
     work.creators
         .iter()
-        .map(|creator| match role_label(&creator.role) {
+        .map(|creator| match role_label(&creator.role, locale) {
             Some(role) => format!("{} ({role})", creator.name.trim()),
             None => creator.name.trim().to_owned(),
         })
@@ -234,51 +237,56 @@ pub fn identifiers(work: &WorkReport) -> String {
 }
 
 /// `PDF, 412 páginas`.
-pub fn file_line(work: &WorkReport) -> String {
+pub fn file_line(work: &WorkReport, locale: Locale) -> String {
     let format = work.format.to_uppercase();
     match work.pages {
-        Some(1) => format!("{format}, 1 página"),
-        Some(pages) => format!("{format}, {pages} páginas"),
+        Some(pages) => count_in(
+            locale,
+            u64::from(pages),
+            T::ReportPagesOne,
+            T::ReportPagesOther,
+            &[("format", &format), ("count", &pages)],
+        ),
         None => format,
     }
 }
 
 /// `12 (7 realces, 3 sublinhados e 2 notas); 1 não encontrada`.
-pub fn counts(work: &WorkReport) -> String {
+pub fn counts(work: &WorkReport, locale: Locale) -> String {
     let total = work.items.len();
     let orphans = work
         .items
         .iter()
         .filter(|item| item.found == Found::Orphan)
         .count();
-    let mut line = format!("{total} ({})", order::tally(&work.items));
+    let mut line = format!("{total} ({})", order::tally(&work.items, locale));
     if orphans > 0 {
-        line.push_str(&format!(
-            "; {orphans} {}",
-            if orphans == 1 {
-                "não encontrada"
-            } else {
-                "não encontradas"
-            }
+        line.push_str("; ");
+        line.push_str(&count_in(
+            locale,
+            orphans as u64,
+            T::ReportNotFoundOne,
+            T::ReportNotFoundOther,
+            &[("count", &orphans)],
         ));
     }
     line
 }
 
 /// The line over an annotation: what it is, its color, where it is, and when it was made.
-pub fn meta(item: &Item, layout: Layout, offset: i32) -> Vec<String> {
-    let mut parts = vec![color_name(&item.color)];
-    if let Some(place) = item.place(layout) {
+pub fn meta(item: &Item, layout: Layout, offset: i32, locale: Locale) -> Vec<String> {
+    let mut parts = vec![color_name(&item.color, locale)];
+    if let Some(place) = item.place(layout, locale) {
         parts.push(if item.found == Found::Orphan {
-            format!("estava em {place}")
+            tr_in!(locale, ReportWasAt, place = place)
         } else {
             place
         });
     }
     if item.found == Found::Approximate {
-        parts.push("aproximada".to_owned());
+        parts.push(text_in(locale, T::ReportApproximate, &[]));
     }
-    parts.push(time::date(item.created_at, offset));
+    parts.push(time::date(item.created_at, offset, locale));
     parts
 }
 
@@ -287,11 +295,11 @@ pub fn graphic(item: &Item) -> bool {
     !matches!(item.mark, Mark::Text)
 }
 
-fn item_markdown(item: &Item, work: &WorkReport, offset: i32, shift: u8) -> String {
+fn item_markdown(item: &Item, work: &WorkReport, offset: i32, shift: u8, locale: Locale) -> String {
     let mut parts = vec![format!(
         "**{}** · {}",
-        item.label(),
-        meta(item, work.layout, offset)
+        item.label(locale),
+        meta(item, work.layout, offset, locale)
             .iter()
             .map(|part| escape(part, false))
             .collect::<Vec<_>>()
@@ -304,7 +312,7 @@ fn item_markdown(item: &Item, work: &WorkReport, offset: i32, shift: u8) -> Stri
     {
         Some(quote) => parts.push(quotation(quote)),
         None if graphic(item) => {
-            parts.push("*Sem texto: uma marca desenhada na página.*".to_owned())
+            parts.push(format!("*{}*", text_in(locale, T::ReportGraphicMark, &[])))
         }
         None => {}
     }
@@ -324,8 +332,10 @@ fn heading_line(level: usize, text: &str) -> String {
 
 fn work_markdown(work: &WorkReport, base: usize, report: &Report) -> String {
     let offset = report.utc_offset_minutes;
+    let locale = report.locale;
+    let label = |message: T| text_in(locale, message, &[]);
     let mut out: Vec<String> = vec![heading_line(base, &work.title)];
-    let by = byline(work);
+    let by = byline(work, locale);
     if !by.is_empty() {
         out.push(format!("*{}*", escape(&by, false)));
     }
@@ -333,30 +343,41 @@ fn work_markdown(work: &WorkReport, base: usize, report: &Report) -> String {
     if let Some(series) = work.series.as_deref().filter(|s| !s.trim().is_empty()) {
         let position = work
             .series_position
-            .map(|n| format!(", n.º {}", number(n)))
+            .map(|n| tr_in!(locale, ReportSeriesNumber, number = number(n)))
             .unwrap_or_default();
         facts.push(format!(
-            "- **Série:** {}",
+            "- **{}:** {}",
+            label(T::ReportSeries),
             escape(&format!("{}{position}", series.trim()), false)
         ));
     }
     if let Some(year) = work.year {
-        facts.push(format!("- **Ano:** {year}"));
+        facts.push(format!("- **{}:** {year}", label(T::ReportYear)));
     }
     if let Some(language) = work.language.as_deref().filter(|l| !l.trim().is_empty()) {
-        facts.push(format!("- **Idioma:** {}", escape(language.trim(), false)));
+        facts.push(format!(
+            "- **{}:** {}",
+            label(T::ReportLanguage),
+            escape(language.trim(), false)
+        ));
     }
     if !work.identifiers.is_empty() {
         facts.push(format!(
-            "- **Identificadores:** {}",
+            "- **{}:** {}",
+            label(T::ReportIdentifiers),
             escape(&identifiers(work), false)
         ));
     }
     facts.push(format!(
-        "- **Arquivo:** {}",
-        escape(&file_line(work), false)
+        "- **{}:** {}",
+        label(T::ReportFile),
+        escape(&file_line(work, locale), false)
     ));
-    facts.push(format!("- **Anotações:** {}", escape(&counts(work), false)));
+    facts.push(format!(
+        "- **{}:** {}",
+        label(T::ReportAnnotations),
+        escape(&counts(work, locale), false)
+    ));
     out.push(facts.join("\n"));
 
     let shift = (base + 3).min(5) as u8;
@@ -366,9 +387,9 @@ fn work_markdown(work: &WorkReport, base: usize, report: &Report) -> String {
         orphans,
     } = order::order(work);
     if !whole.is_empty() {
-        out.push(heading_line(base + 1, "Sobre o livro todo"));
+        out.push(heading_line(base + 1, &label(T::ReportWholeBook)));
         for item in whole {
-            out.push(item_markdown(item, work, offset, shift));
+            out.push(item_markdown(item, work, offset, shift, locale));
         }
     }
     let mut printed: Vec<&Heading> = Vec::new();
@@ -383,18 +404,14 @@ fn work_markdown(work: &WorkReport, base: usize, report: &Report) -> String {
         }
         printed = section.path.clone();
         for item in &section.items {
-            out.push(item_markdown(item, work, offset, shift));
+            out.push(item_markdown(item, work, offset, shift, locale));
         }
     }
     if !orphans.is_empty() {
-        out.push(heading_line(base + 1, "Não encontradas no livro"));
-        out.push(
-            "*O trecho destas anotações não foi encontrado no livro como ele está agora. Elas \
-             ficam com a citação, a nota e o lugar em que estavam.*"
-                .to_owned(),
-        );
+        out.push(heading_line(base + 1, &label(T::ReportNotFoundHeading)));
+        out.push(format!("*{}*", label(T::ReportNotFoundExplained)));
         for item in orphans {
-            out.push(item_markdown(item, work, offset, shift));
+            out.push(item_markdown(item, work, offset, shift, locale));
         }
     }
     out.join("\n\n")
@@ -403,16 +420,32 @@ fn work_markdown(work: &WorkReport, base: usize, report: &Report) -> String {
 /// The report as Markdown.
 pub fn markdown(report: &Report) -> String {
     let offset = report.utc_offset_minutes;
+    let locale = report.locale;
     let generated = time::iso_local(report.generated_at, offset);
     let mut out: Vec<String> = Vec::new();
     let mut front = vec!["---".to_owned()];
     let total: usize = report.works.iter().map(|work| work.items.len()).sum();
     let made = format!(
-        "*Relatório de estudo gerado em {} ({}) pelo {}.*",
-        time::date_time(report.generated_at, offset),
-        time::offset_label(offset),
-        escape(&report.generator, false)
+        "*{}*",
+        tr_in!(
+            locale,
+            ReportMadeOne,
+            date = time::date_time(report.generated_at, offset, locale),
+            zone = time::offset_label(offset),
+            generator = escape(&report.generator, false)
+        )
     );
+    let annotator = report
+        .annotator
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let annotated = annotator.map(|name| {
+        format!(
+            "*{}*",
+            tr_in!(locale, ReportAnnotator, name = escape(name, false))
+        )
+    });
     if let [work] = report.works.as_slice() {
         front.push(format!("title: {}", yaml_string(&work.title)));
         let authors: Vec<String> = work
@@ -445,23 +478,32 @@ pub fn markdown(report: &Report) -> String {
         }
         front.push(format!("format: {}", yaml_string(&work.format)));
         front.push(format!("annotations: {total}"));
+        if let Some(name) = annotator {
+            front.push(format!("annotator: {}", yaml_string(name)));
+        }
         front.push(format!("generated: {}", yaml_string(&generated)));
         front.push(format!("generator: {}", yaml_string(&report.generator)));
         front.push("---".to_owned());
         out.push(front.join("\n"));
         out.push(work_markdown(work, 1, report));
         out.push(made);
+        out.extend(annotated);
     } else {
-        front.push(format!("title: {}", yaml_string("Relatório de estudo")));
+        let title = text_in(locale, T::ReportTitle, &[]);
+        front.push(format!("title: {}", yaml_string(&title)));
         let titles: Vec<String> = report.works.iter().map(|w| w.title.clone()).collect();
         front.push(format!("works: {}", yaml_list(&titles)));
         front.push(format!("annotations: {total}"));
+        if let Some(name) = annotator {
+            front.push(format!("annotator: {}", yaml_string(name)));
+        }
         front.push(format!("generated: {}", yaml_string(&generated)));
         front.push(format!("generator: {}", yaml_string(&report.generator)));
         front.push("---".to_owned());
         out.push(front.join("\n"));
-        out.push("# Relatório de estudo".to_owned());
+        out.push(format!("# {title}"));
         out.push(made);
+        out.extend(annotated);
         let list: Vec<String> = report
             .works
             .iter()
@@ -469,7 +511,7 @@ pub fn markdown(report: &Report) -> String {
                 format!(
                     "- {} ({})",
                     escape(&crate::text::fold_spaces(&work.title), false),
-                    escape(&order::tally(&work.items), false)
+                    escape(&order::tally(&work.items, locale), false)
                 )
             })
             .collect();
@@ -522,6 +564,8 @@ mod tests {
             generated_at: 1_795_466_405_123,
             utc_offset_minutes: -180,
             generator: "Musaeum 0.0.1".into(),
+            locale: crate::Locale::PtBr,
+            annotator: None,
             works: vec![WorkReport {
                 title: "Física *Básica* #1".into(),
                 creators: vec![
@@ -653,6 +697,38 @@ Figura importante
             assert_eq!(text, expected);
         }
         assert_eq!(markdown(&sample()), text, "the same every time");
+    }
+
+    #[test]
+    fn a_report_speaks_its_own_language_and_names_who_annotated() {
+        let report = Report {
+            locale: crate::Locale::English,
+            annotator: Some("  Ana *Lima*  ".into()),
+            ..sample()
+        };
+        let text = markdown(&report);
+        for line in [
+            "annotator: \"Ana *Lima*\"",
+            "- **Series:** Curso, no. 1",
+            "- **Year:** 2002",
+            "- **Language:** pt-BR",
+            "- **File:** PDF, 12 pages",
+            "- **Annotations:** 4 (1 highlight, 1 underline, 1 note and 1 box); 1 not found",
+            "**Highlight** · yellow · p. 1 · 2026-11-23",
+            "*No text: a mark drawn on the page.*",
+            "## Not found in the book",
+            "**Note** · yellow · was at p. 2 · 2026-11-23",
+            "*Study report made on 2026-11-23 at 17:40 (UTC\u{2212}03:00) by Musaeum 0.0.1.*",
+            "*Annotations by Ana \\*Lima\\*.*",
+            "*H. Moysés Nussenzveig; Tradutora (trans.)*",
+        ] {
+            assert!(text.lines().any(|got| got == line), "{line}\n\n{text}");
+        }
+        // What the person wrote, and the book's own words, are not translated.
+        assert!(text.contains("> Linha um"));
+        assert!(text.contains("##### Título da nota"));
+        // No annotator line when no name was given, in either language.
+        assert!(!markdown(&sample()).contains("annotator:"));
     }
 
     #[test]

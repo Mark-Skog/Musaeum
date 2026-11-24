@@ -5,6 +5,7 @@
  */
 
 import type { Annotation, AnnotationEdit, AnnotationKind, PageMark } from '../../api';
+import { t } from '../../i18n';
 
 export interface Entry {
   annotation: Annotation;
@@ -117,7 +118,7 @@ export class AnnotationStore {
     } catch (error) {
       this.entries.delete(shown.annotation.uuid);
       this.changed();
-      this.onError(`A anotação não foi guardada: ${String(error)}`);
+      this.onError(t('annot.store.notSaved', { reason: String(error) }));
       return null;
     }
   }
@@ -139,7 +140,7 @@ export class AnnotationStore {
     } catch (error) {
       this.entries.set(uuid, before);
       this.changed();
-      this.onError(`A mudança não foi guardada: ${String(error)}`);
+      this.onError(t('annot.store.changeNotSaved', { reason: String(error) }));
     }
   }
 
@@ -174,7 +175,7 @@ export class AnnotationStore {
     } catch (error) {
       this.entries.set(uuid, before);
       this.changed();
-      this.onError(`A anotação não foi removida: ${String(error)}`);
+      this.onError(t('annot.store.notRemoved', { reason: String(error) }));
       return null;
     }
   }
@@ -191,7 +192,7 @@ export class AnnotationStore {
     } catch (error) {
       this.entries.delete(uuid);
       this.changed();
-      this.onError(`A anotação não voltou: ${String(error)}`);
+      this.onError(t('annot.store.notBack', { reason: String(error) }));
     }
   }
 }

@@ -2324,6 +2324,7 @@ version = "0.0.1"
 dependencies = [
  "gen-fixtures",
  "musaeum-flow",
+ "musaeum-i18n",
  "musaeum-ingest",
  "musaeum-library",
  "rusqlite",
@@ -2352,6 +2353,7 @@ dependencies = [
  "musaeum-core",
  "musaeum-flow",
  "musaeum-fs",
+ "musaeum-i18n",
  "musaeum-ingest",
  "musaeum-library",
  "musaeum-ocr",
@@ -2404,6 +2406,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "musaeum-i18n"
+version = "0.0.1"
+
+[[package]]
 name = "musaeum-ingest"
 version = "0.0.1"
 dependencies = [
@@ -2425,6 +2431,7 @@ dependencies = [
  "gen-fixtures",
  "musaeum-flow",
  "musaeum-fs",
+ "musaeum-i18n",
  "musaeum-ingest",
  "musaeum-sandbox",
  "musaeum-shm",
@@ -2446,6 +2453,7 @@ dependencies = [
  "musaeum-sandbox",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2526,6 +2534,7 @@ version = "0.0.1"
 dependencies = [
  "blake3",
  "flate2",
+ "musaeum-i18n",
  "serde",
  "serde_json",
 ]

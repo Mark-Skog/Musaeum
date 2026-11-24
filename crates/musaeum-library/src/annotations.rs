@@ -10,6 +10,7 @@
 //! whose selectors all fail is an orphan, still listed and found by search with its quote and note.
 //! The schema enforces that too (migration 0004).
 
+use musaeum_i18n::tr;
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -305,7 +306,7 @@ fn check_color(color: &str) -> Result<()> {
 
 fn check_note(note: &str) -> Result<()> {
     if note.len() > MAX_NOTE_BYTES {
-        return Err(Error::Refused("the note is too long".to_owned()));
+        return Err(Error::Refused(tr!(NoteTooLong)));
     }
     Ok(())
 }
@@ -552,7 +553,7 @@ pub(crate) fn load_where(
 fn load_one(connection: &Connection, uuid: &[u8; 16]) -> Result<Annotation> {
     load_where(connection, "a.uuid = ?1", &uuid.as_slice())?
         .pop()
-        .ok_or_else(|| Error::NotFound("there is no such annotation".to_owned()))
+        .ok_or_else(|| Error::NotFound(tr!(NoAnnotation)))
 }
 
 fn id_of(transaction: &Transaction<'_>, uuid: &[u8; 16]) -> Result<(AnnotationId, DocumentId)> {
@@ -560,7 +561,7 @@ fn id_of(transaction: &Transaction<'_>, uuid: &[u8; 16]) -> Result<(AnnotationId
         .prepare_cached("SELECT id, document_id FROM annotation WHERE uuid = ?1")?
         .query_row([uuid.as_slice()], |row| Ok((row.get(0)?, row.get(1)?)))
         .optional()?
-        .ok_or_else(|| Error::NotFound("there is no such annotation".to_owned()))
+        .ok_or_else(|| Error::NotFound(tr!(NoAnnotation)))
 }
 
 /// Refuses a revision that is not the document's.
@@ -643,16 +644,12 @@ impl Library {
         imported: Vec<ImportedAnnotation>,
     ) -> Result<ImportOutcome> {
         if imported.len() > MAX_IMPORTED {
-            return Err(Error::Refused(
-                "too many annotations for one import".to_owned(),
-            ));
+            return Err(Error::Refused(tr!(ImportTooMany)));
         }
         for item in &imported {
             check_new(&item.new)?;
             if item.new.document_id != document || item.new.revision_id != revision {
-                return Err(Error::Refused(
-                    "an imported annotation of another document".to_owned(),
-                ));
+                return Err(Error::Refused(tr!(ImportOtherDocument)));
             }
             if item
                 .new
@@ -660,9 +657,7 @@ impl Library {
                 .as_deref()
                 .is_none_or(|name| name.trim().is_empty())
             {
-                return Err(Error::Refused(
-                    "an imported annotation needs a name to be told apart".to_owned(),
-                ));
+                return Err(Error::Refused(tr!(ImportNeedsName)));
             }
         }
         self.database().write(move |transaction| {

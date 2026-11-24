@@ -1,0 +1,13 @@
+[package]
+name = "musaeum-i18n"
+description = "The languages Musaeum speaks: each message its Rust code writes for a person, in Brazilian Portuguese and in English, side by side."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

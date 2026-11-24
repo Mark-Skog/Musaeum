@@ -30,6 +30,8 @@ export interface EngineOptions {
   style: ReadingStyle;
   sandbox: string;
   reducedMotion: boolean;
+  /** A section's frame title, with `{number}` where its number goes. */
+  sectionTitle: string;
 }
 
 /** Turns what a fragment link finds into a position. */
@@ -47,6 +49,9 @@ export class FlowEngine {
   private view: View;
   private mode: FlowMode;
   private animated: boolean;
+  /** Whether the person wants as little motion as possible: no page moves while it holds. */
+  private reducedMotion: boolean;
+  private sectionTitle: string;
   private style: ReadingStyle;
   private anchor: ViewAnchor | null = null;
   /** Keeps changes in order: a second one waits for the first to finish. */
@@ -64,6 +69,8 @@ export class FlowEngine {
   ) {
     this.mode = options.mode;
     this.animated = options.animated;
+    this.reducedMotion = options.reducedMotion;
+    this.sectionTitle = options.sectionTitle;
     this.style = options.style;
     // Both views, and anything else, ask for sections through this.
     guardSectionLoads(book.sections);
@@ -91,7 +98,7 @@ export class FlowEngine {
       released: (doc: Document) => this.annotations.release(doc),
     };
     if (mode === 'paginated') {
-      const view = new PaginatedView(this.book, this.book.sections, this.style, css, this.animated, events);
+      const view = new PaginatedView(this.book, this.book.sections, this.style, css, this.animated && !this.reducedMotion, events);
       // foliate-js places a layer over each section's frame and redraws it after every layout.
       view.element.addEventListener('create-overlayer', (event) => {
         const { doc, index, attach } = (
@@ -102,7 +109,7 @@ export class FlowEngine {
       view.mount(this.container);
       return view;
     }
-    const view = new ContinuousView(this.book.sections, this.plans, this.options.sandbox, this.style, css, events);
+    const view = new ContinuousView(this.book.sections, this.plans, this.options.sandbox, this.style, css, events, (index) => this.titleOf(index));
     view.mount(this.container);
     return view;
   }
@@ -222,7 +229,7 @@ export class FlowEngine {
         finished: Promise<void>;
       };
     }).startViewTransition;
-    if (this.options.reducedMotion || typeof start !== 'function') {
+    if (this.reducedMotion || typeof start !== 'function') {
       await apply();
     } else {
       const transition = start.call(document, async () => {
@@ -287,15 +294,35 @@ export class FlowEngine {
   setAnimated(animated: boolean): void {
     this.animated = animated;
     if (this.view instanceof PaginatedView) {
-      this.view.setAnimated(animated);
+      this.view.setAnimated(animated && !this.reducedMotion);
     }
+  }
+
+  /** Holds every page still, or lets them move again as the page turn preference says. */
+  setReducedMotion(on: boolean): void {
+    this.reducedMotion = on;
+    if (this.view instanceof PaginatedView) {
+      this.view.setAnimated(this.animated && !on);
+    }
+  }
+
+  /** The language changed: the frames shown take the new titles, and the next ones too. */
+  setSectionTitle(template: string): void {
+    this.sectionTitle = template;
+    if (this.view instanceof ContinuousView) {
+      this.view.retitle();
+    }
+  }
+
+  private titleOf(index: number): string {
+    return this.sectionTitle.split('{number}').join(String(index + 1));
   }
 
   turn(step: 1 | -1): Promise<void> {
     if (this.view instanceof PaginatedView) {
       return step > 0 ? this.view.next() : this.view.prev();
     }
-    this.view.page(step, this.animated && !this.options.reducedMotion);
+    this.view.page(step, this.animated && !this.reducedMotion);
     return Promise.resolve();
   }
 

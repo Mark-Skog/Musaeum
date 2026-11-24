@@ -11,10 +11,12 @@
 //! itself is `musaeum-ocr-worker`, the only program that links Tesseract.
 
 pub mod client;
+pub mod models;
 pub mod protocol;
 pub mod strip;
 
 pub use client::{OcrClient, OcrConfig, OcrError};
+pub use models::{KNOWN_MODELS, KnownModel, ModelFile, verified};
 pub use protocol::{Mode, Word};
 pub use strip::{Gray, LinePath, Strip, straighten};
 

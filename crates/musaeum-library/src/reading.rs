@@ -6,6 +6,7 @@
 //! file is renamed and never wrong after it is edited. That goes for their size and shape, and for what
 //! they are made of: text, a scan, or a scan with OCR's text over it.
 
+use musaeum_i18n::tr;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -317,7 +318,7 @@ fn check_owner(
         .query_row([document], |row| row.get(0))
         .optional()?;
     if known.is_none() {
-        return Err(Error::NotFound(format!("there is no document {document}")));
+        return Err(Error::NotFound(tr!(NoDocument, id = document)));
     }
     if let Some(revision) = revision {
         let owner: Option<DocumentId> = transaction

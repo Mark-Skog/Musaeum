@@ -22,6 +22,7 @@ import {
 } from 'react-aria-components';
 
 import { api, type Category, type FolderEntry, type LibraryInfo, type SmartCollection, type Tag, type Taxonomy } from '../api';
+import { compareNames, useLocale, useT } from '../i18n';
 import { CollectionDialog, ConfirmDialog, FieldsDialog, MoveCategoryDialog, NameDialog, SmartDialog, TagDialog } from './dialogs';
 import { type CategoryNode, categoryTree, type Filter, sameFilter, siblingsAround } from './taxonomy-model';
 
@@ -46,7 +47,7 @@ function buildTree(folders: FolderEntry[]): FolderNode[] {
     }
   }
   const sum = (node: FolderNode): number => {
-    node.children.sort((a, b) => a.entry.name.localeCompare(b.entry.name, 'pt-BR'));
+    node.children.sort((a, b) => compareNames(a.entry.name, b.entry.name));
     node.total = node.entry.books + node.children.reduce((total, child) => total + sum(child), 0);
     return node.total;
   };
@@ -63,8 +64,9 @@ function shortName(path: string): string {
 }
 
 function Chevron({ hasChildItems, isExpanded }: { hasChildItems: boolean; isExpanded: boolean }): React.JSX.Element {
+  const t = useT();
   return hasChildItems ? (
-    <Button slot="chevron" className="folder-chevron" aria-label={isExpanded ? 'Recolher' : 'Expandir'}>
+    <Button slot="chevron" className="folder-chevron" aria-label={isExpanded ? t('sidebar.collapse') : t('sidebar.expand')}>
       {isExpanded ? '▾' : '▸'}
     </Button>
   ) : (
@@ -97,9 +99,10 @@ function FolderItems({ nodes }: { nodes: FolderNode[] }): React.JSX.Element {
 
 /** A menu of actions behind a "⋯" button. */
 function Actions({ label, actions, run }: { label: string; actions: [string, string, boolean?][]; run(id: string): void }): React.JSX.Element {
+  const t = useT();
   return (
     <MenuTrigger>
-      <Button className="row-menu" aria-label={`Ações de ${label}`}>
+      <Button className="row-menu" aria-label={t('sidebar.actionsOf', { name: label })}>
         ⋯
       </Button>
       <Popover className="popover menu-popover" placement="bottom end">
@@ -162,7 +165,10 @@ export interface SidebarProps {
 }
 
 export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, notice, waiting }: SidebarProps): React.JSX.Element {
-  const tree = useMemo(() => buildTree(folders), [folders]);
+  const t = useT();
+  const locale = useLocale();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tree = useMemo(() => buildTree(folders), [folders, locale]);
   const categories = useMemo(() => categoryTree(taxonomy.categories), [taxonomy.categories]);
   const [opened, setOpened] = useState<Opened | null>(null);
   const close = (): void => setOpened(null);
@@ -222,13 +228,13 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
                   <Actions
                     label={category.name}
                     actions={[
-                      ['sub', 'Nova subcategoria…'],
-                      ['rename', 'Renomear…'],
-                      ['move', 'Mover para…'],
-                      ['up', 'Subir', around.before === null],
-                      ['down', 'Descer', around.after === null],
+                      ['sub', t('sidebar.newSubcategory')],
+                      ['rename', t('sidebar.rename')],
+                      ['move', t('sidebar.moveTo')],
+                      ['up', t('sidebar.up'), around.before === null],
+                      ['down', t('sidebar.down'), around.after === null],
                       ['---1', ''],
-                      ['delete', 'Excluir…'],
+                      ['delete', t('sidebar.delete')],
                     ]}
                     run={(action) => {
                       if (action === 'sub') setOpened({ kind: 'new-category', parent: category.id });
@@ -260,44 +266,44 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
   };
 
   return (
-    <nav className="sidebar" aria-label="Organização">
-      <Tree aria-label="Todos os livros" className="folders" selectionMode="single" selectedKeys={filter.kind === 'all' || filter.kind === 'review' ? new Set([filter.kind]) : new Set()} onSelectionChange={choose}>
-        <TreeItem id="all" textValue="Todos os livros" className="folder-item">
+    <nav className="sidebar" aria-label={t('sidebar.label')}>
+      <Tree aria-label={t('sidebar.all')} className="folders" selectionMode="single" selectedKeys={filter.kind === 'all' || filter.kind === 'review' ? new Set([filter.kind]) : new Set()} onSelectionChange={choose}>
+        <TreeItem id="all" textValue={t('sidebar.all')} className="folder-item">
           <TreeItemContent>
             <div className="folder-row">
               <span className="folder-chevron" />
-              <span className="folder-name">Todos os livros</span>
+              <span className="folder-name">{t('sidebar.all')}</span>
               <span className="folder-count">{info.books}</span>
             </div>
           </TreeItemContent>
         </TreeItem>
-        <TreeItem id="review" textValue="Revisar" className="folder-item" data-waiting={waiting}>
+        <TreeItem id="review" textValue={t('sidebar.review')} className="folder-item" data-waiting={waiting}>
           <TreeItemContent>
             <div className="folder-row">
               <span className="folder-chevron" />
-              <span className="folder-name">Revisar</span>
+              <span className="folder-name">{t('sidebar.review')}</span>
               <span className={waiting > 0 ? 'folder-count waiting' : 'folder-count'}>{waiting > 0 ? waiting : ''}</span>
             </div>
           </TreeItemContent>
         </TreeItem>
       </Tree>
 
-      <Section title="Pastas">
-        <Tree aria-label="Filtrar por pasta" className="folders" selectionMode="single" selectedKeys={selectedIn('folder')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
+      <Section title={t('sidebar.folders')}>
+        <Tree aria-label={t('sidebar.folders.filter')} className="folders" selectionMode="single" selectedKeys={selectedIn('folder')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
           <FolderItems nodes={tree} />
         </Tree>
       </Section>
 
-      <Section title="Categorias" addLabel="Nova categoria" onAdd={() => setOpened({ kind: 'new-category', parent: null })}>
-        {categories.length === 0 ? <p className="side-empty">Nenhuma categoria.</p> : null}
-        <Tree aria-label="Filtrar por categoria" className="folders" selectionMode="single" selectedKeys={selectedIn('category')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
+      <Section title={t('sidebar.categories')} addLabel={t('sidebar.categories.new')} onAdd={() => setOpened({ kind: 'new-category', parent: null })}>
+        {categories.length === 0 ? <p className="side-empty">{t('sidebar.categories.none')}</p> : null}
+        <Tree aria-label={t('sidebar.categories.filter')} className="folders" selectionMode="single" selectedKeys={selectedIn('category')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
           {categoryItems(categories)}
         </Tree>
       </Section>
 
-      <Section title="Etiquetas" addLabel="Nova etiqueta" onAdd={() => setOpened({ kind: 'tag', tag: null })}>
-        {taxonomy.tags.length === 0 ? <p className="side-empty">Nenhuma etiqueta.</p> : null}
-        <GridList aria-label="Filtrar por etiqueta" className="side-list" selectionMode="single" selectedKeys={selectedIn('tag')} onSelectionChange={choose} items={taxonomy.tags}>
+      <Section title={t('sidebar.tags')} addLabel={t('sidebar.tags.new')} onAdd={() => setOpened({ kind: 'tag', tag: null })}>
+        {taxonomy.tags.length === 0 ? <p className="side-empty">{t('sidebar.tags.none')}</p> : null}
+        <GridList aria-label={t('sidebar.tags.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('tag')} onSelectionChange={choose} items={taxonomy.tags} dependencies={[locale]}>
           {(tag) => (
             <GridListItem id={`tag:${tag.id}`} textValue={tag.name} className="side-item" data-tag={tag.id}>
               <span className={`tag-dot tag-${tag.color ?? 'none'}`} aria-hidden="true" />
@@ -306,9 +312,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
               <Actions
                 label={tag.name}
                 actions={[
-                  ['edit', 'Renomear ou mudar a cor…'],
+                  ['edit', t('sidebar.tags.edit')],
                   ['---1', ''],
-                  ['delete', 'Excluir…'],
+                  ['delete', t('sidebar.delete')],
                 ]}
                 run={(action) => setOpened(action === 'edit' ? { kind: 'tag', tag } : { kind: 'delete-tag', tag })}
               />
@@ -317,9 +323,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
         </GridList>
       </Section>
 
-      <Section title="Coleções" addLabel="Nova coleção" onAdd={() => setOpened({ kind: 'collection', collection: null })}>
-        {taxonomy.collections.length === 0 ? <p className="side-empty">Nenhuma coleção.</p> : null}
-        <GridList aria-label="Filtrar por coleção" className="side-list" selectionMode="single" selectedKeys={selectedIn('collection')} onSelectionChange={choose} items={taxonomy.collections}>
+      <Section title={t('sidebar.collections')} addLabel={t('sidebar.collections.new')} onAdd={() => setOpened({ kind: 'collection', collection: null })}>
+        {taxonomy.collections.length === 0 ? <p className="side-empty">{t('sidebar.collections.none')}</p> : null}
+        <GridList aria-label={t('sidebar.collections.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('collection')} onSelectionChange={choose} items={taxonomy.collections} dependencies={[locale]}>
           {(collection) => {
             const at = taxonomy.collections.indexOf(collection);
             return (
@@ -331,11 +337,11 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
                 <Actions
                   label={collection.name}
                   actions={[
-                    ['edit', 'Renomear ou descrever…'],
-                    ['up', 'Subir', at === 0],
-                    ['down', 'Descer', at === taxonomy.collections.length - 1],
+                    ['edit', t('sidebar.collections.edit')],
+                    ['up', t('sidebar.up'), at === 0],
+                    ['down', t('sidebar.down'), at === taxonomy.collections.length - 1],
                     ['---1', ''],
-                    ['delete', 'Excluir…'],
+                    ['delete', t('sidebar.delete')],
                   ]}
                   run={(action) => {
                     if (action === 'edit') setOpened({ kind: 'collection', collection });
@@ -349,9 +355,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
         </GridList>
       </Section>
 
-      <Section title="Coleções inteligentes" addLabel="Nova coleção inteligente" onAdd={() => setOpened({ kind: 'smart', smart: null })}>
-        {taxonomy.smart.length === 0 ? <p className="side-empty">Nenhuma coleção inteligente.</p> : null}
-        <GridList aria-label="Filtrar por coleção inteligente" className="side-list" selectionMode="single" selectedKeys={selectedIn('smart')} onSelectionChange={choose} items={taxonomy.smart}>
+      <Section title={t('sidebar.smart')} addLabel={t('sidebar.smart.new')} onAdd={() => setOpened({ kind: 'smart', smart: null })}>
+        {taxonomy.smart.length === 0 ? <p className="side-empty">{t('sidebar.smart.none')}</p> : null}
+        <GridList aria-label={t('sidebar.smart.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('smart')} onSelectionChange={choose} items={taxonomy.smart} dependencies={[locale]}>
           {(smart) => (
             <GridListItem id={`smart:${smart.id}`} textValue={smart.name} className="side-item" data-smart={smart.id}>
               <span className="smart-mark" aria-hidden="true">
@@ -361,7 +367,7 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
                 {smart.name}
               </span>
               {smart.broken !== null ? (
-                <span className="broken" title={smart.broken} aria-label="A regra não funciona mais">
+                <span className="broken" title={smart.broken} aria-label={t('sidebar.smart.broken')}>
                   !
                 </span>
               ) : (
@@ -370,9 +376,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
               <Actions
                 label={smart.name}
                 actions={[
-                  ['edit', 'Editar a regra…'],
+                  ['edit', t('sidebar.smart.edit')],
                   ['---1', ''],
-                  ['delete', 'Excluir…'],
+                  ['delete', t('sidebar.delete')],
                 ]}
                 run={(action) => setOpened(action === 'edit' ? { kind: 'smart', smart } : { kind: 'delete-smart', smart })}
               />
@@ -383,29 +389,29 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
 
       <div className="side-footer">
         <Button className="button small" onPress={() => setOpened({ kind: 'fields' })}>
-          Campos personalizados…
+          {t('sidebar.fields')}
         </Button>
       </div>
 
       {opened?.kind === 'new-category' ? (
         <NameDialog
-          title={opened.parent === null ? 'Nova categoria' : 'Nova subcategoria'}
-          label="Nome"
+          title={opened.parent === null ? t('sidebar.newCategory.title') : t('sidebar.newSubcategory.title')}
+          label={t('sidebar.name')}
           initial=""
-          submitLabel="Criar"
+          submitLabel={t('sidebar.create')}
           onSubmit={(name) => api.createCategory(opened.parent, name, { at: 'last' }).then(onChanged)}
           onClose={close}
         />
       ) : null}
       {opened?.kind === 'rename-category' ? (
-        <NameDialog title="Renomear categoria" label="Nome" initial={opened.category.name} submitLabel="Renomear" onSubmit={(name) => api.renameCategory(opened.category.id, name).then(onChanged)} onClose={close} />
+        <NameDialog title={t('sidebar.renameCategory.title')} label={t('sidebar.name')} initial={opened.category.name} submitLabel={t('sidebar.renameCategory.submit')} onSubmit={(name) => api.renameCategory(opened.category.id, name).then(onChanged)} onClose={close} />
       ) : null}
       {opened?.kind === 'move-category' ? <MoveCategoryDialog categories={taxonomy.categories} id={opened.id} onClose={close} onMoved={onChanged} /> : null}
       {opened?.kind === 'delete-category' ? (
         <ConfirmDialog
-          title={`Excluir “${opened.category.name}”?`}
-          message="A categoria e as subcategorias dela saem da árvore. Os livros continuam na biblioteca e nas outras categorias."
-          confirmLabel="Excluir"
+          title={t('sidebar.deleteNamed', { name: opened.category.name })}
+          message={t('sidebar.deleteCategory.message')}
+          confirmLabel={t('sidebar.confirmDelete')}
           onConfirm={() =>
             api.deleteCategory(opened.category.id).then(() => {
               if (filter.kind === 'category') {
@@ -420,9 +426,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
       {opened?.kind === 'tag' ? <TagDialog tag={opened.tag} onClose={close} onSaved={onChanged} /> : null}
       {opened?.kind === 'delete-tag' ? (
         <ConfirmDialog
-          title={`Excluir a etiqueta “${opened.tag.name}”?`}
-          message="Ela sai de todos os livros que a têm. Os livros continuam na biblioteca."
-          confirmLabel="Excluir"
+          title={t('sidebar.deleteTag.title', { name: opened.tag.name })}
+          message={t('sidebar.deleteTag.message')}
+          confirmLabel={t('sidebar.confirmDelete')}
           onConfirm={() =>
             api.deleteTag(opened.tag.id).then(() => {
               if (sameFilter(filter, { kind: 'tag', id: opened.tag.id })) {
@@ -437,9 +443,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
       {opened?.kind === 'collection' ? <CollectionDialog collection={opened.collection} onClose={close} onSaved={onChanged} /> : null}
       {opened?.kind === 'delete-collection' ? (
         <ConfirmDialog
-          title={`Excluir a coleção “${opened.name}”?`}
-          message="Só a coleção some. Os livros dela continuam na biblioteca."
-          confirmLabel="Excluir"
+          title={t('sidebar.deleteCollection.title', { name: opened.name })}
+          message={t('sidebar.deleteCollection.message')}
+          confirmLabel={t('sidebar.confirmDelete')}
           onConfirm={() =>
             api.deleteCollection(opened.id).then(() => {
               if (sameFilter(filter, { kind: 'collection', id: opened.id })) {
@@ -454,9 +460,9 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
       {opened?.kind === 'smart' ? <SmartDialog smart={opened.smart} taxonomy={taxonomy} folders={folders} onClose={close} onSaved={onChanged} /> : null}
       {opened?.kind === 'delete-smart' ? (
         <ConfirmDialog
-          title={`Excluir “${opened.smart.name}”?`}
-          message="Só a regra some. Nenhum livro muda."
-          confirmLabel="Excluir"
+          title={t('sidebar.deleteNamed', { name: opened.smart.name })}
+          message={t('sidebar.deleteSmart.message')}
+          confirmLabel={t('sidebar.confirmDelete')}
           onConfirm={() =>
             api.deleteSmart(opened.smart.id).then(() => {
               if (sameFilter(filter, { kind: 'smart', id: opened.smart.id })) {

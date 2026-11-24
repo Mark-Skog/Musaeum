@@ -1,5 +1,6 @@
 //! The library as the rest of the program sees it.
 
+use musaeum_i18n::tr;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -46,11 +47,8 @@ impl LibraryPaths {
     /// The usual place for the current user: `%LOCALAPPDATA%\Musaeum`. Not the roaming profile,
     /// because SQLite's log must not be on anything that syncs or goes over a network.
     pub fn default_location() -> Result<Self> {
-        let base = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
-            Error::Refused(
-                "LOCALAPPDATA is not set, so give a library folder explicitly".to_owned(),
-            )
-        })?;
+        let base =
+            std::env::var_os("LOCALAPPDATA").ok_or_else(|| Error::Refused(tr!(NoLocalAppData)))?;
         let base = PathBuf::from(base).join("Musaeum");
         Ok(Self {
             data_dir: base.join("library"),
@@ -179,9 +177,9 @@ impl Library {
     pub fn open_read_only(paths: LibraryPaths) -> Result<Self> {
         let library_db = paths.library_db();
         if !library_db.exists() {
-            return Err(Error::NotFound(format!(
-                "there is no library at {}",
-                library_db.display()
+            return Err(Error::NotFound(tr!(
+                NoLibraryAt,
+                path = library_db.display()
             )));
         }
         let database = Database::open_read_only(&library_db, &LIBRARY_SPEC)?;
@@ -280,10 +278,7 @@ impl Library {
             .stat(&path)
             .is_ok_and(|stat| stat.is_directory())
         {
-            return Err(Error::Refused(format!(
-                "{} is not a folder",
-                path.display()
-            )));
+            return Err(Error::Refused(tr!(NotAFolder, path = path.display())));
         }
         let lowered = lowercase_path(&path);
         for root in self.roots()? {
@@ -306,10 +301,10 @@ impl Library {
                     .read(|connection| reconcile::load_root(connection, id));
             }
             if lowered.starts_with(&other) || other.starts_with(&lowered) {
-                return Err(Error::Refused(format!(
-                    "{} overlaps the root at {}",
-                    path.display(),
-                    root.path.display()
+                return Err(Error::Refused(tr!(
+                    RootOverlaps,
+                    path = path.display(),
+                    root = root.path.display()
                 )));
             }
         }
@@ -347,7 +342,7 @@ impl Library {
                 .prepare_cached("UPDATE library_root SET status = 'removed' WHERE id = ?1")?
                 .execute([id])?;
             if changed == 0 {
-                return Err(Error::NotFound(format!("there is no root {id}")));
+                return Err(Error::NotFound(tr!(NoRoot, id = id)));
             }
             Ok(())
         })
@@ -365,7 +360,7 @@ impl Library {
                 )?
                 .execute(params![id, stored])?;
             if changed == 0 {
-                return Err(Error::NotFound(format!("there is no root {id}")));
+                return Err(Error::NotFound(tr!(NoRoot, id = id)));
             }
             Ok(())
         })?;
@@ -582,7 +577,7 @@ impl Library {
                 )?
                 .execute([id])?;
             if changed == 0 {
-                return Err(Error::NotFound(format!("there is no suggestion {id}")));
+                return Err(Error::NotFound(tr!(NoSuggestion, id = id)));
             }
             Ok(())
         })
@@ -600,7 +595,7 @@ impl Library {
                 .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
                 .optional()?;
             let Some((from, into)) = row else {
-                return Err(Error::NotFound(format!("there is no open suggestion {id}")));
+                return Err(Error::NotFound(tr!(NoOpenSuggestion, id = id)));
             };
             let newest: Option<RevisionId> = transaction
                 .prepare_cached("SELECT max(id) FROM revision WHERE document_id = ?1")?
@@ -635,7 +630,7 @@ impl Library {
                 .query_row([document], |row| row.get(0))
                 .optional()?;
             let Some(revision) = revision else {
-                return Err(Error::NotFound(format!("there is no document {document}")));
+                return Err(Error::NotFound(tr!(NoDocument, id = document)));
             };
             let now = now_ms();
             // A note on the whole document: no segment, so nothing that can lose its place.
@@ -681,9 +676,7 @@ impl Library {
                 })
                 .optional()?;
             let Some((revision, hash, format, folder, name)) = row else {
-                return Err(Error::Refused(format!(
-                    "document {document} has no file available to read"
-                )));
+                return Err(Error::Refused(tr!(DocumentNoFile, id = document)));
             };
             Ok((
                 revision,
@@ -987,7 +980,7 @@ fn load_instance(connection: &Connection, id: InstanceId) -> Result<InstanceInfo
             ))
         })
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no file {id}")))?;
+        .ok_or_else(|| Error::NotFound(tr!(NoFile, id = id)))?;
     let (revision_id, document_id, work_id, folder_id, name, state, file_id, mtime_ns) = row;
     Ok(InstanceInfo {
         id,
@@ -1020,7 +1013,7 @@ fn load_document(connection: &Connection, id: DocumentId) -> Result<DocumentInfo
             ))
         })
         .optional()?
-        .ok_or_else(|| Error::NotFound(format!("there is no document {id}")))?;
+        .ok_or_else(|| Error::NotFound(tr!(NoDocument, id = id)))?;
     let (work_id, title, format, layout, pdf_id0, dc_identifier, isbn) = row;
 
     let revisions = {

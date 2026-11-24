@@ -11,6 +11,7 @@ publish.workspace = true
 blake3.workspace = true
 musaeum-fs.workspace = true
 musaeum-flow.workspace = true
+musaeum-i18n.workspace = true
 musaeum-ingest.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true

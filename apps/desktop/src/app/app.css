@@ -1,10 +1,16 @@
 /* The app's look: quiet chrome around the books, light or dark with the system. */
 
+/* The tokens. Colors come in pairs, light here and dark below, and every pair of text and
+   background used together keeps WCAG AA (4.5:1; 3:1 for a control's boundary, the focus ring and
+   a state shown only by color), which `checks/contrast.test.mjs` holds. */
 :root {
   --bg: #f6f5f2;
   --surface: #ffffff;
   --surface-2: #efede8;
+  /* Lines that only separate: a list's rows, a panel's edge. */
   --line: #dddad3;
+  /* The boundary of what takes input: a text field, a search box, an empty star. */
+  --control-line: #858178;
   --text: #1f1e1c;
   --muted: #6b6860;
   --accent: #2f5fb3;
@@ -12,17 +18,56 @@
   --focus: #2f5fb3;
   --danger: #b3261e;
   --mark: #f6df7c;
+  --star: #a87400;
+  --overlay: rgb(0 0 0 / 35%);
   --shadow: 0 1px 2px rgb(0 0 0 / 8%), 0 4px 14px rgb(0 0 0 / 8%);
+  --shadow-raised: 0 2px 6px rgb(0 0 0 / 12%), 0 12px 32px rgb(0 0 0 / 14%);
+
+  /* Type: one family, one scale. */
+  --font: 'Segoe UI', system-ui, sans-serif;
+  --font-mono: ui-monospace, Consolas, monospace;
+  --font-serif: Georgia, serif;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-display: 32px;
+
+  /* Space, corners, the focus ring. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+  --focus-ring: 2px solid var(--focus);
+
+  /* Motion, which `data-motion='reduce'` takes away. */
+  --duration-fast: 120ms;
+  --duration: 180ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
   color-scheme: light;
-  font: 14px/1.4 'Segoe UI', system-ui, sans-serif;
+  font: var(--text-base) / 1.4 var(--font);
 }
 
+/* Dark with the system, unless the person chose light (data-theme on the root, from the
+   preferences); or dark because the person chose it. Both blocks hold the same values. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --bg: #18191b;
     --surface: #212225;
     --surface-2: #2a2b2f;
     --line: #36383d;
+    --control-line: #7c7f86;
     --text: #e9e7e2;
     --muted: #a19e97;
     --accent: #8ab4f8;
@@ -30,9 +75,44 @@
     --focus: #8ab4f8;
     --danger: #f2b8b5;
     --mark: #6b5a14;
+    --star: #f2c94c;
+    --overlay: rgb(0 0 0 / 55%);
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 35%);
+    --shadow-raised: 0 2px 6px rgb(0 0 0 / 45%), 0 14px 36px rgb(0 0 0 / 45%);
     color-scheme: dark;
   }
+}
+
+:root[data-theme='dark'] {
+  --bg: #18191b;
+  --surface: #212225;
+  --surface-2: #2a2b2f;
+  --line: #36383d;
+  --control-line: #7c7f86;
+  --text: #e9e7e2;
+  --muted: #a19e97;
+  --accent: #8ab4f8;
+  --accent-text: #10213f;
+  --focus: #8ab4f8;
+  --danger: #f2b8b5;
+  --mark: #6b5a14;
+  --star: #f2c94c;
+  --overlay: rgb(0 0 0 / 55%);
+  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 35%);
+  --shadow-raised: 0 2px 6px rgb(0 0 0 / 45%), 0 14px 36px rgb(0 0 0 / 45%);
+  color-scheme: dark;
+}
+
+/* As little motion as the person or the system asks for (data-motion on the root): nothing slides,
+   fades or turns; things are simply where they go. */
+:root[data-motion='reduce'] *,
+:root[data-motion='reduce'] *::before,
+:root[data-motion='reduce'] *::after {
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  animation-duration: 0s !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
 }
 
 html,
@@ -50,7 +130,7 @@ body.app-mode {
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus);
+  outline: var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -61,9 +141,19 @@ body.app-mode {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 5px 10px;
   cursor: default;
+}
+
+.button,
+.segment,
+.side-item,
+.choice {
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
 }
 
 .button[data-hovered],
@@ -95,12 +185,12 @@ body.app-mode {
 }
 
 .segmented .segment:first-child {
-  border-radius: 6px 0 0 6px;
+  border-radius: var(--radius) 0 0 var(--radius);
   margin-left: 0;
 }
 
 .segmented .segment:last-child {
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--radius) var(--radius) 0;
 }
 
 .segment[data-selected] {
@@ -119,10 +209,10 @@ body.app-mode {
 .switch-track {
   width: 30px;
   height: 18px;
-  border-radius: 9px;
-  background: var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--control-line);
   position: relative;
-  transition: background 120ms;
+  transition: background var(--duration-fast) var(--ease);
 }
 
 .switch-track::after {
@@ -135,7 +225,7 @@ body.app-mode {
   border-radius: 50%;
   background: var(--surface);
   box-shadow: 0 1px 2px rgb(0 0 0 / 30%);
-  transition: transform 120ms;
+  transition: transform var(--duration-fast) var(--ease);
 }
 
 .switch[data-selected] .switch-track {
@@ -170,7 +260,7 @@ body.app-mode {
 }
 
 .toolbar-title {
-  font-size: 16px;
+  font-size: var(--text-lg);
   font-weight: 600;
   margin: 0 8px 0 0;
 }
@@ -186,6 +276,7 @@ body.app-mode {
 .search input {
   flex: 1;
   padding-right: 28px;
+  border-color: var(--control-line);
 }
 
 .search-clear {
@@ -194,7 +285,7 @@ body.app-mode {
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .search[data-empty] .search-clear {
@@ -227,7 +318,7 @@ body.app-mode {
 }
 
 .folder-item {
-  border-radius: 6px;
+  border-radius: var(--radius);
   outline: none;
 }
 
@@ -237,7 +328,7 @@ body.app-mode {
   gap: 4px;
   padding: 4px 6px;
   padding-left: calc(6px + (var(--tree-item-level, 1) - 1) * 14px);
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 
 .folder-item[data-selected] > .folder-row,
@@ -269,7 +360,7 @@ body.app-mode {
 
 .folder-count {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .shelf {
@@ -298,7 +389,7 @@ body.app-mode {
   flex-direction: column;
   gap: 6px;
   padding: 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   outline: none;
 }
 
@@ -314,7 +405,7 @@ body.app-mode {
   width: 100%;
   aspect-ratio: 2 / 3;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow);
   background: var(--surface-2);
 }
@@ -330,7 +421,7 @@ body.app-mode {
 }
 
 .cover-plain-title {
-  font: 600 14px/1.25 Georgia, serif;
+  font: 600 var(--text-base) / 1.25 var(--font-serif);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 6;
@@ -338,7 +429,7 @@ body.app-mode {
 }
 
 .cover-plain-format {
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0.08em;
   opacity: 0.8;
 }
@@ -359,7 +450,7 @@ body.app-mode {
 
 .book-creators {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -367,13 +458,13 @@ body.app-mode {
 
 .progress {
   height: 3px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--line);
 }
 
 .progress-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--accent);
 }
 
@@ -426,7 +517,7 @@ body.app-mode {
 }
 
 .welcome h1 {
-  font: 600 32px/1.2 Georgia, serif;
+  font: 600 var(--text-display) / 1.2 var(--font-serif);
 }
 
 .welcome-actions {
@@ -467,7 +558,7 @@ body.app-mode {
 
 .reader-title-sub {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -523,7 +614,7 @@ body.app-mode {
 }
 
 .error-detail {
-  font: 12px/1.4 ui-monospace, Consolas, monospace;
+  font: var(--text-sm) / 1.4 var(--font-mono);
   max-width: 70ch;
   white-space: pre-wrap;
 }
@@ -559,7 +650,7 @@ body.app-mode {
 }
 
 .toc-heading {
-  font-size: 14px;
+  font-size: var(--text-base);
   margin: 6px 10px 8px;
   color: var(--muted);
 }
@@ -582,7 +673,7 @@ body.app-mode {
   color: var(--text);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 5px 10px;
 }
 
@@ -603,8 +694,8 @@ body.app-mode {
 .popover {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-raised);
   outline: none;
 }
 
@@ -626,7 +717,7 @@ body.app-mode {
 .field > [class*='label'],
 .field label,
 .field-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -638,7 +729,7 @@ body.app-mode {
 
 .choice {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 4px 8px;
 }
 
@@ -694,24 +785,48 @@ body.app-mode {
   z-index: 10;
   display: grid;
   place-items: center;
-  background: rgb(0 0 0 / 35%);
+  background: var(--overlay);
+}
+
+.modal-overlay[data-entering] {
+  animation: fade-in var(--duration) var(--ease);
+}
+
+/* Only the way in is animated. React Aria keeps an overlay that is going away until its animation
+   ends, and a popover kept that way takes the next Escape, which the dialog under it never gets: a
+   list and its dialog closed by two quick presses of Escape would leave the dialog open. */
+.modal-overlay[data-entering] .modal {
+  animation: rise-in var(--duration) var(--ease);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
 }
 
 .modal {
   background: var(--surface);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-raised);
   padding: 18px 20px;
   max-width: min(560px, 92vw);
   outline: none;
 }
 
 .link-target {
-  font: 12px/1.4 ui-monospace, Consolas, monospace;
+  font: var(--text-sm) / 1.4 var(--font-mono);
   word-break: break-all;
   background: var(--surface-2);
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 
 .link-error {
@@ -748,7 +863,7 @@ body.app-mode {
   box-sizing: border-box;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
 
@@ -779,7 +894,7 @@ body.app-mode {
 .button.tool {
   min-width: 32px;
   padding: 4px 8px;
-  font-size: 15px;
+  font-size: var(--text-lg);
 }
 
 .button.tool.current {
@@ -838,7 +953,7 @@ body.app-mode {
 
 .segmented.small .segment {
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .annotation-list {
@@ -864,7 +979,7 @@ body.app-mode {
   background: none;
   border: 0;
   padding: 4px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: inherit;
   font: inherit;
   cursor: pointer;
@@ -883,7 +998,7 @@ body.app-mode {
   width: 12px;
   height: 12px;
   margin-top: 3px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 2px solid;
 }
 
@@ -903,7 +1018,7 @@ body.app-mode {
 
 .annotation-meta {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .annotation-quote {
@@ -915,7 +1030,7 @@ body.app-mode {
 }
 
 .annotation-state {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--danger);
 }
 
@@ -927,7 +1042,7 @@ body.app-mode {
   margin: 4px 0 0 26px;
   padding: 4px 8px;
   border-left: 3px solid var(--line);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 .annotation-actions {
@@ -938,7 +1053,7 @@ body.app-mode {
 
 .button.small {
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .markdown p,
@@ -961,7 +1076,7 @@ body.app-mode {
   font-family: ui-monospace, Consolas, monospace;
   background: var(--surface-2);
   padding: 0 3px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 
 .markdown blockquote {
@@ -992,10 +1107,10 @@ body.app-mode {
 .note-field textarea {
   width: 100%;
   box-sizing: border-box;
-  font: 14px/1.5 ui-monospace, Consolas, monospace;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  font: var(--text-base) / 1.5 var(--font-mono);
+  padding: var(--space-2);
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
   resize: vertical;
@@ -1005,7 +1120,7 @@ body.app-mode {
   min-height: 140px;
   padding: 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 
 .muted {
@@ -1024,7 +1139,7 @@ body.app-mode {
   padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
 
@@ -1046,7 +1161,7 @@ body.app-mode {
   z-index: 30;
   margin: 0;
   padding: 8px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   border: 1px solid var(--danger);
   color: var(--danger);
@@ -1066,7 +1181,7 @@ body.app-mode {
 
 .side-heading h2 {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1076,7 +1191,7 @@ body.app-mode {
 .side-empty {
   margin: 2px 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .side-list {
@@ -1088,7 +1203,7 @@ body.app-mode {
   align-items: center;
   gap: 6px;
   padding: 4px 6px 4px 22px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   outline: none;
 }
 
@@ -1111,7 +1226,7 @@ body.app-mode {
   width: 22px;
   height: 22px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   font: inherit;
@@ -1144,7 +1259,7 @@ body.app-mode {
 
 .menu-item {
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   outline: none;
   cursor: default;
 }
@@ -1210,7 +1325,7 @@ body.app-mode {
 
 .smart-mark {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .broken {
@@ -1242,7 +1357,7 @@ body.app-mode {
 
 .inspector-head h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
 }
 
 .inspector-body {
@@ -1265,7 +1380,7 @@ body.app-mode {
 
 .file-line {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1292,8 +1407,8 @@ body.app-mode {
 .text-input {
   box-sizing: border-box;
   width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 1px solid var(--control-line);
+  border-radius: var(--radius);
   padding: 5px 8px;
   background: var(--bg);
   color: var(--text);
@@ -1317,8 +1432,8 @@ textarea.text-input {
 .origin {
   margin-left: 6px;
   padding: 0 6px;
-  border-radius: 8px;
-  font-size: 10px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
   background: var(--surface-2);
   color: var(--muted);
 }
@@ -1353,7 +1468,7 @@ textarea.text-input {
 
 .select-item {
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   outline: none;
   cursor: default;
 }
@@ -1374,19 +1489,19 @@ textarea.text-input {
 .star {
   border: 0;
   background: transparent;
-  color: var(--line);
-  font-size: 20px;
+  color: var(--control-line);
+  font-size: var(--text-xl);
   line-height: 1;
   padding: 0 1px;
 }
 
 .star[data-selected] {
-  color: #e5a50a;
+  color: var(--star);
 }
 
 .star[data-focus-visible] {
   outline: 2px solid var(--focus);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .chips-field {
@@ -1408,9 +1523,9 @@ textarea.text-input {
   gap: 4px;
   padding: 2px 4px 2px 9px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   background: var(--surface-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   outline: none;
 }
 
@@ -1435,7 +1550,7 @@ textarea.text-input {
 .custom-name {
   flex: 0 0 38%;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .custom-row .field {
@@ -1454,8 +1569,8 @@ textarea.text-input {
   width: 16px;
   height: 16px;
   border: 1px solid var(--line);
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
 }
 
 .tick[data-selected] .tick-box {
@@ -1493,7 +1608,7 @@ textarea.text-input {
 
 .dialog-title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--text-lg);
 }
 
 .dialog-text {
@@ -1562,7 +1677,7 @@ textarea.text-input {
 
 .rule-problem {
   flex-basis: 100%;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
@@ -1612,7 +1727,7 @@ textarea.text-input {
 
 .folder-count.waiting {
   padding: 0 6px;
-  border-radius: 9px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-text);
   font-weight: 600;
@@ -1642,7 +1757,7 @@ textarea.text-input {
 }
 
 .shared .muted {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .shared.taken .shared-name {
@@ -1675,7 +1790,7 @@ textarea.text-input {
 
 .review-section h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
 }
 
 .review-item {
@@ -1684,7 +1799,7 @@ textarea.text-input {
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
 }
 
@@ -1695,7 +1810,7 @@ textarea.text-input {
 
 .review-item > .muted {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 
@@ -1710,20 +1825,20 @@ textarea.text-input {
   gap: 1px;
   min-width: 0;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface-2);
 }
 
 .review-book .muted {
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--text-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .fulltext-status {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .text-book {
@@ -1734,7 +1849,7 @@ textarea.text-input {
 
 .text-book-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
 }
 
@@ -1758,7 +1873,7 @@ textarea.text-input {
   width: 100%;
   padding: 6px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -1780,7 +1895,7 @@ textarea.text-input {
   flex: 0 0 auto;
   min-width: 64px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1791,7 +1906,7 @@ textarea.text-input {
 
 .snippet mark {
   padding: 0 1px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--mark);
   color: inherit;
 }
@@ -1812,7 +1927,7 @@ textarea.text-input {
   min-width: 0;
   overflow: hidden;
   font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace;
-  font-size: 12px;
+  font-size: var(--text-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1842,7 +1957,7 @@ textarea.text-input {
   gap: 10px;
   padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
   outline: none;
 }
@@ -1878,7 +1993,7 @@ textarea.text-input {
 }
 
 .merge-what .muted {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* A PDF's own annotations, in and out, at the foot of the annotations panel. */
@@ -1894,7 +2009,7 @@ textarea.text-input {
 
 .pdf-exchange-heading {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
@@ -1910,7 +2025,7 @@ textarea.text-input {
 .pdf-exchange-status,
 .exchange-status {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -1936,4 +2051,201 @@ textarea.text-input {
 .inspector-exchange {
   margin: 16px 0 0;
   padding: 12px 0 0;
+}
+
+/* The Preferences */
+
+.prefs-modal {
+  width: min(640px, 94vw);
+  max-width: min(640px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.prefs-dialog {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  outline: none;
+}
+
+.prefs-header,
+.prefs-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+}
+
+.prefs-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.prefs-footer {
+  border-top: 1px solid var(--line);
+  min-height: 20px;
+}
+
+.prefs-body {
+  overflow-y: auto;
+  padding: 4px 20px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.prefs-section:last-child {
+  border-bottom: 0;
+}
+
+.prefs-heading {
+  margin: 0;
+  font-size: var(--text-base);
+}
+
+.prefs-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.prefs-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.prefs-choice[data-hovered] {
+  background: var(--surface-2);
+}
+
+.prefs-choice[data-focus-visible] {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.prefs-choice .radio-dot {
+  margin-top: 0;
+}
+
+.prefs-choice[data-selected] .radio-dot {
+  border: 4px solid var(--accent);
+}
+
+.prefs-choice .muted,
+.prefs-list .muted,
+.prefs-table .muted {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.check-box {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--muted);
+  border-radius: var(--radius-sm);
+}
+
+.prefs-choice[data-selected] .check-box {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--surface);
+}
+
+.prefs-hint {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.prefs-author {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.prefs-author .field {
+  flex: 1;
+}
+
+.prefs-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--text-md);
+}
+
+.prefs-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--text-md);
+}
+
+.prefs-table th,
+.prefs-table td {
+  text-align: left;
+  font-weight: normal;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.prefs-table thead th {
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.prefs-table tfoot th,
+.prefs-table tfoot td {
+  font-weight: 600;
+  border-bottom: 0;
+  word-break: break-all;
+}
+
+.prefs-table .number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.prefs-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+}
+
+.prefs-confirm p {
+  margin: 0;
+}
+
+.prefs-status {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.prefs-status.failed {
+  color: var(--danger);
+}
+
+/* The details panel's host only catches its keys: the layout is the panel's own. */
+.panel-host {
+  display: contents;
 }

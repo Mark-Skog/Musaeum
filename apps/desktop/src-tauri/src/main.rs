@@ -22,6 +22,7 @@ mod ocr;
 mod options;
 mod pdf_annotations;
 mod picker;
+mod preferences;
 mod protocol;
 mod reading;
 mod review;
@@ -179,13 +180,20 @@ fn main() {
             session::bench_mark_phase,
             session::bench_resize_window,
             session::e2e_resize_window,
+            preferences::preferences_get,
+            preferences::preferences_set,
+            preferences::ocr_models,
+            preferences::cache_report,
+            preferences::cache_clear_lines,
             session::bench_finish,
             session::bench_fail,
         ])
         .setup(move |app| {
             app.state::<AppState>().shelf.set_app(app.handle().clone());
+            let theme = app.state::<AppState>().preferences.current().theme;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Musaeum")
+                .theme(preferences::window_theme(theme))
                 .inner_size(f64::from(width), f64::from(height))
                 .additional_browser_args(&window_args)
                 .always_on_top(is_bench)

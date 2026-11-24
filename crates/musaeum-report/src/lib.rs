@@ -8,6 +8,9 @@
 //!
 //! A note is Markdown, read as the reader reads it ([`notes`]): what the reader shows as formatting
 //! is formatting in the report too, and what it shows as text is text, escaped so it stays text.
+//!
+//! The words around the annotations, its labels and dates, are in the report's own language
+//! ([`Report::locale`]), from `musaeum-i18n`; what the person wrote stays as written.
 
 pub mod font;
 pub mod markdown;
@@ -17,6 +20,8 @@ pub mod pdf;
 pub mod text;
 pub mod time;
 
+pub use musaeum_i18n::Locale;
+use musaeum_i18n::{T, text_in, tr_in};
 use serde::{Deserialize, Serialize};
 
 /// What a report holds: the works, in the order given, and when and by what it was made.
@@ -30,6 +35,12 @@ pub struct Report {
     /// What made it, as `Musaeum 0.0.1`.
     pub generator: String,
     pub works: Vec<WorkReport>,
+    /// The language of its words: labels, counts, dates. Not part of what it holds.
+    #[serde(skip)]
+    pub locale: Locale,
+    /// Who made the annotations, when the person gave their name in the preferences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotator: Option<String>,
 }
 
 /// Someone who made a work, and how.
@@ -152,55 +163,66 @@ pub struct Item {
 
 impl Kind {
     /// As the reader names it.
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> T {
         match self {
-            Kind::Highlight => "Realce",
-            Kind::Underline => "Sublinhado",
-            Kind::Note => "Nota",
+            Kind::Highlight => T::SubjectHighlight,
+            Kind::Underline => T::SubjectUnderline,
+            Kind::Note => T::SubjectNote,
         }
     }
 }
 
 impl Item {
     /// What the report calls it: its kind, or the shape it was drawn as.
-    pub fn label(&self) -> &'static str {
+    pub fn message(&self) -> T {
         match self.mark {
-            Mark::Box => "Caixa",
-            Mark::Stroke => "Traço",
-            Mark::Point => "Nota fixada",
-            Mark::Text | Mark::Lines | Mark::Quads => self.kind.label(),
+            Mark::Box => T::ReportMarkBox,
+            Mark::Stroke => T::ReportMarkStroke,
+            Mark::Point => T::ReportMarkPoint,
+            Mark::Text | Mark::Lines | Mark::Quads => self.kind.message(),
         }
     }
 
+    /// [`Item::message`], written in `locale`.
+    pub fn label(&self, locale: Locale) -> String {
+        text_in(locale, self.message(), &[])
+    }
+
     /// Where it is, as a person reads it: the page of a fixed layout, how far into a flowing book.
-    pub fn place(&self, layout: Layout) -> Option<String> {
+    pub fn place(&self, layout: Layout, locale: Locale) -> Option<String> {
         match (layout, self.page, self.progression) {
-            (Layout::Fixed, Some(page), _) => Some(format!("p. {}", u64::from(page) + 1)),
-            (_, _, Some(progression)) => Some(format!(
-                "{} %",
-                (progression.clamp(0.0, 1.0) * 100.0).round()
+            (Layout::Fixed, Some(page), _) => {
+                Some(tr_in!(locale, ReportPlacePage, page = u64::from(page) + 1))
+            }
+            (_, _, Some(progression)) => Some(tr_in!(
+                locale,
+                ReportPlacePercent,
+                percent = (progression.clamp(0.0, 1.0) * 100.0).round()
             )),
             _ => None,
         }
     }
 }
 
-/// The reader's palette: a name, its name in Portuguese, the color of its highlight and the color
-/// its underline is drawn with, as 0–255 channels.
-pub const PALETTE: [(&str, &str, [u8; 3], [u8; 3]); 5] = [
-    ("yellow", "amarelo", [0xff, 0xe3, 0x6b], [217, 153, 0]),
-    ("green", "verde", [0xa8, 0xe6, 0xa1], [33, 153, 51]),
-    ("blue", "azul", [0x99, 0xc9, 0xfc], [26, 102, 217]),
-    ("pink", "rosa", [0xfa, 0xad, 0xd6], [217, 51, 128]),
-    ("purple", "roxo", [0xc7, 0xb5, 0xfc], [115, 64, 217]),
+/// The reader's palette: a name, its name as a person reads it, the color of its highlight and the
+/// color its underline is drawn with, as 0–255 channels.
+pub const PALETTE: [(&str, T, [u8; 3], [u8; 3]); 5] = [
+    ("yellow", T::ColorYellow, [0xff, 0xe3, 0x6b], [217, 153, 0]),
+    ("green", T::ColorGreen, [0xa8, 0xe6, 0xa1], [33, 153, 51]),
+    ("blue", T::ColorBlue, [0x99, 0xc9, 0xfc], [26, 102, 217]),
+    ("pink", T::ColorPink, [0xfa, 0xad, 0xd6], [217, 51, 128]),
+    ("purple", T::ColorPurple, [0xc7, 0xb5, 0xfc], [115, 64, 217]),
 ];
 
-/// A color's name as a person reads it: the palette's in Portuguese, or the color as it is written.
-pub fn color_name(color: &str) -> String {
+/// A color's name as a person reads it: the palette's in `locale`, or the color as it is written.
+pub fn color_name(color: &str, locale: Locale) -> String {
     PALETTE
         .iter()
         .find(|(name, ..)| *name == color)
-        .map_or_else(|| color.to_owned(), |(_, label, ..)| (*label).to_owned())
+        .map_or_else(
+            || color.to_owned(),
+            |(_, label, ..)| text_in(locale, *label, &[]),
+        )
 }
 
 /// The color a mark is shown with on white paper: the palette's highlight, or its underline's ink,
@@ -240,8 +262,9 @@ mod tests {
 
     #[test]
     fn colors_are_named_and_painted_as_the_reader_paints_them() {
-        assert_eq!(color_name("yellow"), "amarelo");
-        assert_eq!(color_name("#12ab34"), "#12ab34");
+        assert_eq!(color_name("yellow", Locale::PtBr), "amarelo");
+        assert_eq!(color_name("yellow", Locale::English), "yellow");
+        assert_eq!(color_name("#12ab34", Locale::English), "#12ab34");
         assert_eq!(paint("blue", false), [0x99, 0xc9, 0xfc]);
         assert_eq!(paint("blue", true), [26, 102, 217]);
         assert_eq!(paint("#ff0000", false), [255, 0, 0]);
@@ -265,7 +288,17 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         };
-        assert_eq!(item.place(Layout::Fixed).as_deref(), Some("p. 12"));
-        assert_eq!(item.place(Layout::Flow).as_deref(), Some("42 %"));
+        assert_eq!(
+            item.place(Layout::Fixed, Locale::PtBr).as_deref(),
+            Some("p. 12")
+        );
+        assert_eq!(
+            item.place(Layout::Flow, Locale::PtBr).as_deref(),
+            Some("42 %")
+        );
+        assert_eq!(
+            item.place(Layout::Flow, Locale::English).as_deref(),
+            Some("42%")
+        );
     }
 }

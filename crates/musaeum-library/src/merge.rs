@@ -7,6 +7,7 @@
 //! where the kept work has only what a file said. A field the kept work does not have at all is
 //! taken from the other.
 
+use musaeum_i18n::tr;
 use std::collections::{BTreeMap, HashSet};
 
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -222,14 +223,14 @@ pub(crate) fn merge_into(
             .is_some())
     };
     if !exists(keep)? {
-        return Err(Error::NotFound(format!("there is no work {keep}")));
+        return Err(Error::NotFound(tr!(NoWork, id = keep)));
     }
     for &other in others {
         if other == keep {
             continue;
         }
         if !exists(other)? {
-            return Err(Error::NotFound(format!("there is no work {other}")));
+            return Err(Error::NotFound(tr!(NoWork, id = other)));
         }
         fill_gaps(transaction, keep, other, now)?;
         // Each document goes whole: its revisions, annotations and reading state are its own.
@@ -288,7 +289,7 @@ impl Library {
     /// These two works are different books: they are not suggested as one again.
     pub fn dismiss_duplicate(&self, a: WorkId, b: WorkId) -> Result<()> {
         if a == b {
-            return Err(Error::Refused("a work is not a pair".to_owned()));
+            return Err(Error::Refused(tr!(MergeNotAPair)));
         }
         let (a, b) = pair(a, b);
         self.database().write(move |transaction| {
@@ -299,7 +300,7 @@ impl Library {
                     .optional()?
                     .is_none()
                 {
-                    return Err(Error::NotFound(format!("there is no work {work}")));
+                    return Err(Error::NotFound(tr!(NoWork, id = work)));
                 }
             }
             transaction
@@ -321,9 +322,7 @@ impl Library {
             .filter(|&work| work != keep && seen.insert(work))
             .collect();
         if others.is_empty() {
-            return Err(Error::Refused(
-                "there is nothing to merge into the work".to_owned(),
-            ));
+            return Err(Error::Refused(tr!(MergeNothing)));
         }
         self.database()
             .write(move |transaction| merge_into(transaction, keep, &others))?;

@@ -109,6 +109,8 @@ const KEYS = {
   Enter: { code: 'Enter', keyCode: 13, text: '\r' },
   Home: { code: 'Home', keyCode: 36 },
   End: { code: 'End', keyCode: 35 },
+  Tab: { code: 'Tab', keyCode: 9 },
+  ',': { code: 'Comma', keyCode: 188, text: ',' },
 };
 
 /** A key pressed and released, as a person would. */

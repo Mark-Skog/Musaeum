@@ -28,8 +28,9 @@ import {
 
 import { api, type BookRow, type CustomField, type Taxonomy, type WorkMetadata } from '../api';
 import { ExchangeSection, useExchange } from '../ExchangeSection';
+import { getLocale, tn, useT } from '../i18n';
 import { reasonOf, Tick } from './dialogs';
-import { categoryPath, type Draft, draftOf, editOf, matching, named, provenanceLabel, ROLES, SCHEMES, STATUSES } from './taxonomy-model';
+import { categoryPath, type Draft, draftOf, editOf, matching, named, provenanceLabel, roles, schemes, statuses } from './taxonomy-model';
 
 function Origin({ work, field }: { work: WorkMetadata; field: string }): React.JSX.Element | null {
   const label = provenanceLabel(work.provenance[field]);
@@ -83,6 +84,7 @@ export function Chips({
   allowsNew?: boolean;
   onChange(keys: string[]): void;
 }): React.JSX.Element {
+  const t = useT();
   const [typed, setTyped] = useState('');
   // The combo box's own state, handed out from inside it, to open and close its list.
   const combo = useRef<ComboState | null>(null);
@@ -122,7 +124,7 @@ export function Chips({
             {(item) => (
               <Chip id={item.key} textValue={item.text} className="chip">
                 {item.text}
-                <Button slot="remove" className="chip-remove" aria-label={`Tirar ${item.text}`}>
+                <Button slot="remove" className="chip-remove" aria-label={t('details.removeChip', { name: item.text })}>
                   ×
                 </Button>
               </Chip>
@@ -131,7 +133,7 @@ export function Chips({
         </TagGroup>
       ) : null}
       <ComboBox
-        aria-label={`Acrescentar ${label.toLowerCase()}`}
+        aria-label={t('details.addChip', { what: label.toLocaleLowerCase(getLocale()) })}
         className="combo"
         inputValue={typed}
         onInputChange={(value) => {
@@ -147,7 +149,7 @@ export function Chips({
         menuTrigger="manual"
         items={shown}
       >
-        <ChipsInput combo={combo} placeholder={allowsNew ? 'Escreva e tecle Enter' : 'Acrescentar…'} onKeyDown={enter} />
+        <ChipsInput combo={combo} placeholder={allowsNew ? t('details.chips.typeNew') : t('details.chips.add')} onKeyDown={enter} />
         <Popover className="popover select-popover">
           <ListBox className="select-list">
             {(option: { key: string; text: string }) => (
@@ -196,6 +198,7 @@ export interface InspectorProps {
 }
 
 export function Inspector({ book, taxonomy, place, onSaved, onClose }: InspectorProps): React.JSX.Element {
+  const t = useT();
   const [work, setWork] = useState<WorkMetadata | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -227,8 +230,8 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
 
   if (work === null || draft === null || original === null) {
     return (
-      <aside className="inspector" aria-label="Detalhes do livro">
-        <p className="muted">{error ?? 'Lendo…'}</p>
+      <aside className="inspector" aria-label={t('details.label')} aria-busy={error === null}>
+        <p className="muted">{error ?? t('details.reading')}</p>
       </aside>
     );
   }
@@ -254,10 +257,10 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
   const collections = draft.collections.map((id) => ({ key: String(id), text: taxonomy.collections.find((collection) => collection.id === id)?.name ?? String(id) }));
 
   return (
-    <aside className="inspector" aria-label="Detalhes do livro" aria-busy={saving} data-work={work.id}>
+    <aside className="inspector" aria-label={t('details.label')} aria-busy={saving} data-work={work.id}>
       <header className="inspector-head">
-        <h2>Detalhes</h2>
-        <Button className="button small" aria-label="Fechar os detalhes" onPress={onClose}>
+        <h2>{t('details.title')}</h2>
+        <Button className="button small" aria-label={t('details.close')} onPress={onClose}>
           ×
         </Button>
       </header>
@@ -268,29 +271,29 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
 
         <TextField className="field" value={draft.title} onChange={(title) => set('title', title)}>
           <Label>
-            Título <Origin work={work} field="title" />
+            {t('details.field.title')} <Origin work={work} field="title" />
           </Label>
           <Input className="text-input" data-field="title" />
         </TextField>
 
-        <div className="field" role="group" aria-label="Autores">
+        <div className="field" role="group" aria-label={t('details.creators')}>
           <span className="field-label">
-            Autores <Origin work={work} field="creators" />
+            {t('details.creators')} <Origin work={work} field="creators" />
           </span>
           {draft.creators.map((credit, index) => (
             <div key={index} className="row">
               <TextField
                 className="grow"
                 value={credit.name}
-                aria-label={`Nome ${index + 1}`}
+                aria-label={t('details.creatorName', { number: index + 1 })}
                 onChange={(name) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, name } : old)))}
               >
                 <Input className="text-input" />
               </TextField>
-              <Picker label={`Papel ${index + 1}`} value={credit.role} options={ROLES} onChange={(role) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, role } : old)))} />
+              <Picker label={t('details.creatorRole', { number: index + 1 })} value={credit.role} options={roles()} onChange={(role) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, role } : old)))} />
               <Button
                 className="button small"
-                aria-label={`Subir ${credit.name}`}
+                aria-label={t('details.creatorUp', { name: credit.name })}
                 isDisabled={index === 0}
                 onPress={() => {
                   const next = [...draft.creators];
@@ -300,25 +303,25 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
               >
                 ↑
               </Button>
-              <Button className="button small" aria-label={`Tirar ${credit.name}`} onPress={() => set('creators', draft.creators.filter((_, at) => at !== index))}>
+              <Button className="button small" aria-label={t('details.removeChip', { name: credit.name })} onPress={() => set('creators', draft.creators.filter((_, at) => at !== index))}>
                 ×
               </Button>
             </div>
           ))}
           <Button className="button small" onPress={() => set('creators', [...draft.creators, { name: '', role: 'author' }])}>
-            Acrescentar pessoa
+            {t('details.addCreator')}
           </Button>
         </div>
 
         <div className="row">
           <TextField className="field grow" value={draft.series} onChange={(series) => set('series', series)}>
             <Label>
-              Série <Origin work={work} field="series" />
+              {t('details.series')} <Origin work={work} field="series" />
             </Label>
             <Input className="text-input" data-field="series" />
           </TextField>
           <TextField className="field narrow" value={draft.seriesPosition} onChange={(position) => set('seriesPosition', position)}>
-            <Label>Nº</Label>
+            <Label>{t('details.seriesPosition')}</Label>
             <Input className="text-input" inputMode="decimal" data-field="series-position" />
           </TextField>
         </div>
@@ -326,53 +329,53 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
         <div className="row">
           <TextField className="field narrow" value={draft.year} onChange={(year) => set('year', year)}>
             <Label>
-              Ano <Origin work={work} field="year" />
+              {t('details.year')} <Origin work={work} field="year" />
             </Label>
             <Input className="text-input" inputMode="numeric" data-field="year" />
           </TextField>
           <TextField className="field grow" value={draft.language} onChange={(language) => set('language', language)}>
             <Label>
-              Idioma <Origin work={work} field="language" />
+              {t('details.language')} <Origin work={work} field="language" />
             </Label>
             <Input className="text-input" placeholder="pt-BR" data-field="language" />
           </TextField>
         </div>
 
-        <div className="field" role="group" aria-label="Identificadores">
+        <div className="field" role="group" aria-label={t('details.identifiers')}>
           <span className="field-label">
-            Identificadores <Origin work={work} field="identifiers" />
+            {t('details.identifiers')} <Origin work={work} field="identifiers" />
           </span>
           {draft.identifiers.map((identifier, index) => (
             <div key={index} className="row">
-              <Picker label={`Esquema ${index + 1}`} value={identifier.scheme} options={SCHEMES} onChange={(scheme) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, scheme } : old)))} />
+              <Picker label={t('details.scheme', { number: index + 1 })} value={identifier.scheme} options={schemes()} onChange={(scheme) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, scheme } : old)))} />
               <TextField
                 className="grow"
                 value={identifier.value}
-                aria-label={`Identificador ${index + 1}`}
+                aria-label={t('details.identifier', { number: index + 1 })}
                 onChange={(value) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, value } : old)))}
               >
                 <Input className="text-input" />
               </TextField>
-              <Button className="button small" aria-label="Tirar o identificador" onPress={() => set('identifiers', draft.identifiers.filter((_, at) => at !== index))}>
+              <Button className="button small" aria-label={t('details.removeIdentifier')} onPress={() => set('identifiers', draft.identifiers.filter((_, at) => at !== index))}>
                 ×
               </Button>
             </div>
           ))}
           <Button className="button small" onPress={() => set('identifiers', [...draft.identifiers, { scheme: 'isbn', value: '' }])}>
-            Acrescentar identificador
+            {t('details.addIdentifier')}
           </Button>
         </div>
 
         <div className="row">
-          <div className="field" role="group" aria-label="Avaliação">
-            <span className="field-label">Avaliação</span>
+          <div className="field" role="group" aria-label={t('details.rating')}>
+            <span className="field-label">{t('details.rating')}</span>
             <div className="stars">
               {[1, 2, 3, 4, 5].map((stars) => (
                 <ToggleButton
                   key={stars}
                   className="star"
                   isSelected={draft.rating !== null && stars <= draft.rating}
-                  aria-label={`${stars} ${stars === 1 ? 'estrela' : 'estrelas'}`}
+                  aria-label={tn('details.stars', stars)}
                   onChange={() => set('rating', draft.rating === stars ? null : stars)}
                 >
                   ★
@@ -380,33 +383,33 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
               ))}
             </div>
           </div>
-          <div className="field" role="group" aria-label="Estado de leitura">
-            <span className="field-label">Estado</span>
-            <Picker label="Estado de leitura" value={draft.status} options={STATUSES} onChange={(status) => set('status', status)} />
+          <div className="field" role="group" aria-label={t('details.statusGroup')}>
+            <span className="field-label">{t('details.status')}</span>
+            <Picker label={t('details.statusGroup')} value={draft.status} options={statuses()} onChange={(status) => set('status', status)} />
           </div>
         </div>
 
         <TextField className="field" value={draft.description} onChange={(description) => set('description', description)}>
           <Label>
-            Sinopse <Origin work={work} field="description" />
+            {t('details.description')} <Origin work={work} field="description" />
           </Label>
           <TextArea className="text-input description" rows={4} data-field="description" />
         </TextField>
 
-        <div className="field" role="group" aria-label="Categorias">
-          <span className="field-label">Categorias</span>
+        <div className="field" role="group" aria-label={t('details.categories')}>
+          <span className="field-label">{t('details.categories')}</span>
           <Chips
-            label="Categorias"
+            label={t('details.categories')}
             chosen={categories}
             options={taxonomy.categories.map((category) => ({ key: String(category.id), text: categoryPath(taxonomy.categories, category.id) }))}
             onChange={(keys) => set('categories', keys.map(Number))}
           />
         </div>
 
-        <div className="field" role="group" aria-label="Etiquetas">
-          <span className="field-label">Etiquetas</span>
+        <div className="field" role="group" aria-label={t('details.tags')}>
+          <span className="field-label">{t('details.tags')}</span>
           <Chips
-            label="Etiquetas"
+            label={t('details.tags')}
             chosen={draft.tags.map((name) => ({ key: name, text: name }))}
             options={taxonomy.tags.map((tag) => ({ key: tag.name, text: tag.name }))}
             allowsNew
@@ -415,8 +418,8 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
         </div>
 
         {place !== null ? (
-          <div className="field" role="group" aria-label={`Ordem em ${place.name}`}>
-            <span className="field-label">Ordem em “{place.name}”</span>
+          <div className="field" role="group" aria-label={t('details.orderIn', { name: place.name })}>
+            <span className="field-label">{t('details.orderInShown', { name: place.name })}</span>
             <div className="row">
               <Button
                 className="button small"
@@ -427,7 +430,7 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
                   }
                 }}
               >
-                ↑ Subir
+                {t('details.up')}
               </Button>
               <Button
                 className="button small"
@@ -438,16 +441,16 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
                   }
                 }}
               >
-                ↓ Descer
+                {t('details.down')}
               </Button>
             </div>
           </div>
         ) : null}
 
-        <div className="field" role="group" aria-label="Coleções">
-          <span className="field-label">Coleções</span>
+        <div className="field" role="group" aria-label={t('details.collections')}>
+          <span className="field-label">{t('details.collections')}</span>
           <Chips
-            label="Coleções"
+            label={t('details.collections')}
             chosen={collections}
             options={taxonomy.collections.map((collection) => ({ key: String(collection.id), text: collection.name }))}
             onChange={(keys) => set('collections', keys.map(Number))}
@@ -455,8 +458,8 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
         </div>
 
         {taxonomy.fields.length > 0 ? (
-          <div className="field" role="group" aria-label="Campos personalizados">
-            <span className="field-label">Campos personalizados</span>
+          <div className="field" role="group" aria-label={t('details.custom')}>
+            <span className="field-label">{t('details.custom')}</span>
             {taxonomy.fields.map((field) => (
               <div key={field.id} className="custom-row">
                 {field.kind === 'boolean' ? null : <span className="custom-name">{field.name}</span>}
@@ -466,11 +469,11 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
           </div>
         ) : null}
         <ExchangeSection
-          heading="Anotações"
+          heading={t('details.annotations')}
           controls={exchange}
           id="work-exchange"
           className="inspector-exchange"
-          idle="As anotações desta obra em JSON-LD, um JSON-LD trazido para ela, ou um relatório de estudo."
+          idle={t('details.annotations.idle')}
         />
       </div>
       <footer className="inspector-foot">
@@ -488,10 +491,10 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
         ) : null}
         <div className="modal-actions">
           <Button className="button" isDisabled={!changed || saving} onPress={() => setDraft(structuredClone(original))}>
-            Descartar
+            {t('details.discard')}
           </Button>
           <Button id="save-work" className="button primary" isDisabled={!changed || saving || problems.length > 0} onPress={save}>
-            Salvar
+            {t('common.save')}
           </Button>
         </div>
       </footer>

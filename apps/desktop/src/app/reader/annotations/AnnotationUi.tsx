@@ -22,28 +22,30 @@ import {
 
 import { type AnchorState, type AnnotationKind, api } from '../../api';
 import { type ExchangeControls, ExchangeSection } from '../../ExchangeSection';
+import { getLocale, type MessageKey, t, useT } from '../../i18n';
+import { onEscape } from '../../focus';
 import { type LinkHandler, Markdown } from './markdown';
 import type { Entry } from './store';
 
 /** The palette, in the order the bar shows it. */
-export const COLORS: { id: string; label: string; swatch: string }[] = [
-  { id: 'yellow', label: 'Amarelo', swatch: '#ffe36b' },
-  { id: 'green', label: 'Verde', swatch: '#a8e6a1' },
-  { id: 'blue', label: 'Azul', swatch: '#99c9fc' },
-  { id: 'pink', label: 'Rosa', swatch: '#faadd6' },
-  { id: 'purple', label: 'Roxo', swatch: '#c7b5fc' },
+export const COLORS: { id: string; label: MessageKey; swatch: string }[] = [
+  { id: 'yellow', label: 'annot.color.yellow', swatch: '#ffe36b' },
+  { id: 'green', label: 'annot.color.green', swatch: '#a8e6a1' },
+  { id: 'blue', label: 'annot.color.blue', swatch: '#99c9fc' },
+  { id: 'pink', label: 'annot.color.pink', swatch: '#faadd6' },
+  { id: 'purple', label: 'annot.color.purple', swatch: '#c7b5fc' },
 ];
 
-const KIND_LABEL: Record<AnnotationKind, string> = {
-  highlight: 'Realce',
-  underline: 'Sublinhado',
-  note: 'Nota',
+const KIND_LABEL: Record<AnnotationKind, MessageKey> = {
+  highlight: 'annot.kind.highlight',
+  underline: 'annot.kind.underline',
+  note: 'annot.kind.note',
 };
 
-const STATE_LABEL: Record<AnchorState, string | null> = {
+const STATE_LABEL: Record<AnchorState, MessageKey | null> = {
   exact: null,
-  approximate: 'Aproximada: o texto mudou um pouco nesta revisão',
-  orphan: 'Órfã: o trecho não foi encontrado nesta revisão',
+  approximate: 'annot.state.approximate',
+  orphan: 'annot.state.orphan',
 };
 
 export interface ScreenRect {
@@ -70,6 +72,7 @@ const BAR_HEIGHT = 44;
 
 /** The bar over a selection or a mark: colors, underline, a note, copy, and remove for a mark. */
 export function SelectionToolbar(props: ToolbarProps): React.JSX.Element {
+  const t = useT();
   const { rect, current } = props;
   const above = rect.y - BAR_HEIGHT - 8;
   const top = above >= 56 ? above : rect.y + rect.height + 8;
@@ -89,7 +92,7 @@ export function SelectionToolbar(props: ToolbarProps): React.JSX.Element {
       ref={bar}
       className="selection-toolbar"
       role="toolbar"
-      aria-label={current === null ? 'Anotar a seleção' : 'Editar a anotação'}
+      aria-label={current === null ? t('annot.bar.new') : t('annot.bar.edit')}
       style={{ top, left }}
     >
       {COLORS.map((color) => (
@@ -97,7 +100,7 @@ export function SelectionToolbar(props: ToolbarProps): React.JSX.Element {
           key={color.id}
           id={`mark-color-${color.id}`}
           className={`swatch${current?.color === color.id ? ' current' : ''}`}
-          aria-label={current === null ? `Realçar em ${color.label.toLowerCase()}` : `Mudar para ${color.label.toLowerCase()}`}
+          aria-label={t(current === null ? 'annot.bar.highlightIn' : 'annot.bar.changeTo', { color: t(color.label).toLocaleLowerCase(getLocale()) })}
           aria-pressed={current?.color === color.id}
           style={{ background: color.swatch }}
           onPress={() => props.onColor(color.id)}
@@ -107,19 +110,21 @@ export function SelectionToolbar(props: ToolbarProps): React.JSX.Element {
       <Button
         id="mark-underline"
         className={`button tool${current?.kind === 'underline' ? ' current' : ''}`}
-        aria-label={current?.kind === 'underline' ? 'Realçar em vez de sublinhar' : 'Sublinhar'}
+        aria-label={current?.kind === 'underline' ? t('annot.bar.unhighlight') : t('annot.bar.underline')}
         onPress={props.onUnderline}
       >
-        <span style={{ textDecoration: 'underline' }}>S</span>
+        <span style={{ textDecoration: 'underline' }} aria-hidden="true">
+          {t('annot.bar.underlineGlyph')}
+        </span>
       </Button>
-      <Button id="mark-note" className="button tool" aria-label="Nota" onPress={props.onNote}>
+      <Button id="mark-note" className="button tool" aria-label={t('annot.note')} onPress={props.onNote}>
         ✎
       </Button>
-      <Button id="mark-copy" className="button tool" aria-label="Copiar o texto" onPress={props.onCopy}>
+      <Button id="mark-copy" className="button tool" aria-label={t('annot.bar.copy')} onPress={props.onCopy}>
         ⧉
       </Button>
       {props.onRemove !== undefined ? (
-        <Button id="mark-remove" className="button tool danger" aria-label="Remover a marcação" onPress={props.onRemove}>
+        <Button id="mark-remove" className="button tool danger" aria-label={t('annot.bar.remove')} onPress={props.onRemove}>
           ✕
         </Button>
       ) : null}
@@ -141,32 +146,33 @@ export function NoteEditor({
   onCancel(): void;
   onLink?: LinkHandler;
 }): React.JSX.Element {
+  const t = useT();
   const [text, setText] = useState(note);
   const [preview, setPreview] = useState(false);
   return (
     <ModalOverlay isOpen isDismissable onOpenChange={(open) => !open && onCancel()} className="modal-overlay">
       <Modal className="modal note-modal">
-        <Dialog aria-label="Nota">
-          <Heading slot="title">Nota</Heading>
+        <Dialog aria-label={t('annot.note')}>
+          <Heading slot="title">{t('annot.note')}</Heading>
           {quote !== null && quote !== '' ? <blockquote className="note-quote">{quote}</blockquote> : null}
           {preview ? (
-            <div className="note-preview">{text.trim() === '' ? <p className="muted">Nada escrito.</p> : <Markdown source={text} onLink={onLink} />}</div>
+            <div className="note-preview">{text.trim() === '' ? <p className="muted">{t('annot.note.empty')}</p> : <Markdown source={text} onLink={onLink} />}</div>
           ) : (
-            <TextField className="note-field" value={text} onChange={setText} autoFocus aria-label="Texto da nota, em Markdown">
-              <TextArea id="note-text" rows={8} placeholder="Escreva em Markdown: **negrito**, *itálico*, listas com -" />
+            <TextField className="note-field" value={text} onChange={setText} autoFocus aria-label={t('annot.note.text')}>
+              <TextArea id="note-text" rows={8} placeholder={t('annot.note.placeholder')} />
             </TextField>
           )}
           <div className="modal-actions">
             <Switch className="switch" isSelected={preview} onChange={setPreview}>
               <span className="switch-track" aria-hidden="true" />
-              Visualizar
+              {t('annot.note.preview')}
             </Switch>
             <span className="toolbar-gap" />
             <Button className="button" onPress={onCancel}>
-              Cancelar
+              {t('common.cancel')}
             </Button>
             <Button id="note-save" className="button primary" onPress={() => onSave(text)}>
-              Guardar
+              {t('annot.note.save')}
             </Button>
           </div>
         </Dialog>
@@ -176,10 +182,10 @@ export function NoteEditor({
 }
 
 /** Where an annotation is, as the inspector says it. */
-function placeOf(entry: Entry, pageCount: number | null): string {
+function placeOf(entry: Entry): string {
   const page = entry.marks[0]?.page;
   if (page !== undefined) {
-    return pageCount !== null ? `p. ${page + 1}` : `p. ${page + 1}`;
+    return t('annot.page', { page: page + 1 });
   }
   const progression = entry.annotation.progression;
   return progression !== null ? `${Math.round(progression * 100)}%` : '';
@@ -196,11 +202,11 @@ export interface PdfActions {
 
 export type PdfAction = 'export-pdf' | 'import-pdf' | 'export-xfdf' | 'import-xfdf';
 
-const PDF_ACTIONS: { id: PdfAction; label: string; busy: string }[] = [
-  { id: 'export-pdf', label: 'Exportar PDF com anotações (cópia)…', busy: 'Gravando e conferindo a cópia…' },
-  { id: 'import-pdf', label: 'Importar anotações do PDF…', busy: 'Lendo as anotações do PDF…' },
-  { id: 'export-xfdf', label: 'Exportar XFDF…', busy: 'Gravando o XFDF…' },
-  { id: 'import-xfdf', label: 'Importar XFDF…', busy: 'Lendo o XFDF…' },
+const PDF_ACTIONS: { id: PdfAction; label: MessageKey; busy: MessageKey }[] = [
+  { id: 'export-pdf', label: 'annot.pdf.export', busy: 'annot.pdf.export.busy' },
+  { id: 'import-pdf', label: 'annot.pdf.import', busy: 'annot.pdf.import.busy' },
+  { id: 'export-xfdf', label: 'annot.pdf.exportXfdf', busy: 'annot.pdf.exportXfdf.busy' },
+  { id: 'import-xfdf', label: 'annot.pdf.importXfdf', busy: 'annot.pdf.importXfdf.busy' },
 ];
 
 /** A color as the reader keeps it, as CSS: a palette name's swatch, or the color given. */
@@ -228,7 +234,8 @@ export interface InspectorProps {
 }
 
 /** The book's annotations, by where they are: filtered, searched, and each a way back to its place. */
-export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRemove, onClose, onLink, pdf, exchange }: InspectorProps): React.JSX.Element {
+export function Inspector({ documentId, entries, onJump, onEdit, onRemove, onClose, onLink, pdf, exchange }: InspectorProps): React.JSX.Element {
+  const t = useT();
   const [query, setQuery] = useState('');
   const [found, setFound] = useState<Set<string> | null>(null);
   const [colors, setColors] = useState<Set<string>>(new Set());
@@ -277,32 +284,32 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
   const orphanCount = entries.filter((entry) => entry.annotation.anchorState === 'orphan').length;
 
   return (
-    <aside className="annotation-panel" aria-label="Anotações">
+    <aside className="annotation-panel" aria-label={t('annot.panel')} onKeyDown={onEscape(onClose)}>
       <div className="panel-head">
         <Heading level={2} className="toc-heading">
-          Anotações <span className="count">{entries.length}</span>
+          {t('annot.panel')} <span className="count">{entries.length}</span>
         </Heading>
-        <Button className="button" aria-label="Fechar as anotações" onPress={onClose}>
+        <Button className="button" aria-label={t('annot.panel.close')} onPress={onClose}>
           ✕
         </Button>
       </div>
-      <SearchField className="search panel-search" aria-label="Buscar nas anotações" value={query} onChange={setQuery}>
-        <Input id="annotation-search" placeholder="Buscar em citações e notas" />
+      <SearchField className="search panel-search" aria-label={t('annot.search')} value={query} onChange={setQuery}>
+        <Input id="annotation-search" placeholder={t('annot.search.placeholder')} />
       </SearchField>
       <div className="panel-filters">
         <ToggleButtonGroup
-          aria-label="Cores"
+          aria-label={t('annot.filter.colors')}
           selectionMode="multiple"
           selectedKeys={colors}
           onSelectionChange={(keys) => setColors(new Set([...keys].map(String)))}
           className="filter-colors"
         >
           {COLORS.map((color) => (
-            <ToggleButton key={color.id} id={color.id} className="swatch small" aria-label={color.label} style={{ background: color.swatch }} />
+            <ToggleButton key={color.id} id={color.id} className="swatch small" aria-label={t(color.label)} style={{ background: color.swatch }} />
           ))}
         </ToggleButtonGroup>
         <ToggleButtonGroup
-          aria-label="Tipo"
+          aria-label={t('annot.filter.kind')}
           selectionMode="single"
           disallowEmptySelection
           selectedKeys={[kind]}
@@ -310,34 +317,35 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
           className="segmented small"
         >
           <ToggleButton id="all" className="segment">
-            Todas
+            {t('annot.filter.all')}
           </ToggleButton>
           <ToggleButton id="highlight" className="segment">
-            Realces
+            {t('annot.filter.highlights')}
           </ToggleButton>
           <ToggleButton id="underline" className="segment">
-            Sublinhados
+            {t('annot.filter.underlines')}
           </ToggleButton>
           <ToggleButton id="note" className="segment">
-            Notas
+            {t('annot.filter.notes')}
           </ToggleButton>
         </ToggleButtonGroup>
         <Switch id="filter-orphans" className="switch" isSelected={orphans} onChange={setOrphans}>
           <span className="switch-track" aria-hidden="true" />
-          Só órfãs ({orphanCount})
+          {t('annot.filter.orphans', { count: orphanCount })}
         </Switch>
       </div>
       {shown.length === 0 ? (
         <p className="toc-empty">
           {entries.length === 0
-            ? 'Selecione um trecho do texto para realçar, sublinhar ou anotar.'
-            : 'Nenhuma anotação com esses filtros.'}
+            ? t('annot.empty')
+            : t('annot.none')}
         </p>
       ) : (
         <ol className="annotation-list">
           {shown.map((entry) => {
             const { annotation } = entry;
-            const state = STATE_LABEL[annotation.anchorState];
+            const stateKey = STATE_LABEL[annotation.anchorState];
+            const state = stateKey === null ? null : t(stateKey);
             const swatch = swatchOf(annotation.color);
             const canJump = entry.marks.length > 0 || entry.ranges.length > 0;
             return (
@@ -345,15 +353,13 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
                 <Button
                   className="annotation-jump"
                   isDisabled={!canJump}
-                  aria-label={canJump ? `Ir para: ${annotation.quote ?? ''}` : `Órfã: ${annotation.quote ?? ''}`}
+                  aria-label={t(canJump ? 'annot.jump' : 'annot.orphan', { quote: annotation.quote ?? '' })}
                   onPress={() => onJump(entry)}
                 >
                   <span className={`annotation-swatch ${annotation.kind}`} style={{ background: annotation.kind === 'underline' ? 'transparent' : swatch, borderColor: swatch }} />
                   <span className="annotation-body">
                     <span className="annotation-meta">
-                      {KIND_LABEL[annotation.kind]}
-                      {placeOf(entry, pageCount) !== '' ? ` · ${placeOf(entry, pageCount)}` : ''}
-                      {entry.pending ? ' · guardando…' : ''}
+                      {[t(KIND_LABEL[annotation.kind]), placeOf(entry), entry.pending ? t('annot.saving') : ''].filter((part) => part !== '').join(' · ')}
                     </span>
                     {annotation.quote !== null ? <span className="annotation-quote">{annotation.quote}</span> : null}
                     {state !== null ? <span className="annotation-state">{state}</span> : null}
@@ -366,10 +372,10 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
                 ) : null}
                 <div className="annotation-actions">
                   <Button className="button small" onPress={() => onEdit(entry)}>
-                    Nota
+                    {t('annot.note')}
                   </Button>
                   <Button className="button small" onPress={() => onRemove(entry)}>
-                    Remover
+                    {t('annot.remove')}
                   </Button>
                 </div>
               </li>
@@ -380,16 +386,16 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
       <div className="panel-foot">
       {exchange !== undefined ? (
         <ExchangeSection
-          heading="Exportar e importar"
+          heading={t('annot.exchange.heading')}
           controls={exchange}
           id="exchange"
-          idle="JSON-LD do W3C com tudo das anotações; relatórios de estudo na ordem de leitura."
+          idle={t('annot.exchange.idle')}
         />
       ) : null}
       {pdf !== undefined ? (
-        <section className="pdf-exchange" aria-label="Anotações do PDF">
+        <section className="pdf-exchange" aria-label={t('annot.pdf.label')}>
           <Heading level={3} className="pdf-exchange-heading">
-            No arquivo PDF
+            {t('annot.pdf.heading')}
           </Heading>
           <div className="pdf-exchange-actions">
             {PDF_ACTIONS.map((action) => (
@@ -400,18 +406,20 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
                 isDisabled={pdf.busy !== null}
                 onPress={() => pdf.run(action.id)}
               >
-                {action.label}
+                {t(action.label)}
               </Button>
             ))}
           </div>
           <p
             className={`pdf-exchange-status${pdf.report?.failed === true ? ' failed' : ''}`}
             role="status"
+            aria-live="polite"
+            aria-busy={pdf.busy !== null}
             data-busy={pdf.busy ?? ''}
           >
             {pdf.busy !== null
-              ? PDF_ACTIONS.find((action) => action.id === pdf.busy)?.busy
-              : (pdf.report?.text ?? 'O livro na biblioteca nunca é alterado: a exportação grava uma cópia nova.')}
+              ? t(PDF_ACTIONS.find((action) => action.id === pdf.busy)?.busy ?? 'common.loading')
+              : (pdf.report?.text ?? t('annot.pdf.idle'))}
           </p>
         </section>
       ) : null}
@@ -422,6 +430,7 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
 
 /** A note that something was removed, with the way back. */
 export function UndoToast({ text, onUndo, onDone }: { text: string; onUndo(): void; onDone(): void }): React.JSX.Element {
+  const t = useT();
   useEffect(() => {
     const timer = window.setTimeout(onDone, 7000);
     return () => clearTimeout(timer);
@@ -430,7 +439,7 @@ export function UndoToast({ text, onUndo, onDone }: { text: string; onUndo(): vo
     <div className="toast" role="status">
       <span>{text}</span>
       <Button id="undo-remove" className="button" onPress={onUndo}>
-        Desfazer
+        {t('annot.undo')}
       </Button>
     </div>
   );

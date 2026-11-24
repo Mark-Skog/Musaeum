@@ -21,6 +21,7 @@ use musaeum_core::{DeliveryMode, FixedFormat, PoolConfig, RenderPool};
 use musaeum_flow::cfi;
 use musaeum_flow::locator;
 use musaeum_flow::package::NavPoint;
+use musaeum_i18n::{T, tr};
 use musaeum_ingest::protocol::Format;
 use musaeum_library::anchoring::fixed;
 use musaeum_library::anchoring::region::{self, RegionTool};
@@ -51,15 +52,15 @@ use crate::session::AppState;
 use crate::shelf::owner_of;
 
 const JSONLD: FileKind = FileKind {
-    name: "Anotações W3C (JSON-LD)",
+    name: T::FileKindJsonLd,
     pattern: "*.jsonld",
 };
 const MARKDOWN: FileKind = FileKind {
-    name: "Markdown",
+    name: T::FileKindMarkdown,
     pattern: "*.md",
 };
 const PDF: FileKind = FileKind {
-    name: "PDF",
+    name: T::FileKindPdf,
     pattern: "*.pdf",
 };
 /// How long a worker may take to start, and to give one page's characters or the outline.
@@ -108,10 +109,7 @@ pub fn check_outside_library(library: &Library, target: &Path) -> Result<(), Str
             continue;
         }
         if target.starts_with(comparable(&root.path)) {
-            return Err(format!(
-                "{} é uma pasta da biblioteca, e nada é gravado nela: escolha outra pasta",
-                root.path.display()
-            ));
+            return Err(tr!(InsideLibraryFolder, path = root.path.display()));
         }
     }
     Ok(())
@@ -125,7 +123,7 @@ pub fn write_atomically(
     bytes: &[u8],
     check: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<u64, String> {
-    let folder = target.parent().ok_or("o destino não tem pasta")?;
+    let folder = target.parent().ok_or_else(|| tr!(TargetHasNoFolder))?;
     let name = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -147,23 +145,22 @@ pub fn write_atomically(
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(format!(
-                    "o arquivo não pôde ser criado em {}: {error}",
-                    folder.display()
+                return Err(tr!(
+                    FileNotCreated,
+                    folder = folder.display(),
+                    error = error
                 ));
             }
         }
     }
-    let (temporary, mut file) =
-        created.ok_or("o arquivo não pôde ser criado: nomes temporários em uso")?;
+    let (temporary, mut file) = created.ok_or_else(|| tr!(TemporaryNamesInUse))?;
     let written = file
         .write_all(bytes)
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("o arquivo não pôde ser escrito: {error}"));
+        .map_err(|error| tr!(FileNotWritten, error = error));
     drop(file);
     let done = written.and_then(|()| check(&temporary)).and_then(|()| {
-        std::fs::rename(&temporary, target)
-            .map_err(|error| format!("o arquivo não pôde tomar o nome escolhido: {error}"))
+        std::fs::rename(&temporary, target).map_err(|error| tr!(FileNotRenamed, error = error))
     });
     if let Err(reason) = done {
         let _ = std::fs::remove_file(&temporary);
@@ -235,27 +232,27 @@ pub fn annotations_export_jsonld(
         .export_jsonld(scope.clone(), now_ms(), env!("CARGO_PKG_VERSION"))
         .map_err(|error| error.to_string())?;
     if export.annotations == 0 {
-        return Err("não há anotações para exportar".to_owned());
+        return Err(tr!(NoAnnotationsToExport));
     }
     let suggested = match &scope {
-        ExchangeScope::Document(document) => format!(
-            "{} — anotações.jsonld",
-            file_name_of(&title_of(&library, *document))
+        ExchangeScope::Document(document) => tr!(
+            NameDocumentJsonLd,
+            title = file_name_of(&title_of(&library, *document))
         ),
         ExchangeScope::Works(works) if works.len() == 1 => {
             let title = library
                 .work_metadata(works[0])
                 .map(|work| work.title)
                 .unwrap_or_default();
-            format!("{} — anotações.jsonld", file_name_of(&title))
+            tr!(NameDocumentJsonLd, title = file_name_of(&title))
         }
-        ExchangeScope::Works(works) => format!("Anotações de {} obras.jsonld", works.len()),
-        ExchangeScope::Library => "Anotações do Musaeum.jsonld".to_owned(),
+        ExchangeScope::Works(works) => tr!(NameWorksJsonLd, count = works.len()),
+        ExchangeScope::Library => tr!(NameLibraryJsonLd),
     };
     let Some(target) = chosen(&state, target, || {
         pick_save(
             owner_of(&window),
-            "Exportar anotações (JSON-LD)",
+            &tr!(PickExportJsonLd),
             JSONLD,
             None,
             &suggested,
@@ -368,7 +365,7 @@ fn flow_book_for(
     file: &BookFile,
 ) -> Result<FlowBook, String> {
     let format = Format::from_extension(&file.format).ok_or("not a flowing book")?;
-    let hash = file.blake3.ok_or("the book has not been read yet")?;
+    let hash = file.blake3.ok_or_else(|| tr!(BookNotReadYet))?;
     let (dir, manifest, _) = crate::flow::normalized(library, client, &file.path, format, &hash)?;
     Ok(FlowBook::new(
         document,
@@ -542,12 +539,7 @@ pub fn annotations_import_jsonld(
 ) -> Result<Option<JsonLdImported>, String> {
     let library = library(&state)?;
     let Some(source) = chosen(&state, source, || {
-        pick_file(
-            owner_of(&window),
-            "Importar anotações (JSON-LD)",
-            JSONLD,
-            None,
-        )
+        pick_file(owner_of(&window), &tr!(PickImportJsonLd), JSONLD, None)
     })?
     else {
         return Ok(None);
@@ -555,9 +547,9 @@ pub fn annotations_import_jsonld(
     let mut bytes = Vec::new();
     open_to_read(&source)
         .and_then(|file| file.take(MAX_JSONLD_BYTES + 1).read_to_end(&mut bytes))
-        .map_err(|error| format!("o arquivo não pôde ser lido: {error}"))?;
+        .map_err(|error| tr!(FileNotRead, error = error))?;
     if bytes.len() as u64 > MAX_JSONLD_BYTES {
-        return Err("o arquivo é grande demais".to_owned());
+        return Err(tr!(FileTooLarge));
     }
     let import: ExchangeImport = library
         .import_jsonld(&bytes, target)
@@ -905,7 +897,7 @@ pub fn study_report(
         ReportScope::Document(document) => vec![*document],
         ReportScope::Works(works) => {
             if works.is_empty() || works.len() > 2000 {
-                return Err("a report is about one work or up to two thousand".to_owned());
+                return Err(tr!(ReportTooManyWorks));
             }
             let mut documents = Vec::new();
             for work in works {
@@ -926,7 +918,7 @@ pub fn study_report(
         }
     }
     if works.is_empty() {
-        return Err("não há anotações para o relatório".to_owned());
+        return Err(tr!(NoAnnotationsForReport));
     }
     let generated_at = match generated_at {
         Some(at) if state.is_e2e() => at,
@@ -938,22 +930,25 @@ pub fn study_report(
         utc_offset_minutes,
         generator: format!("Musaeum {}", env!("CARGO_PKG_VERSION")),
         works,
+        // The words in the person's language, and their name when they gave one.
+        locale: musaeum_i18n::locale(),
+        annotator: state.preferences.chosen_author(),
     };
     let annotations = report.works.iter().map(|work| work.items.len()).sum();
     let base = match report.works.as_slice() {
-        [work] => format!("{} — relatório", file_name_of(&work.title)),
-        works => format!("Relatório de estudo ({} obras)", works.len()),
+        [work] => tr!(NameWorkReport, title = file_name_of(&work.title)),
+        works => tr!(NameWorksReport, count = works.len()),
     };
     let (kind, suggested) = match format {
         ReportFormat::Markdown => (MARKDOWN, format!("{base}.md")),
         ReportFormat::Pdf => (PDF, format!("{base}.pdf")),
     };
     let title = match format {
-        ReportFormat::Markdown => "Exportar relatório (Markdown)",
-        ReportFormat::Pdf => "Exportar relatório (PDF)",
+        ReportFormat::Markdown => tr!(PickExportReportMarkdown),
+        ReportFormat::Pdf => tr!(PickExportReportPdf),
     };
     let Some(target) = chosen(&state, target, || {
-        pick_save(owner_of(&window), title, kind, None, &suggested)
+        pick_save(owner_of(&window), &title, kind, None, &suggested)
     })?
     else {
         return Ok(None);
@@ -1022,10 +1017,9 @@ fn pdf_pages_text(path: &Path) -> Result<Vec<String>, String> {
 }
 
 fn check_report_pdf(path: &Path, expected: usize) -> Result<(), String> {
-    let pages = pdf_pages_text(path)
-        .map_err(|error| format!("o PDFium não leu o relatório: {error}: nada foi gravado"))?;
+    let pages = pdf_pages_text(path).map_err(|error| tr!(ReportPdfUnreadable, error = error))?;
     if pages.len() != expected || pages.first().is_none_or(|text| text.trim().is_empty()) {
-        return Err("o PDFium não leu o relatório como foi escrito: nada foi gravado".to_owned());
+        return Err(tr!(ReportPdfMismatch));
     }
     Ok(())
 }

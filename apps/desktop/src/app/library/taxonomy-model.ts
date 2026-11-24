@@ -6,6 +6,7 @@
  */
 
 import type { BatchEdit, BrowseFilter, Category, CustomField, CustomValue, FieldKind, Identifier, SmartRule, WorkEdit, WorkMetadata } from '../api';
+import { t } from '../i18n';
 
 /** What the side of the library has chosen. */
 export type Filter =
@@ -108,22 +109,22 @@ export interface RuleField {
 /** The fields a rule may name: the library's own, then the person's custom fields. */
 export function ruleFields(custom: CustomField[]): RuleField[] {
   const own: RuleField[] = [
-    { id: 'title', label: 'Título', kind: 'text' },
-    { id: 'creator', label: 'Autor', kind: 'text' },
-    { id: 'series', label: 'Série', kind: 'text' },
-    { id: 'language', label: 'Idioma', kind: 'text' },
-    { id: 'identifier', label: 'Identificador', kind: 'text' },
-    { id: 'year', label: 'Ano', kind: 'number' },
-    { id: 'rating', label: 'Avaliação', kind: 'number' },
-    { id: 'progress', label: 'Lido (%)', kind: 'number' },
-    { id: 'status', label: 'Estado de leitura', kind: 'status' },
-    { id: 'format', label: 'Formato', kind: 'format' },
-    { id: 'added', label: 'Adicionado', kind: 'moment' },
-    { id: 'last_read', label: 'Lido pela última vez', kind: 'moment' },
-    { id: 'tag', label: 'Etiqueta', kind: 'set', set: 'tag' },
-    { id: 'category', label: 'Categoria', kind: 'set', set: 'category' },
-    { id: 'collection', label: 'Coleção', kind: 'set', set: 'collection' },
-    { id: 'folder', label: 'Pasta', kind: 'set', set: 'folder' },
+    { id: 'title', label: t('taxonomy.field.title'), kind: 'text' },
+    { id: 'creator', label: t('taxonomy.field.creator'), kind: 'text' },
+    { id: 'series', label: t('taxonomy.field.series'), kind: 'text' },
+    { id: 'language', label: t('taxonomy.field.language'), kind: 'text' },
+    { id: 'identifier', label: t('taxonomy.field.identifier'), kind: 'text' },
+    { id: 'year', label: t('taxonomy.field.year'), kind: 'number' },
+    { id: 'rating', label: t('taxonomy.field.rating'), kind: 'number' },
+    { id: 'progress', label: t('taxonomy.field.progress'), kind: 'number' },
+    { id: 'status', label: t('taxonomy.field.status'), kind: 'status' },
+    { id: 'format', label: t('taxonomy.field.format'), kind: 'format' },
+    { id: 'added', label: t('taxonomy.field.added'), kind: 'moment' },
+    { id: 'last_read', label: t('taxonomy.field.lastRead'), kind: 'moment' },
+    { id: 'tag', label: t('taxonomy.field.tag'), kind: 'set', set: 'tag' },
+    { id: 'category', label: t('taxonomy.field.category'), kind: 'set', set: 'category' },
+    { id: 'collection', label: t('taxonomy.field.collection'), kind: 'set', set: 'collection' },
+    { id: 'folder', label: t('taxonomy.field.folder'), kind: 'set', set: 'folder' },
   ];
   const kindOf: Record<FieldKind, RuleKind> = { text: 'text', url: 'text', choice: 'text', number: 'number', date: 'day', boolean: 'boolean' };
   return own.concat(
@@ -143,9 +144,10 @@ export interface RuleOp {
   takes: 'none' | 'one' | 'two';
 }
 
-const EMPTY: RuleOp[] = [
-  { id: 'empty', label: 'está vazio', takes: 'none' },
-  { id: 'not_empty', label: 'não está vazio', takes: 'none' },
+/** Whether the field has a value at all: every kind but the ones always set. Words of the language shown. */
+const empty = (): RuleOp[] => [
+  { id: 'empty', label: t('taxonomy.op.empty'), takes: 'none' },
+  { id: 'not_empty', label: t('taxonomy.op.notEmpty'), takes: 'none' },
 ];
 
 /** The operators a kind of field takes, as the host's `smart.rs` accepts them. */
@@ -153,12 +155,12 @@ export function ruleOps(kind: RuleKind): RuleOp[] {
   switch (kind) {
     case 'text':
       return [
-        { id: 'contains', label: 'contém', takes: 'one' },
-        { id: 'not_contains', label: 'não contém', takes: 'one' },
-        { id: 'is', label: 'é', takes: 'one' },
-        { id: 'is_not', label: 'não é', takes: 'one' },
-        { id: 'starts_with', label: 'começa com', takes: 'one' },
-        ...EMPTY,
+        { id: 'contains', label: t('taxonomy.op.contains'), takes: 'one' },
+        { id: 'not_contains', label: t('taxonomy.op.notContains'), takes: 'one' },
+        { id: 'is', label: t('taxonomy.op.is'), takes: 'one' },
+        { id: 'is_not', label: t('taxonomy.op.isNot'), takes: 'one' },
+        { id: 'starts_with', label: t('taxonomy.op.startsWith'), takes: 'one' },
+        ...empty(),
       ];
     case 'number':
       return [
@@ -168,41 +170,42 @@ export function ruleOps(kind: RuleKind): RuleOp[] {
         { id: 'le', label: '≤', takes: 'one' },
         { id: 'gt', label: '>', takes: 'one' },
         { id: 'ge', label: '≥', takes: 'one' },
-        { id: 'between', label: 'entre', takes: 'two' },
-        ...EMPTY,
+        { id: 'between', label: t('taxonomy.op.between'), takes: 'two' },
+        ...empty(),
       ];
     case 'moment':
     case 'day':
       return [
-        { id: 'in_last_days', label: 'nos últimos (dias)', takes: 'one' },
-        { id: 'before', label: 'antes de', takes: 'one' },
-        { id: 'after', label: 'depois de', takes: 'one' },
-        ...EMPTY,
+        { id: 'in_last_days', label: t('taxonomy.op.inLastDays'), takes: 'one' },
+        { id: 'before', label: t('taxonomy.op.before'), takes: 'one' },
+        { id: 'after', label: t('taxonomy.op.after'), takes: 'one' },
+        ...empty(),
       ];
     case 'status':
     case 'format':
       return [
-        { id: 'is', label: 'é', takes: 'one' },
-        { id: 'is_not', label: 'não é', takes: 'one' },
+        { id: 'is', label: t('taxonomy.op.is'), takes: 'one' },
+        { id: 'is_not', label: t('taxonomy.op.isNot'), takes: 'one' },
       ];
     case 'set':
       return [
-        { id: 'in', label: 'é', takes: 'one' },
-        { id: 'not_in', label: 'não é', takes: 'one' },
+        { id: 'in', label: t('taxonomy.op.is'), takes: 'one' },
+        { id: 'not_in', label: t('taxonomy.op.isNot'), takes: 'one' },
       ];
     case 'boolean':
       return [
-        { id: 'is_true', label: 'sim', takes: 'none' },
-        { id: 'is_false', label: 'não', takes: 'none' },
+        { id: 'is_true', label: t('taxonomy.op.yes'), takes: 'none' },
+        { id: 'is_false', label: t('taxonomy.op.no'), takes: 'none' },
       ];
   }
 }
 
-export const STATUSES: [string, string][] = [
-  ['unread', 'Não lido'],
-  ['reading', 'Lendo'],
-  ['read', 'Lido'],
-  ['abandoned', 'Abandonado'],
+/** The reading statuses, with their names in the language shown. */
+export const statuses = (): [string, string][] => [
+  ['unread', t('taxonomy.status.unread')],
+  ['reading', t('taxonomy.status.reading')],
+  ['read', t('taxonomy.status.read')],
+  ['abandoned', t('taxonomy.status.abandoned')],
 ];
 
 export const FORMATS = ['pdf', 'epub', 'mobi', 'azw3', 'fb2', 'djvu', 'cbz', 'cbr', 'txt', 'md'];
@@ -228,29 +231,29 @@ export function isDate(text: string): boolean {
 export function ruleProblem(rule: SmartRule, fields: RuleField[]): string | null {
   const field = fields.find((candidate) => candidate.id === rule.field);
   if (field === undefined) {
-    return 'Escolha um campo.';
+    return t('taxonomy.problem.field');
   }
   const op = ruleOps(field.kind).find((candidate) => candidate.id === rule.op);
   if (op === undefined) {
-    return 'Escolha uma condição.';
+    return t('taxonomy.problem.op');
   }
   if (op.takes === 'none') {
     return null;
   }
   const value = rule.value;
   if (op.takes === 'two') {
-    return Array.isArray(value) && value.length === 2 && value.every((n) => typeof n === 'number' && Number.isFinite(n)) ? null : 'Informe dois números.';
+    return Array.isArray(value) && value.length === 2 && value.every((n) => typeof n === 'number' && Number.isFinite(n)) ? null : t('taxonomy.problem.twoNumbers');
   }
   if (field.kind === 'number' || op.id === 'in_last_days') {
-    return typeof value === 'number' && Number.isFinite(value) ? null : 'Informe um número.';
+    return typeof value === 'number' && Number.isFinite(value) ? null : t('taxonomy.problem.number');
   }
   if (field.kind === 'set') {
-    return typeof value === 'number' ? null : 'Escolha um item.';
+    return typeof value === 'number' ? null : t('taxonomy.problem.item');
   }
   if (op.id === 'before' || op.id === 'after') {
-    return typeof value === 'string' && isDate(value) ? null : 'Informe uma data (AAAA-MM-DD).';
+    return typeof value === 'string' && isDate(value) ? null : t('taxonomy.problem.date');
   }
-  return typeof value === 'string' && value.trim() !== '' ? null : 'Informe um valor.';
+  return typeof value === 'string' && value.trim() !== '' ? null : t('taxonomy.problem.value');
 }
 
 // --- The editor ---
@@ -346,7 +349,7 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
   const title = draft.title.trim();
   if (title !== original.title.trim()) {
     if (title === '') {
-      problems.push('O título não pode ficar vazio.');
+      problems.push(t('taxonomy.problem.title'));
     } else {
       edit.title = title;
     }
@@ -369,7 +372,7 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
   if (draft.seriesPosition.trim() !== original.seriesPosition.trim()) {
     const value = number(draft.seriesPosition);
     if (value === undefined || (value !== null && (value < 0 || value > 1_000_000))) {
-      problems.push('O número na série é um número de 0 a 1000000.');
+      problems.push(t('taxonomy.problem.seriesPosition'));
     } else {
       edit.seriesPosition = value;
     }
@@ -377,7 +380,7 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
   if (draft.year.trim() !== original.year.trim()) {
     const value = number(draft.year);
     if (value === undefined || (value !== null && (!Number.isInteger(value) || value < -9999 || value > 9999))) {
-      problems.push('O ano é um número inteiro de -9999 a 9999.');
+      problems.push(t('taxonomy.problem.year'));
     } else {
       edit.year = value;
     }
@@ -388,7 +391,7 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
     } else {
       const tag = languageTag(draft.language);
       if (tag === null) {
-        problems.push('O idioma é um código como pt, pt-BR ou en.');
+        problems.push(t('taxonomy.problem.language'));
       } else {
         edit.language = tag;
       }
@@ -400,7 +403,7 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
   if (!sameList(identifiers, original.identifiers, (a, b) => a.scheme === b.scheme && a.value === b.value)) {
     for (const identifier of identifiers) {
       if (identifier.scheme === 'isbn' && isbn(identifier.value) === null) {
-        problems.push(`${identifier.value} não é um ISBN válido.`);
+        problems.push(t('taxonomy.problem.isbn', { value: identifier.value }));
       }
     }
     edit.identifiers = identifiers;
@@ -438,17 +441,17 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
       if (field.kind === 'number' && (typeof after !== 'number' || !Number.isFinite(after))) {
         const parsed = typeof after === 'string' ? Number(after.trim().replace(',', '.')) : NaN;
         if (!Number.isFinite(parsed)) {
-          problems.push(`${field.name}: informe um número.`);
+          problems.push(t('taxonomy.problem.customNumber', { field: field.name }));
           continue;
         }
         after = parsed;
       }
       if (field.kind === 'date' && (typeof after !== 'string' || !isDate(after))) {
-        problems.push(`${field.name}: informe uma data (AAAA-MM-DD).`);
+        problems.push(t('taxonomy.problem.customDate', { field: field.name }));
         continue;
       }
       if (field.kind === 'url' && (typeof after !== 'string' || !/^https?:\/\/\S+$/.test(after.trim()))) {
-        problems.push(`${field.name}: informe um endereço http ou https.`);
+        problems.push(t('taxonomy.problem.customUrl', { field: field.name }));
         continue;
       }
     }
@@ -460,16 +463,18 @@ export function editOf(original: Draft, draft: Draft, fields: CustomField[]): { 
   return { edit, problems };
 }
 
-export const ROLES: [string, string][] = [
-  ['author', 'Autor'],
-  ['editor', 'Organizador'],
-  ['translator', 'Tradutor'],
-  ['illustrator', 'Ilustrador'],
-  ['introduction', 'Prefácio'],
-  ['contributor', 'Colaborador'],
+/** The roles a person has in a work, with their names in the language shown. */
+export const roles = (): [string, string][] => [
+  ['author', t('taxonomy.role.author')],
+  ['editor', t('taxonomy.role.editor')],
+  ['translator', t('taxonomy.role.translator')],
+  ['illustrator', t('taxonomy.role.illustrator')],
+  ['introduction', t('taxonomy.role.introduction')],
+  ['contributor', t('taxonomy.role.contributor')],
 ];
 
-export const SCHEMES: [string, string][] = [
+/** The schemes of identifiers: standards' names, and one for any other. */
+export const schemes = (): [string, string][] => [
   ['isbn', 'ISBN'],
   ['issn', 'ISSN'],
   ['doi', 'DOI'],
@@ -477,29 +482,30 @@ export const SCHEMES: [string, string][] = [
   ['lccn', 'LCCN'],
   ['asin', 'ASIN'],
   ['uri', 'URI'],
-  ['other', 'Outro'],
+  ['other', t('taxonomy.scheme.otherScheme')],
 ];
 
-export const FIELD_KINDS: [FieldKind, string][] = [
-  ['text', 'Texto'],
-  ['number', 'Número'],
-  ['date', 'Data'],
-  ['boolean', 'Sim ou não'],
-  ['choice', 'Lista de opções'],
-  ['url', 'Endereço web'],
+/** The kinds of custom fields, with their names in the language shown. */
+export const fieldKinds = (): [FieldKind, string][] => [
+  ['text', t('taxonomy.kind.text')],
+  ['number', t('taxonomy.kind.number')],
+  ['date', t('taxonomy.kind.date')],
+  ['boolean', t('taxonomy.kind.boolean')],
+  ['choice', t('taxonomy.kind.choice')],
+  ['url', t('taxonomy.kind.url')],
 ];
 
 /** How a field's value came to be, in the person's words. */
 export function provenanceLabel(origin: string | undefined): string | null {
   switch (origin) {
     case 'user':
-      return 'editado';
+      return t('taxonomy.origin.user');
     case 'embedded':
-      return 'do arquivo';
+      return t('taxonomy.origin.embedded');
     case 'calibre':
-      return 'do Calibre';
+      return t('taxonomy.origin.calibre');
     case 'filename':
-      return 'do nome do arquivo';
+      return t('taxonomy.origin.filename');
     default:
       return null;
   }
@@ -584,7 +590,7 @@ export function batchEditOf(draft: BatchDraft): { edit: BatchEdit; problems: str
     } else {
       const value = Number(clean);
       if (!Number.isInteger(value) || value < -9999 || value > 9999) {
-        problems.push('O ano é um número inteiro de -9999 a 9999.');
+        problems.push(t('taxonomy.problem.year'));
       } else {
         edit.year = value;
       }
@@ -596,7 +602,7 @@ export function batchEditOf(draft: BatchDraft): { edit: BatchEdit; problems: str
     } else {
       const tag = languageTag(draft.language);
       if (tag === null) {
-        problems.push('O idioma é um código como pt, pt-BR ou en.');
+        problems.push(t('taxonomy.problem.language'));
       } else {
         edit.language = tag;
       }

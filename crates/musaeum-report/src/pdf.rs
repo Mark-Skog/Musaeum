@@ -20,12 +20,14 @@ use std::io::Write as _;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 
+use musaeum_i18n::{T, text_in, tr_in};
+
 use crate::font::{Face, glyph_for};
 use crate::markdown::{byline, counts, file_line, graphic, identifiers, meta};
 use crate::notes::{self, Block as NoteBlock, Inline};
 use crate::order::{self, Ordered};
 use crate::text::{clean, fold_spaces};
-use crate::{Found, Heading, Item, Kind, Report, WorkReport, paint, time};
+use crate::{Found, Heading, Item, Kind, Locale, Report, WorkReport, paint, time};
 
 const PAGE_W: f32 = 595.276;
 const PAGE_H: f32 = 841.89;
@@ -453,19 +455,19 @@ fn quote_lines(quote: &str, x: f32, width: f32) -> Vec<Line> {
     lines
 }
 
-fn item_block(item: &Item, work: &WorkReport, offset: i32, index: usize) -> Block {
+fn item_block(item: &Item, work: &WorkReport, offset: i32, index: usize, locale: Locale) -> Block {
     let x = LEFT + INDENT;
     let width = WIDTH - INDENT;
     let mut lines = Vec::new();
     let mut head = shape(
-        item.label(),
+        &item.label(locale),
         Style {
             face: Face::SansBold,
             ..META
         },
     );
     head.extend(shape(
-        &format!(" · {}", meta(item, work.layout, offset).join(" · ")),
+        &format!(" · {}", meta(item, work.layout, offset, locale).join(" · ")),
         META,
     ));
     lines.extend(paragraph(head, x, width, META.size, 11.5));
@@ -482,7 +484,7 @@ fn item_block(item: &Item, work: &WorkReport, offset: i32, index: usize) -> Bloc
             lines.push(Line::space(1.0));
             lines.extend(paragraph(
                 shape(
-                    "Sem texto: uma marca desenhada na página.",
+                    &text_in(locale, T::ReportGraphicMark, &[]),
                     Style {
                         face: Face::SansItalic,
                         size: 8.8,
@@ -582,6 +584,8 @@ fn work_blocks(
     blocks: &mut Vec<Block>,
 ) {
     let offset = report.utc_offset_minutes;
+    let locale = report.locale;
+    let label = |message: T| text_in(locale, message, &[]);
     let title = fold_spaces(&work.title);
     blocks.push(Block {
         bookmark: Some((level, title.clone())),
@@ -595,7 +599,7 @@ fn work_blocks(
             25.5,
         ))
     });
-    let by = byline(work);
+    let by = byline(work, locale);
     if !by.is_empty() {
         blocks.push(plain_block(
             &by,
@@ -605,31 +609,31 @@ fn work_blocks(
             Some(index),
         ));
     }
-    let mut facts: Vec<(&str, String)> = Vec::new();
+    let mut facts: Vec<(String, String)> = Vec::new();
     if let Some(series) = work.series.as_deref().filter(|s| !s.trim().is_empty()) {
         let position = work.series_position.map(|n| {
             if n.fract() == 0.0 {
-                format!(", n.º {}", n as i64)
+                tr_in!(locale, ReportSeriesNumber, number = n as i64)
             } else {
-                format!(", n.º {n}")
+                tr_in!(locale, ReportSeriesNumber, number = n)
             }
         });
         facts.push((
-            "Série",
+            label(T::ReportSeries),
             format!("{}{}", series.trim(), position.unwrap_or_default()),
         ));
     }
     if let Some(year) = work.year {
-        facts.push(("Ano", year.to_string()));
+        facts.push((label(T::ReportYear), year.to_string()));
     }
     if let Some(language) = work.language.as_deref().filter(|l| !l.trim().is_empty()) {
-        facts.push(("Idioma", language.trim().to_owned()));
+        facts.push((label(T::ReportLanguage), language.trim().to_owned()));
     }
     if !work.identifiers.is_empty() {
-        facts.push(("Identificadores", identifiers(work)));
+        facts.push((label(T::ReportIdentifiers), identifiers(work)));
     }
-    facts.push(("Arquivo", file_line(work)));
-    facts.push(("Anotações", counts(work)));
+    facts.push((label(T::ReportFile), file_line(work, locale)));
+    facts.push((label(T::ReportAnnotations), counts(work, locale)));
     let fact_style = style(Face::Sans, 8.8, SOFT);
     let mut lines = Vec::new();
     for (label, value) in facts {
@@ -650,17 +654,27 @@ fn work_blocks(
     });
     if level == 0 {
         blocks.push(plain_block(
-            &format!(
-                "Relatório de estudo gerado em {} ({}) pelo {}.",
-                time::date_time(report.generated_at, offset),
-                time::offset_label(offset),
-                report.generator
+            &tr_in!(
+                locale,
+                ReportMadeOne,
+                date = time::date_time(report.generated_at, offset, locale),
+                zone = time::offset_label(offset),
+                generator = report.generator
             ),
             style(Face::SansItalic, 8.3, FAINT),
             12.0,
             6.0,
             Some(index),
         ));
+        if let Some(line) = annotator_line(report) {
+            blocks.push(plain_block(
+                &line,
+                style(Face::SansItalic, 8.3, FAINT),
+                12.0,
+                1.0,
+                Some(index),
+            ));
+        }
     }
     blocks.push(rule_block(9.0, Some(index)));
 
@@ -671,7 +685,7 @@ fn work_blocks(
     } = order::order(work);
     if work.items.is_empty() {
         blocks.push(plain_block(
-            "Nenhuma anotação nesta obra.",
+            &label(T::ReportNoAnnotationsInWork),
             style(Face::SansItalic, 9.5, SOFT),
             13.0,
             12.0,
@@ -680,13 +694,13 @@ fn work_blocks(
     }
     if !whole.is_empty() {
         blocks.push(heading_block(
-            "Sobre o livro todo",
+            &label(T::ReportWholeBook),
             0,
             level + 1,
             Some(index),
         ));
         for item in whole {
-            blocks.push(item_block(item, work, offset, index));
+            blocks.push(item_block(item, work, offset, index, locale));
         }
     }
     let mut printed: Vec<&Heading> = Vec::new();
@@ -706,18 +720,18 @@ fn work_blocks(
         }
         printed = section.path.clone();
         for item in &section.items {
-            blocks.push(item_block(item, work, offset, index));
+            blocks.push(item_block(item, work, offset, index, locale));
         }
     }
     if !orphans.is_empty() {
         blocks.push(heading_block(
-            "Não encontradas no livro",
+            &label(T::ReportNotFoundHeading),
             0,
             level + 1,
             Some(index),
         ));
         blocks.push(plain_block(
-            "O trecho destas anotações não foi encontrado no livro como ele está agora. Elas ficam com a citação, a nota e o lugar em que estavam.",
+            &label(T::ReportNotFoundExplained),
             style(Face::SansItalic, 8.8, SOFT),
             12.5,
             2.0,
@@ -725,7 +739,7 @@ fn work_blocks(
         ));
         for item in orphans {
             debug_assert_eq!(item.found, Found::Orphan);
-            blocks.push(item_block(item, work, offset, index));
+            blocks.push(item_block(item, work, offset, index, locale));
         }
     }
 }
@@ -1108,6 +1122,12 @@ fn header_line(text: &str, style_of: Style, x: f32, max: f32) -> (f32, Vec<Glyph
     (x, glyphs)
 }
 
+/// Who made the annotations, when the person gave their name.
+fn annotator_line(report: &Report) -> Option<String> {
+    let name = report.annotator.as_deref().map(str::trim)?;
+    (!name.is_empty()).then(|| tr_in!(report.locale, ReportAnnotator, name = name))
+}
+
 /// The report as a PDF file.
 pub fn pdf(report: &Report) -> Vec<u8> {
     render(report).0
@@ -1115,15 +1135,17 @@ pub fn pdf(report: &Report) -> Vec<u8> {
 
 /// The report as a PDF file, and how many pages it has.
 pub fn render(report: &Report) -> (Vec<u8>, usize) {
+    let locale = report.locale;
+    let report_title = text_in(locale, T::ReportTitle, &[]);
     let mut blocks = Vec::new();
     let single = report.works.len() == 1;
     if single {
         work_blocks(&report.works[0], 0, report, 0, &mut blocks);
     } else {
         blocks.push(Block {
-            bookmark: Some((0, "Relatório de estudo".to_owned())),
+            bookmark: Some((0, report_title.clone())),
             ..Block::new(paragraph(
-                shape("Relatório de estudo", style(Face::SerifBold, 22.0, INK)),
+                shape(&report_title, style(Face::SerifBold, 22.0, INK)),
                 LEFT,
                 WIDTH,
                 22.0,
@@ -1132,23 +1154,33 @@ pub fn render(report: &Report) -> (Vec<u8>, usize) {
         });
         let offset = report.utc_offset_minutes;
         blocks.push(plain_block(
-            &format!(
-                "{} obras, gerado em {} ({}) pelo {}.",
-                report.works.len(),
-                time::date_time(report.generated_at, offset),
-                time::offset_label(offset),
-                report.generator
+            &tr_in!(
+                locale,
+                ReportMadeMany,
+                count = report.works.len(),
+                date = time::date_time(report.generated_at, offset, locale),
+                zone = time::offset_label(offset),
+                generator = report.generator
             ),
             style(Face::SansItalic, 9.0, FAINT),
             13.0,
             5.0,
             None,
         ));
+        if let Some(line) = annotator_line(report) {
+            blocks.push(plain_block(
+                &line,
+                style(Face::SansItalic, 9.0, FAINT),
+                13.0,
+                1.0,
+                None,
+            ));
+        }
         blocks.push(rule_block(9.0, None));
         for work in &report.works {
             let mut glyphs = shape(&fold_spaces(&work.title), style(Face::SansBold, 9.6, INK));
             glyphs.extend(shape(
-                &format!(" — {}", order::tally(&work.items)),
+                &format!(" — {}", order::tally(&work.items, locale)),
                 style(Face::Sans, 9.6, SOFT),
             ));
             blocks.push(Block {
@@ -1167,13 +1199,13 @@ pub fn render(report: &Report) -> (Vec<u8>, usize) {
     let head = style(Face::Sans, 7.6, FAINT);
     let made = format!(
         "Musaeum · {}",
-        time::date(report.generated_at, report.utc_offset_minutes)
+        time::date(report.generated_at, report.utc_offset_minutes, locale)
     );
     for (number, page) in pages.iter_mut().enumerate() {
         if number > 0
             && let Some(work) = page.work.and_then(|index| report.works.get(index))
         {
-            let label = shape("Relatório de estudo", head);
+            let label = shape(&report_title, head);
             let label_width = width_of(&label);
             let (x, glyphs) = header_line(
                 &fold_spaces(&work.title),
@@ -1192,7 +1224,10 @@ pub fn render(report: &Report) -> (Vec<u8>, usize) {
             });
             page.lines.push(Placed { y: 40.0, line });
         }
-        let foot = shape(&format!("página {} de {total}", number + 1), head);
+        let foot = shape(
+            &tr_in!(locale, ReportPageOf, number = number + 1, total = total),
+            head,
+        );
         let foot_width = width_of(&foot);
         let mut line = Line::text(LEFT, shape(&made, head), head.size, 10.0);
         line.runs.push((LEFT + WIDTH - foot_width, foot));
@@ -1340,13 +1375,13 @@ pub fn render(report: &Report) -> (Vec<u8>, usize) {
     let title = if single {
         fold_spaces(&report.works[0].title)
     } else {
-        "Relatório de estudo".to_owned()
+        report_title.clone()
     };
     let date = time::pdf_date(report.generated_at, report.utc_offset_minutes);
     let info = objects.add(format!(
         "<< /Title {} /Subject {} /Creator {} /Producer {} /CreationDate ({date}) /ModDate ({date}) >>",
         text_string(&title),
-        text_string("Relatório de estudo"),
+        text_string(&report_title),
         text_string("Musaeum"),
         text_string(&report.generator),
     ));

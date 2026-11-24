@@ -27,7 +27,9 @@ copiar e buscar como num livro digital; e, num PDF, as anotações do Musaeum le
 arquivo como anotações do próprio PDF, que o Acrobat e o PDFium mostram, as anotações de um PDF trazidas
 para a biblioteca sem duplicar, e as duas coisas também em XFDF; e as anotações de qualquer livro levadas e
 trazidas como Web Annotations do W3C (JSON-LD), sem perder nada, de um livro, de vários ou da biblioteca
-toda, e os relatórios de estudo em Markdown e em PDF, na ordem de leitura e pelos capítulos. Por baixo, o normalizador e o motor de posição (EPUB CFI e
+toda, e os relatórios de estudo em Markdown e em PDF, na ordem de leitura e pelos capítulos; e as
+Preferências, com a interface inteira em português do Brasil ou em inglês, o tema claro ou escuro, o
+movimento reduzido, o nome do autor das anotações, os idiomas do OCR e a limpeza do cache. Por baixo, o normalizador e o motor de posição (EPUB CFI e
 Locator) da Fase 3, o pipeline de tiles da Fase 2 e a biblioteca da Fase 1, com SQLite, identidade de
 arquivos, indexador, diário de operações em disco e uma CLI.
 
@@ -43,8 +45,9 @@ As decisões e os números de cada fase estão em
 [`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md),
 [`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md),
 [`docs/adr/0011-fase-6-parte-2.md`](docs/adr/0011-fase-6-parte-2.md),
-[`docs/adr/0012-fase-7-parte-1.md`](docs/adr/0012-fase-7-parte-1.md) e
-[`docs/adr/0013-fase-7-parte-2.md`](docs/adr/0013-fase-7-parte-2.md).
+[`docs/adr/0012-fase-7-parte-1.md`](docs/adr/0012-fase-7-parte-1.md),
+[`docs/adr/0013-fase-7-parte-2.md`](docs/adr/0013-fase-7-parte-2.md) e
+[`docs/adr/0014-fase-8-parte-1.md`](docs/adr/0014-fase-8-parte-1.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -379,6 +382,41 @@ tomar o nome. As decisões estão no ADR 0013.
 
 ```powershell
 node tools\e2e-exchange.mjs
+```
+
+## As preferências e os idiomas
+
+As **Preferências** abrem pelo botão da barra da biblioteca, pelo ⚙ da barra do leitor ou por
+**Ctrl+,** em qualquer lugar. O que muda ali vale na hora, sem reiniciar:
+
+- **Idioma da interface:** português do Brasil ou inglês. Todas as palavras da interface vêm de um
+  catálogo (`apps/desktop/src/app/i18n/`), e tudo o que o lado Rust escreve para a pessoa também
+  (`crates/musaeum-i18n/`): as recusas e os erros, os títulos dos diálogos do sistema, os nomes
+  sugeridos, o assunto (`/Subj`) das anotações num PDF ou num XFDF, e os rótulos, as contagens e as
+  datas dos relatórios de estudo. O que a pessoa escreveu e o que o livro diz não são traduzidos.
+- **Tema:** o do sistema, claro ou escuro, também na barra de título da janela. As cores são tokens
+  (`app.css`) com contraste WCAG AA nos dois temas, conferido por teste.
+- **Movimento:** o do sistema (`prefers-reduced-motion`) ou reduzido. Reduzido, nada desliza nem esmaece
+  na biblioteca e no leitor, e as páginas viram sem animação, sem esquecer a escolha de cada livro.
+- **Autor das anotações:** o nome gravado em `/T` na cópia do PDF, no `title` do XFDF e na linha
+  "Anotações de …" dos relatórios. Vazio, um PDF e um XFDF levam o nome de usuário do Windows, e o
+  relatório não nomeia ninguém.
+- **Idiomas do OCR:** de um a quatro entre os modelos verificados (`por` e `eng` vêm com o programa).
+  Outros (`spa`, `fra`, `deu`, `ita`, `lat`) são baixados por `tools\fetch-ocr.ps1 -Languages spa,fra`,
+  com o SHA-256 de cada um fixado no código: um modelo com outros bytes não é oferecido nem lido, e o
+  worker do OCR continua sem abrir arquivo nenhum.
+- **Cache:** quanto o disco guarda das linhas das páginas, do texto lido pelo OCR, do índice de texto, dos
+  livros fluidos normalizados e das capas, e o botão que esquece as linhas e o OCR, depois de confirmar.
+  Nada da biblioteca nem das anotações é tocado; o que foi esquecido é refeito quando a página é aberta.
+
+Elas ficam em `%LOCALAPPDATA%\Musaeum\preferences.db` (ou ao lado da biblioteca dada com `--library`),
+nunca numa pasta de livros, e o arquivo só é criado na primeira mudança. Os diálogos e os menus prendem o
+foco enquanto abertos e o devolvem ao fechar. Nos painéis ao lado, **Esc** fecha o sumário e as anotações
+do leitor, devolvendo o foco ao botão que os abriu; nos detalhes de um livro, volta aos livros, e um
+segundo **Esc** fecha os detalhes. As decisões estão no ADR 0014.
+
+```powershell
+node tools\e2e-preferences.mjs
 ```
 
 ## Validar num acervo real

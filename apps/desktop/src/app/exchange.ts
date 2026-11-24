@@ -6,6 +6,7 @@
  */
 
 import { api, type ExchangeScope, type ExchangeTarget, type JsonLdExported, type JsonLdImported, type ReportScope, type ReportWritten } from './api';
+import { type MessageKey, t, tn } from './i18n';
 
 export type ExchangeAction = 'export-jsonld' | 'import-jsonld' | 'report-md' | 'report-pdf';
 
@@ -15,11 +16,12 @@ export type ExchangeWhere =
   | { kind: 'works'; works: number[] }
   | { kind: 'library' };
 
-export const EXCHANGE_ACTIONS: { id: ExchangeAction; label: string; busy: string }[] = [
-  { id: 'export-jsonld', label: 'Exportar JSON-LD…', busy: 'Gravando as anotações em JSON-LD…' },
-  { id: 'import-jsonld', label: 'Importar JSON-LD…', busy: 'Lendo e conferindo o JSON-LD…' },
-  { id: 'report-md', label: 'Relatório em Markdown…', busy: 'Escrevendo o relatório…' },
-  { id: 'report-pdf', label: 'Relatório em PDF…', busy: 'Compondo o relatório e conferindo o PDF…' },
+/** Each action, with the words of its button and of its status while it runs. */
+export const EXCHANGE_ACTIONS: { id: ExchangeAction; label: MessageKey; busy: MessageKey }[] = [
+  { id: 'export-jsonld', label: 'exchange.export', busy: 'exchange.export.busy' },
+  { id: 'import-jsonld', label: 'exchange.import', busy: 'exchange.import.busy' },
+  { id: 'report-md', label: 'exchange.reportMd', busy: 'exchange.reportMd.busy' },
+  { id: 'report-pdf', label: 'exchange.reportPdf', busy: 'exchange.reportPdf.busy' },
 ];
 
 /** What an action did: its words for the person, and what the host answered; `null` when cancelled. */
@@ -28,15 +30,15 @@ export interface ExchangeDone {
   result: JsonLdExported | JsonLdImported | ReportWritten;
 }
 
-const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
-
 export function exportedText(report: JsonLdExported): string {
-  const books = report.documents > 1 ? ` de ${plural(report.documents, 'livro', 'livros')}` : '';
-  return `JSON-LD com ${plural(report.annotations, 'anotação', 'anotações')}${books} salvo em ${report.path}.`;
+  const annotations = tn('exchange.annotations', report.annotations);
+  return report.documents > 1
+    ? t('exchange.exported.books', { annotations, books: tn('exchange.books', report.documents), path: report.path })
+    : t('exchange.exported', { annotations, path: report.path });
 }
 
 export function importedText(report: JsonLdImported): string {
-  const parts: string[] = [`${plural(report.added, 'anotação trazida', 'anotações trazidas')}`];
+  const parts: string[] = [tn('exchange.brought', report.added)];
   const found = { exact: 0, approximate: 0, orphan: 0, pending: 0 };
   for (const book of report.books) {
     found.exact += book.exact;
@@ -45,37 +47,39 @@ export function importedText(report: JsonLdImported): string {
     found.pending += book.pending;
   }
   const how = [
-    found.exact > 0 ? plural(found.exact, 'exata', 'exatas') : null,
-    found.approximate > 0 ? plural(found.approximate, 'aproximada', 'aproximadas') : null,
-    found.orphan > 0 ? plural(found.orphan, 'órfã', 'órfãs') : null,
-    found.pending > 0 ? `${found.pending} a ancorar quando o livro abrir` : null,
+    found.exact > 0 ? tn('exchange.exact', found.exact) : null,
+    found.approximate > 0 ? tn('exchange.approximate', found.approximate) : null,
+    found.orphan > 0 ? tn('exchange.orphan', found.orphan) : null,
+    found.pending > 0 ? t('exchange.pending', { count: found.pending }) : null,
   ].filter((part) => part !== null);
   if (report.added > 0 && how.length > 0) {
     parts[0] += ` (${how.join(', ')})`;
   }
   if (report.already > 0) {
-    parts.push(`${report.already} já ${report.already === 1 ? 'estava' : 'estavam'} na biblioteca`);
+    parts.push(tn('exchange.already', report.already));
   }
   if (report.elsewhere > 0) {
-    parts.push(`${plural(report.elsewhere, 'é de outro livro', 'são de outros livros')} e ${report.elsewhere === 1 ? 'ficou' : 'ficaram'} de fora`);
+    parts.push(tn('exchange.elsewhere', report.elsewhere));
   }
   const missing = report.unmatched.reduce((sum, work) => sum + work.annotations, 0);
   if (missing > 0) {
     const titles = report.unmatched.slice(0, 3).map((work) => `“${work.title}”`).join(', ');
-    const more = report.unmatched.length > 3 ? ` e mais ${report.unmatched.length - 3}` : '';
-    parts.push(`${plural(missing, 'é', 'são')} de obras que a biblioteca não tem (${titles}${more})`);
+    const more = report.unmatched.length > 3 ? ` ${t('exchange.more', { count: report.unmatched.length - 3 })}` : '';
+    parts.push(tn('exchange.unmatched', missing, { titles: `${titles}${more}` }));
   }
   let text = parts.join('; ') + '.';
   if (report.otherWork > 0) {
-    text += ` ${plural(report.otherWork, 'veio', 'vieram')} de outra obra, e ${report.otherWork === 1 ? 'foi trazida' : 'foram trazidas'} porque este livro foi escolhido: confira.`;
+    text += ` ${tn('exchange.otherWork', report.otherWork)}`;
   }
   return text;
 }
 
 export function reportText(report: ReportWritten, format: 'markdown' | 'pdf'): string {
-  const kind = format === 'pdf' ? `PDF, ${plural(report.pages ?? 0, 'página', 'páginas')}` : 'Markdown';
-  const works = report.works > 1 ? ` de ${plural(report.works, 'livro', 'livros')}` : '';
-  return `Relatório (${kind}) com ${plural(report.annotations, 'anotação', 'anotações')}${works} salvo em ${report.path}.`;
+  const kind = format === 'pdf' ? t('exchange.kind.pdf', { pages: tn('exchange.pages', report.pages ?? 0) }) : 'Markdown';
+  const annotations = tn('exchange.annotations', report.annotations);
+  return report.works > 1
+    ? t('exchange.report.books', { kind, annotations, books: tn('exchange.books', report.works), path: report.path })
+    : t('exchange.report', { kind, annotations, path: report.path });
 }
 
 function scopeOf(where: ExchangeWhere): ExchangeScope {
@@ -95,7 +99,7 @@ function targetOf(where: ExchangeWhere): ExchangeTarget {
       return { kind: 'document', id: where.documentId };
     case 'works':
       if (where.works.length !== 1) {
-        throw new Error('importe as anotações de uma obra por vez, ou na biblioteca toda');
+        throw new Error(t('exchange.importOneWork'));
       }
       return { kind: 'work', id: where.works[0] };
     case 'library':
@@ -110,7 +114,7 @@ function reportScopeOf(where: ExchangeWhere): ReportScope {
     case 'works':
       return { kind: 'works', ids: where.works };
     case 'library':
-      throw new Error('um relatório é de livros escolhidos');
+      throw new Error(t('exchange.reportChosen'));
   }
 }
 

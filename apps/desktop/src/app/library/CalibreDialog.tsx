@@ -9,15 +9,16 @@ import { useEffect, useState } from 'react';
 import { Button } from 'react-aria-components';
 
 import { api, type CalibrePreview, type CalibreReport } from '../api';
+import { type MessageKey, tn, useT } from '../i18n';
 import { Frame, reasonOf } from './dialogs';
 
-const KINDS: Record<string, string> = {
-  text: 'texto',
-  number: 'número',
-  date: 'data',
-  boolean: 'sim/não',
-  choice: 'lista de opções',
-  url: 'endereço',
+const KINDS: Record<string, MessageKey> = {
+  text: 'batch.calibre.kind.text',
+  number: 'batch.calibre.kind.number',
+  date: 'batch.calibre.kind.date',
+  boolean: 'batch.calibre.kind.boolean',
+  choice: 'batch.calibre.kind.choice',
+  url: 'batch.calibre.kind.url',
 };
 
 export interface CalibreDialogProps {
@@ -28,6 +29,7 @@ export interface CalibreDialogProps {
 }
 
 export function CalibreDialog({ folder, onClose, onImported }: CalibreDialogProps): React.JSX.Element {
+  const t = useT();
   const [path, setPath] = useState<string | null>(folder);
   const [preview, setPreview] = useState<CalibrePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,46 +91,48 @@ export function CalibreDialog({ folder, onClose, onImported }: CalibreDialogProp
   };
 
   return (
-    <Frame title="Importar do Calibre" onClose={onClose} onSubmit={submit} submitLabel={done ? 'Fechar' : 'Importar'} error={error} busy={busy || (!done && preview === null)} wide>
+    <Frame title={t('batch.calibre.title')} onClose={onClose} onSubmit={submit} submitLabel={done ? t('common.close') : t('batch.calibre.import')} error={error} busy={busy || (!done && preview === null)} wide>
       <div className="calibre-dialog">
         <div className="row">
           <span className="grow calibre-path" title={path ?? ''}>
-            {path ?? 'Escolha a pasta da biblioteca do Calibre (a que tem o metadata.db).'}
+            {path ?? t('batch.calibre.choosePrompt')}
           </span>
           <Button className="button" isDisabled={busy} onPress={choose}>
-            Escolher a pasta…
+            {t('batch.calibre.choose')}
           </Button>
         </div>
         {preview !== null ? (
           <div className="calibre-preview" data-books={preview.books}>
             <p>
-              {preview.books} {preview.books === 1 ? 'livro' : 'livros'}, {preview.files} {preview.files === 1 ? 'arquivo' : 'arquivos'}
-              {preview.missing > 0 ? `; ${preview.missing} sem arquivo no disco` : ''}. Lido de {preview.readFrom}.
+              {tn('batch.calibre.books', preview.books)}, {tn('batch.calibre.files', preview.files)}
+              {preview.missing > 0 ? `; ${t('batch.calibre.missingOnDisk', { count: preview.missing })}` : ''}. {t('batch.calibre.readFrom', { source: preview.readFrom })}
             </p>
             {preview.sample.length > 0 ? <p className="muted">{preview.sample.join(' · ')}</p> : null}
             {preview.columns.length > 0 ? (
-              <ul className="calibre-columns" aria-label="Colunas personalizadas">
+              <ul className="calibre-columns" aria-label={t('batch.calibre.columns')}>
                 {preview.columns.map((column) => (
                   <li key={column.label}>
-                    {column.name}: {column.kind === null ? <span className="muted">não é trazida (calculada pelo Calibre)</span> : `campo de ${KINDS[column.kind] ?? column.kind}`}
+                    {column.name}: {column.kind === null ? (
+                      <span className="muted">{t('batch.calibre.column.notBrought')}</span>
+                    ) : (
+                      t('batch.calibre.column.fieldOf', { kind: column.kind in KINDS ? t(KINDS[column.kind]) : column.kind })
+                    )}
                   </li>
                 ))}
               </ul>
             ) : null}
             <p className="muted">
-              A pasta do Calibre é só lida: nada nela muda, nem o metadata.db.{' '}
-              {preview.followed ? 'A biblioteca já acompanha essa pasta.' : 'A biblioteca passa a acompanhar essa pasta, como as outras.'} Um livro com os mesmos bytes de um que a
-              biblioteca já tem fica o mesmo livro.
+              {t('batch.calibre.readOnly')} {preview.followed ? t('batch.calibre.followed') : t('batch.calibre.willFollow')} {t('batch.calibre.sameBytes')}
             </p>
           </div>
         ) : null}
         {report !== null ? (
           <p className="calibre-report" role="status" data-imported={report.imported} data-waiting={report.waiting}>
-            {done ? 'Importados' : 'Até agora'}: {report.imported} de {report.books}
-            {report.waiting > 0 ? `; ${report.waiting} esperando a biblioteca ler os arquivos` : ''}
-            {report.missing > 0 ? `; ${report.missing} sem arquivo` : ''}
-            {report.merged > 0 ? `; ${report.merged} formatos juntados ao seu livro` : ''}
-            {report.fieldsCreated > 0 ? `; ${report.fieldsCreated} campos personalizados criados` : ''}.
+            {t(done ? 'batch.calibre.report.done' : 'batch.calibre.report.sofar', { imported: report.imported, books: report.books })}
+            {report.waiting > 0 ? `; ${t('batch.calibre.report.waiting', { count: report.waiting })}` : ''}
+            {report.missing > 0 ? `; ${t('batch.calibre.report.missing', { count: report.missing })}` : ''}
+            {report.merged > 0 ? `; ${t('batch.calibre.report.merged', { count: report.merged })}` : ''}
+            {report.fieldsCreated > 0 ? `; ${t('batch.calibre.report.fields', { count: report.fieldsCreated })}` : ''}.
           </p>
         ) : null}
       </div>

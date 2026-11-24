@@ -2,7 +2,9 @@
 //! of the table of contents at or before them; notes about the whole book first; those that could
 //! not be found on the book as it is now last, apart, with the place they were last seen.
 
-use crate::{Found, Heading, Item, WorkReport};
+use musaeum_i18n::{T, count_in, text_in, tr_in};
+
+use crate::{Found, Heading, Item, Locale, WorkReport};
 
 /// A stretch of a work under one entry of its contents, or before any.
 #[derive(Debug)]
@@ -110,26 +112,38 @@ pub fn order(work: &WorkReport) -> Ordered<'_> {
 }
 
 /// How many of each kind, in words: `7 realces, 3 sublinhados e 2 notas`.
-pub fn tally(items: &[Item]) -> String {
-    let count = |label: &str, singular: &str, plural: &str| -> Option<String> {
-        let n = items.iter().filter(|item| item.label() == label).count();
-        (n > 0).then(|| format!("{n} {}", if n == 1 { singular } else { plural }))
+pub fn tally(items: &[Item], locale: Locale) -> String {
+    let count = |label: T, one: T, other: T| -> Option<String> {
+        let n = items.iter().filter(|item| item.message() == label).count();
+        (n > 0).then(|| count_in(locale, n as u64, one, other, &[("count", &n)]))
     };
     let parts: Vec<String> = [
-        count("Realce", "realce", "realces"),
-        count("Sublinhado", "sublinhado", "sublinhados"),
-        count("Nota", "nota", "notas"),
-        count("Caixa", "caixa", "caixas"),
-        count("Traço", "traço", "traços"),
-        count("Nota fixada", "nota fixada", "notas fixadas"),
+        count(
+            T::SubjectHighlight,
+            T::ReportHighlightsOne,
+            T::ReportHighlightsOther,
+        ),
+        count(
+            T::SubjectUnderline,
+            T::ReportUnderlinesOne,
+            T::ReportUnderlinesOther,
+        ),
+        count(T::SubjectNote, T::ReportNotesOne, T::ReportNotesOther),
+        count(T::ReportMarkBox, T::ReportBoxesOne, T::ReportBoxesOther),
+        count(
+            T::ReportMarkStroke,
+            T::ReportStrokesOne,
+            T::ReportStrokesOther,
+        ),
+        count(T::ReportMarkPoint, T::ReportPinnedOne, T::ReportPinnedOther),
     ]
     .into_iter()
     .flatten()
     .collect();
     match parts.as_slice() {
-        [] => "nenhuma anotação".to_owned(),
+        [] => text_in(locale, T::ReportNone, &[]),
         [one] => one.clone(),
-        [rest @ .., last] => format!("{} e {last}", rest.join(", ")),
+        [rest @ .., last] => tr_in!(locale, ReportListLast, rest = rest.join(", "), last = last),
     }
 }
 
@@ -218,6 +232,7 @@ mod tests {
         );
         assert_eq!(ordered.whole.len(), 1);
         assert_eq!(ordered.orphans[0].uuid, "órfã");
-        assert_eq!(tally(&work.items), "8 realces");
+        assert_eq!(tally(&work.items, Locale::PtBr), "8 realces");
+        assert_eq!(tally(&work.items, Locale::English), "8 highlights");
     }
 }

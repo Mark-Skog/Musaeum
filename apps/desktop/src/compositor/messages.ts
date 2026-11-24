@@ -56,6 +56,8 @@ export type ToWorker =
   | { type: 'pointer'; phase: 'down' | 'move' | 'up'; x: number; y: number }
   | { type: 'set-mode'; mode: ModeKind }
   | { type: 'set-animation'; on: boolean }
+  /** The person's motion preference changed: true holds every page turn still. */
+  | { type: 'set-reduced-motion'; on: boolean }
   | { type: 'set-spreads'; spreads: SpreadsSetting }
   | { type: 'turn'; step: 1 | -1 }
   /** Shows a page, as an entry of the table of contents asks. */

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use musaeum_i18n::tr;
 use musaeum_library::{CalibreColumn, CalibreReport, Library, read_calibre};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
@@ -57,7 +58,7 @@ fn followed(library: &Library, folder: &Path) -> bool {
 
 #[tauri::command(async)]
 pub fn calibre_choose(window: WebviewWindow) -> Result<Option<String>, String> {
-    Ok(pick_folder(owner_of(&window), "Biblioteca do Calibre")?
+    Ok(pick_folder(owner_of(&window), &tr!(PickCalibreFolder))?
         .map(|path| path.to_string_lossy().into_owned()))
 }
 

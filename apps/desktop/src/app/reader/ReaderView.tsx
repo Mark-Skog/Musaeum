@@ -59,6 +59,9 @@ import { FlowReader, type Relocation } from './flow-reader';
 import { Inspector, NoteEditor, type PdfAction, type PdfActions, type ScreenRect, SelectionToolbar, UndoToast } from './annotations/AnnotationUi';
 import { AnnotationStore, draft, type Entry } from './annotations/store';
 import { type ExchangeControls, useExchange } from '../ExchangeSection';
+import { getLocale, type MessageKey, t, tn, useLocale, useT } from '../i18n';
+import { onEscape, useFocusReturn } from '../focus';
+import { onMotionChange } from '../preferences/store';
 import type { ExchangeAction, ExchangeOutcome } from '../exchange';
 
 /** What the reader has selected now, in either kind of book, with its box on the screen. */
@@ -115,49 +118,59 @@ export interface ReaderProbe {
 /** What one of a PDF's actions did: its report, nothing when cancelled, or why it failed. */
 export type PdfOutcome = { ok: true; report: PdfExportReport | PdfImportReport | null } | { ok: false; error: string };
 
-const SKIPPED_LABEL: Record<string, string> = {
-  resposta: 'respostas',
-  oculta: 'ocultas',
-  '(ilegível)': 'ilegíveis',
-  '(broken)': 'ilegíveis',
-  '(no such page)': 'em páginas que o livro não tem',
-  'página que o livro não tem': 'em páginas que o livro não tem',
-  StrikeOut: 'tachados',
-  Circle: 'círculos',
-  Stamp: 'carimbos',
-  FileAttachment: 'anexos',
-  Line: 'linhas',
-  Polygon: 'polígonos',
-  PolyLine: 'polilinhas',
-  Caret: 'marcas de inserção',
-  Sound: 'sons',
-  Redact: 'tarjas',
+/** The words for what an import left out, by the reason the host gives (a code, not words). */
+const SKIPPED_LABEL: Record<string, MessageKey> = {
+  resposta: 'reader.skipped.reply',
+  oculta: 'reader.skipped.hidden',
+  '(ilegível)': 'reader.skipped.illegible',
+  '(broken)': 'reader.skipped.illegible',
+  '(no such page)': 'reader.skipped.noPage',
+  'página que o livro não tem': 'reader.skipped.noPage',
+  StrikeOut: 'reader.skipped.StrikeOut',
+  Circle: 'reader.skipped.Circle',
+  Stamp: 'reader.skipped.Stamp',
+  FileAttachment: 'reader.skipped.FileAttachment',
+  Line: 'reader.skipped.Line',
+  Polygon: 'reader.skipped.Polygon',
+  PolyLine: 'reader.skipped.PolyLine',
+  Caret: 'reader.skipped.Caret',
+  Sound: 'reader.skipped.Sound',
+  Redact: 'reader.skipped.Redact',
 };
 
 function importText(report: PdfImportReport): string {
-  const parts = [`${report.added} ${report.added === 1 ? 'anotação trazida' : 'anotações trazidas'}`];
+  const parts = [tn('reader.import.added', report.added)];
   if (report.already > 0) {
-    parts.push(`${report.already} já ${report.already === 1 ? 'estava' : 'estavam'} no livro`);
+    parts.push(tn('reader.import.already', report.already));
   }
   const skipped = Object.entries(report.skipped).filter(([, count]) => Number(count) > 0);
   if (skipped.length > 0) {
-    parts.push(`deixadas de fora: ${skipped.map(([why, count]) => `${count} ${SKIPPED_LABEL[why] ?? why}`).join(', ')}`);
+    const list = skipped.map(([why, count]) => {
+      const label = SKIPPED_LABEL[why];
+      return t('reader.import.skippedItem', { count: Number(count), what: label === undefined ? why : t(label) });
+    });
+    parts.push(t('reader.import.skipped', { list: list.join(', ') }));
   }
   let text = parts.join('; ') + '.';
   if (report.otherDocument) {
-    text += ' O XFDF diz ser de outro PDF: confira se as anotações caíram no lugar.';
+    text += ` ${t('reader.import.otherDocument')}`;
   }
   return text;
 }
 
 function exportText(report: PdfExportReport, what: string): string {
-  const left = report.leftOut > 0 ? ` ${report.leftOut} sem lugar na página (órfãs ou do livro todo) ficaram de fora.` : '';
-  const kept = report.alreadyInPdf > 0 ? ` ${report.alreadyInPdf} já ${report.alreadyInPdf === 1 ? 'estava' : 'estavam'} no próprio PDF e não ${report.alreadyInPdf === 1 ? 'foi gravada' : 'foram gravadas'} de novo.` : '';
-  return `${what} com ${report.annotations} ${report.annotations === 1 ? 'anotação' : 'anotações'} salvo em ${report.path}.${left}${kept}`;
+  const parts = [tn('reader.export.saved', report.annotations, { what, path: report.path })];
+  if (report.leftOut > 0) {
+    parts.push(t('reader.export.leftOut', { count: report.leftOut }));
+  }
+  if (report.alreadyInPdf > 0) {
+    parts.push(tn('reader.export.alreadyInPdf', report.alreadyInPdf));
+  }
+  return parts.join(' ');
 }
 
 function lineHeightLabel(value: number): string {
-  return value === 0 ? 'Do livro' : value.toLocaleString('pt-BR', { minimumFractionDigits: 1 });
+  return value === 0 ? t('reader.lineHeight.publisher') : value.toLocaleString(getLocale(), { minimumFractionDigits: 1 });
 }
 
 /** The table of contents' entry the reader is in: the last one at or before its section. */
@@ -220,32 +233,33 @@ function TypographyPanel({
   style: ReadingStyle;
   onChange(style: ReadingStyle): void;
 }): React.JSX.Element {
+  const t = useT();
   const set = <K extends keyof ReadingStyle>(key: K, value: ReadingStyle[K]): void =>
     onChange({ ...style, [key]: value });
   return (
-    <Dialog className="typography" aria-label="Tipografia">
+    <Dialog className="typography" aria-label={t('reader.typography')}>
       <RadioGroup className="field" value={style.family} onChange={(value) => set('family', value as ReadingStyle['family'])}>
-        <Label>Fonte</Label>
+        <Label>{t('reader.font')}</Label>
         <div className="choices">
-          <Radio value="publisher" id="font-publisher" className="choice">Do livro</Radio>
-          <Radio value="serif" id="font-serif" className="choice">Serifada</Radio>
-          <Radio value="sans" id="font-sans" className="choice">Sem serifa</Radio>
+          <Radio value="publisher" id="font-publisher" className="choice">{t('reader.font.publisher')}</Radio>
+          <Radio value="serif" id="font-serif" className="choice">{t('reader.font.serif')}</Radio>
+          <Radio value="sans" id="font-sans" className="choice">{t('reader.font.sans')}</Radio>
         </div>
       </RadioGroup>
       <div className="field">
-        <span className="field-label">Tamanho</span>
+        <span className="field-label">{t('reader.size')}</span>
         <div className="stepper">
-          <Button id="font-smaller" className="button" aria-label="Diminuir a letra" isDisabled={style.size <= MIN_SIZE} onPress={() => set('size', Math.max(MIN_SIZE, style.size - 10))}>
+          <Button id="font-smaller" className="button" aria-label={t('reader.size.smaller')} isDisabled={style.size <= MIN_SIZE} onPress={() => set('size', Math.max(MIN_SIZE, style.size - 10))}>
             A−
           </Button>
           <output aria-live="polite">{style.size}%</output>
-          <Button id="font-larger" className="button" aria-label="Aumentar a letra" isDisabled={style.size >= MAX_SIZE} onPress={() => set('size', Math.min(MAX_SIZE, style.size + 10))}>
+          <Button id="font-larger" className="button" aria-label={t('reader.size.larger')} isDisabled={style.size >= MAX_SIZE} onPress={() => set('size', Math.min(MAX_SIZE, style.size + 10))}>
             A+
           </Button>
         </div>
       </div>
       <RadioGroup className="field" value={String(style.lineHeight)} onChange={(value) => set('lineHeight', Number(value))}>
-        <Label>Entrelinha</Label>
+        <Label>{t('reader.lineHeight')}</Label>
         <div className="choices">
           {LINE_HEIGHTS.map((value) => (
             <Radio key={value} value={String(value)} id={`line-${String(value).replace('.', '-')}`} className="choice">
@@ -255,19 +269,19 @@ function TypographyPanel({
         </div>
       </RadioGroup>
       <RadioGroup className="field" value={style.margin} onChange={(value) => set('margin', value as ReadingStyle['margin'])}>
-        <Label>Margens</Label>
+        <Label>{t('reader.margins')}</Label>
         <div className="choices">
-          <Radio value="narrow" id="margin-narrow" className="choice">Estreitas</Radio>
-          <Radio value="normal" id="margin-normal" className="choice">Médias</Radio>
-          <Radio value="wide" id="margin-wide" className="choice">Largas</Radio>
+          <Radio value="narrow" id="margin-narrow" className="choice">{t('reader.margins.narrow')}</Radio>
+          <Radio value="normal" id="margin-normal" className="choice">{t('reader.margins.normal')}</Radio>
+          <Radio value="wide" id="margin-wide" className="choice">{t('reader.margins.wide')}</Radio>
         </div>
       </RadioGroup>
       <RadioGroup className="field" value={style.theme} onChange={(value) => set('theme', value as ReadingStyle['theme'])}>
-        <Label>Tema</Label>
+        <Label>{t('reader.theme')}</Label>
         <div className="choices themes">
-          <Radio value="light" id="theme-light" className="choice theme-light">Claro</Radio>
-          <Radio value="sepia" id="theme-sepia" className="choice theme-sepia">Sépia</Radio>
-          <Radio value="dark" id="theme-dark" className="choice theme-dark">Escuro</Radio>
+          <Radio value="light" id="theme-light" className="choice theme-light">{t('reader.theme.light')}</Radio>
+          <Radio value="sepia" id="theme-sepia" className="choice theme-sepia">{t('reader.theme.sepia')}</Radio>
+          <Radio value="dark" id="theme-dark" className="choice theme-dark">{t('reader.theme.dark')}</Radio>
         </div>
       </RadioGroup>
     </Dialog>
@@ -281,12 +295,26 @@ export interface ReaderViewProps {
   probe?: React.MutableRefObject<ReaderProbe | null>;
   /** Where to show the book once it is open, instead of where the reading stopped: a match found in its text. */
   target?: ReaderTarget | null;
+  /** Opens the Preferences. */
+  onPreferences?(): void;
 }
 
-export function ReaderView({ book, options, onBack, probe, target = null }: ReaderViewProps): React.JSX.Element {
+export function ReaderView({ book, options, onBack, probe, target = null, onPreferences }: ReaderViewProps): React.JSX.Element {
+  const t = useT();
   const surface = useRef<HTMLDivElement>(null);
   const fixed = useRef<FixedReader | null>(null);
   const flow = useRef<FlowReader | null>(null);
+  // The person's motion preference, or the system's, applies to the book already open.
+  useEffect(
+    () =>
+      onMotionChange((reduced) => {
+        fixed.current?.setReducedMotion(reduced);
+        flow.current?.setReducedMotion(reduced);
+      }),
+    [],
+  );
+  const locale = useLocale();
+  useEffect(() => flow.current?.setLanguage(), [locale]);
   const [status, setStatus] = useState<ReaderStatus | null>(null);
   const [flowMode, setFlowMode] = useState<FlowMode>('paginated');
   const [flowAnimated, setFlowAnimated] = useState(true);
@@ -356,6 +384,9 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
   const [activeMark, setActiveMark] = useState<{ uuid: string; rect: ScreenRect } | null>(null);
   const [editing, setEditing] = useState<Entry | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  // A side panel that closes with the focus in it gives the focus back to its button.
+  useFocusReturn(tocOpen, () => document.getElementById('toc-toggle')?.focus());
+  useFocusReturn(panelOpen, () => document.getElementById('annotations-toggle')?.focus());
   const [undo, setUndo] = useState<Entry | null>(null);
   const lastColor = useRef('yellow');
   const closing = useRef(false);
@@ -372,7 +403,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
     async (action: PdfAction, path?: string): Promise<PdfOutcome> => {
       const session = fixed.current?.session;
       if (session === null || session === undefined) {
-        return { ok: false, error: 'o documento ainda não está aberto' };
+        return { ok: false, error: t('reader.notOpen') };
       }
       setPdfBusy(action);
       setPdfReport(null);
@@ -409,7 +440,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         return { ok: true, report };
       } catch (reason: unknown) {
         const message = String(reason instanceof Error ? reason.message : reason);
-        setPdfReport({ text: `Não foi possível: ${message}`, failed: true });
+        setPdfReport({ text: t('common.couldNot', { reason: message }), failed: true });
         return { ok: false, error: message };
       } finally {
         setPdfBusy(null);
@@ -542,7 +573,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                   store.load(views.map(fixedEntry));
                 }
               })
-              .catch((reason: unknown) => setNotice(`As anotações não puderam ser lidas: ${String(reason)}`));
+              .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
             invoke<OutlineItem[]>('document_outline', { session: session.id })
               .then((items) => {
                 if (!cancelled) {
@@ -600,7 +631,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
               store.load(views.map(flowEntry));
             }
           })
-          .catch((reason: unknown) => setNotice(`As anotações não puderam ser lidas: ${String(reason)}`));
+          .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
       })
       .catch((reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason)));
     return () => {
@@ -641,7 +672,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         flow.current?.goTo({ cfi: place.start });
         flow.current?.focus();
       })
-      .catch((reason: unknown) => setNotice(`O trecho encontrado não pôde ser mostrado: ${String(reason)}`));
+      .catch((reason: unknown) => setNotice(t('reader.matchUnshown', { reason: String(reason) })));
   }, [ready, target]);
 
   // The reader draws what the store has, every time it changes.
@@ -720,7 +751,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
   );
 
   const copyText = useCallback((text: string) => {
-    void navigator.clipboard.writeText(text).catch(() => setNotice('O texto não pôde ser copiado.'));
+    void navigator.clipboard.writeText(text).catch(() => setNotice(t('reader.copyFailed')));
   }, []);
 
   /** Copies a selection: its characters, or what the text layer or the OCR has under a region. */
@@ -734,19 +765,19 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         if (chosen.text !== '') {
           copyText(chosen.text);
         } else {
-          setNotice('Não há texto legível nesta região.');
+          setNotice(t('reader.region.noText'));
         }
         return;
       }
       void readRegion(chosen.region).then((read) => {
         if (read === null) {
-          setNotice('O texto desta região não pôde ser lido.');
+          setNotice(t('reader.region.unread'));
         } else if (read.text !== '') {
           copyText(read.text);
         } else if (read.pending) {
-          setNotice('As linhas desta página ainda estão sendo analisadas. Tente de novo daqui a pouco.');
+          setNotice(t('reader.region.pending'));
         } else {
-          setNotice('Não há texto legível nesta região.');
+          setNotice(t('reader.region.noText'));
         }
       });
     },
@@ -930,7 +961,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
   const position =
     kind === 'fixed'
       ? status !== null
-        ? `Página ${status.page + 1} de ${status.pageCount}`
+        ? t('reader.position.page', { page: status.page + 1, pages: status.pageCount })
         : ''
       : progress !== null
         ? `${Math.round(progress * 100)}%`
@@ -938,9 +969,9 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
 
   return (
     <div className={`reader reader-${kind}`}>
-      <header className="reader-bar" aria-label="Leitura">
+      <header className="reader-bar" aria-label={t('reader.bar')}>
         <Button id="back-to-library" className="button" onPress={() => void back()} aria-keyshortcuts="Alt+ArrowLeft">
-          ← Biblioteca
+          {t('reader.back')}
         </Button>
         <Button
           id="toc-toggle"
@@ -948,7 +979,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
           aria-expanded={tocOpen}
           onPress={() => setTocOpen((open) => !open)}
         >
-          Sumário
+          {t('reader.toc')}
         </Button>
         <div className="reader-title" title={book.path}>
           <span className="reader-title-text">{book.title}</span>
@@ -956,17 +987,17 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         </div>
         <ToggleButtonGroup
           className="segmented"
-          aria-label="Modo de leitura (C alterna)"
+          aria-label={t('reader.mode.label')}
           selectionMode="single"
           disallowEmptySelection
           selectedKeys={[mode]}
           onSelectionChange={(keys) => changeMode([...keys][0] as FlowMode)}
         >
           <ToggleButton id="paginated" className="segment" aria-keyshortcuts="C">
-            Paginado
+            {t('reader.mode.paginated')}
           </ToggleButton>
           <ToggleButton id="continuous" className="segment" aria-keyshortcuts="C">
-            Contínuo
+            {t('reader.mode.continuous')}
           </ToggleButton>
         </ToggleButtonGroup>
         <Switch
@@ -978,12 +1009,12 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
           aria-keyshortcuts="A"
         >
           <span className="switch-track" aria-hidden="true" />
-          Animação
+          {t('reader.animation')}
         </Switch>
         {kind === 'flow' && style !== null ? (
           <DialogTrigger>
-            <Button id="typography" className="button">
-              Aa
+            <Button id="typography" className="button" aria-label={t('reader.typography')}>
+              <span aria-hidden="true">Aa</span>
             </Button>
             <Popover className="popover" placement="bottom end">
               <TypographyPanel style={style} onChange={changeStyle} />
@@ -992,16 +1023,16 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         ) : null}
         {kind === 'fixed' && status !== null ? (
           <>
-            <Button className="button" aria-label="Diminuir" onPress={() => fixed.current?.send({ type: 'zoom', factor: 1 / 1.25 })}>
+            <Button className="button" aria-label={t('reader.zoom.out')} onPress={() => fixed.current?.send({ type: 'zoom', factor: 1 / 1.25 })}>
               −
             </Button>
             <output className="zoom">{Math.round(status.zoom * 100)}%</output>
-            <Button className="button" aria-label="Aumentar" onPress={() => fixed.current?.send({ type: 'zoom', factor: 1.25 })}>
+            <Button className="button" aria-label={t('reader.zoom.in')} onPress={() => fixed.current?.send({ type: 'zoom', factor: 1.25 })}>
               +
             </Button>
             <ToggleButtonGroup
               className="segmented"
-              aria-label="Páginas lado a lado"
+              aria-label={t('reader.spreads')}
               selectionMode="single"
               disallowEmptySelection
               selectedKeys={[status.spreads]}
@@ -1009,13 +1040,17 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                 fixed.current?.send({ type: 'set-spreads', spreads: [...keys][0] as 'auto' | 'single' | 'double' })
               }
             >
-              <ToggleButton id="auto" className="segment">Auto</ToggleButton>
-              <ToggleButton id="single" className="segment">1</ToggleButton>
-              <ToggleButton id="double" className="segment">2</ToggleButton>
+              <ToggleButton id="auto" className="segment">{t('reader.spreads.auto')}</ToggleButton>
+              <ToggleButton id="single" className="segment" aria-label={t('reader.spreads.single')}>
+                1
+              </ToggleButton>
+              <ToggleButton id="double" className="segment" aria-label={t('reader.spreads.double')}>
+                2
+              </ToggleButton>
             </ToggleButtonGroup>
             <ToggleButtonGroup
               className="segmented"
-              aria-label="Marcar"
+              aria-label={t('reader.tools')}
               selectionMode="single"
               disallowEmptySelection
               selectedKeys={[tool]}
@@ -1026,17 +1061,17 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                 fixed.current?.setTool(chosen);
               }}
             >
-              <ToggleButton id="text" className="segment" aria-label="Selecionar texto">
-                Texto
+              <ToggleButton id="text" className="segment" aria-label={t('reader.tool.text.label')}>
+                {t('reader.tool.text')}
               </ToggleButton>
-              <ToggleButton id="lines" className="segment" aria-label="Selecionar por linhas da imagem">
-                Linhas
+              <ToggleButton id="lines" className="segment" aria-label={t('reader.tool.lines.label')}>
+                {t('reader.tool.lines')}
               </ToggleButton>
-              <ToggleButton id="rect" className="segment" aria-label="Caixa retangular">
-                Caixa
+              <ToggleButton id="rect" className="segment" aria-label={t('reader.tool.rect.label')}>
+                {t('reader.tool.rect')}
               </ToggleButton>
-              <ToggleButton id="free" className="segment" aria-label="Traço livre">
-                Traço
+              <ToggleButton id="free" className="segment" aria-label={t('reader.tool.free.label')}>
+                {t('reader.tool.free')}
               </ToggleButton>
             </ToggleButtonGroup>
             {tool === 'lines' ? (
@@ -1050,7 +1085,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                 }}
               >
                 <span className="switch-track" aria-hidden="true" />
-                Ajustar às palavras
+                {t('reader.snap')}
               </Switch>
             ) : null}
           </>
@@ -1061,23 +1096,26 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
           aria-expanded={panelOpen}
           onPress={() => setPanelOpen((open) => !open)}
         >
-          Anotações{entries.length > 0 ? ` (${entries.length})` : ''}
+          {entries.length > 0 ? t('reader.annotations.count', { count: entries.length }) : t('reader.annotations')}
+        </Button>
+        <Button id="open-preferences" className="button" aria-label={t('prefs.title')} aria-keyshortcuts="Control+Comma" onPress={onPreferences}>
+          <span aria-hidden="true">⚙</span>
         </Button>
         <div className="reader-position" aria-live="polite">
-          <Button className="button" aria-label="Anterior" onPress={() => turn(-1)}>
+          <Button className="button" aria-label={t('reader.previous')} onPress={() => turn(-1)}>
             ‹
           </Button>
           <output id="reading-position">{position}</output>
-          <Button className="button" aria-label="Próxima" onPress={() => turn(1)}>
+          <Button className="button" aria-label={t('reader.next')} onPress={() => turn(1)}>
             ›
           </Button>
         </div>
       </header>
       <div className="reader-body">
         {tocOpen ? (
-          <nav className="toc-panel" aria-label="Sumário">
+          <nav className="toc-panel" aria-label={t('reader.toc')} onKeyDown={onEscape(() => setTocOpen(false))}>
             <Heading level={2} className="toc-heading">
-              Sumário
+              {t('reader.toc')}
             </Heading>
             {kind === 'flow' && toc.length > 0 ? (
               <TocList
@@ -1118,12 +1156,12 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
             ) : (
               <p className="toc-empty">
                 {kind === 'flow'
-                  ? 'Este livro não tem sumário.'
+                  ? t('reader.toc.noneBook')
                   : outline === null
-                    ? 'Lendo o sumário…'
+                    ? t('reader.toc.reading')
                     : book.format === 'djvu' || book.format === 'djv'
-                      ? 'O sumário de DjVu ainda não é lido.'
-                      : 'Este documento não tem sumário.'}
+                      ? t('reader.toc.djvu')
+                      : t('reader.toc.noneDocument')}
               </p>
             )}
           </nav>
@@ -1143,13 +1181,13 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
             exchange={exchange}
           />
         ) : null}
-        {!ready && error === null ? <div className="reader-loading">Abrindo…</div> : null}
+        {!ready && error === null ? <div className="reader-loading" role="status" aria-busy="true">{t('reader.opening')}</div> : null}
         {error !== null ? (
           <div className="reader-error" role="alert">
-            <p>Este livro não pôde ser aberto.</p>
+            <p>{t('reader.failed')}</p>
             <p className="error-detail">{error}</p>
             <Button className="button" onPress={() => void back()}>
-              Voltar à biblioteca
+              {t('reader.backToLibrary')}
             </Button>
           </div>
         ) : null}
@@ -1161,14 +1199,14 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
       </div>
       <ModalOverlay isOpen={link !== null} onOpenChange={(open) => !open && setLink(null)} isDismissable className="modal-overlay">
         <Modal className="modal">
-          <Dialog aria-label="Link externo">
-            <Heading slot="title">Link para fora do livro</Heading>
-            <p>Este link aponta para:</p>
+          <Dialog aria-label={t('reader.link.label')}>
+            <Heading slot="title">{t('reader.link.title')}</Heading>
+            <p>{t('reader.link.pointsTo')}</p>
             <p className="link-target">{link}</p>
             <p>
               {link !== null && isWebAddress(link)
-                ? 'O Musaeum só abre o endereço no navegador se você pedir.'
-                : 'Este endereço não é da web. Copie-o para usá-lo em outro programa.'}
+                ? t('reader.link.web')
+                : t('reader.link.notWeb')}
             </p>
             {linkError !== null ? (
               <p className="link-error" role="alert">
@@ -1188,7 +1226,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                       .catch((reason: unknown) => setLinkError(String(reason)));
                   }}
                 >
-                  Abrir no navegador
+                  {t('reader.link.open')}
                 </Button>
               ) : null}
               <Button
@@ -1201,10 +1239,10 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                   setLink(null);
                 }}
               >
-                Copiar endereço
+                {t('reader.link.copy')}
               </Button>
               <Button className="button" onPress={() => setLink(null)}>
-                Fechar
+                {t('common.close')}
               </Button>
             </div>
           </Dialog>
@@ -1259,7 +1297,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
                   if (quote !== '') {
                     copyText(quote);
                   } else {
-                    setNotice(target.annotation.quoteSource === 'none' ? 'O texto desta marca ainda está sendo lido.' : 'Esta marca não tem texto.');
+                    setNotice(target.annotation.quoteSource === 'none' ? t('reader.mark.reading') : t('reader.mark.noText'));
                   }
                 }}
                 onRemove={() => {
@@ -1286,7 +1324,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
       ) : null}
       {undo !== null ? (
         <UndoToast
-          text="Anotação removida."
+          text={t('reader.removed')}
           onUndo={() => {
             const removed = undo;
             setUndo(null);
@@ -1299,7 +1337,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         <div className="toast warning" role="alert">
           <span>{notice}</span>
           <Button className="button" onPress={() => setNotice(null)}>
-            Fechar
+            {t('common.close')}
           </Button>
         </div>
       ) : null}

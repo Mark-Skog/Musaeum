@@ -108,6 +108,8 @@ fn report() -> Report {
         generated_at: 1_795_466_405_123,
         utc_offset_minutes: -180,
         generator: "Musaeum 0.0.1".into(),
+        locale: musaeum_report::Locale::PtBr,
+        annotator: None,
         works: vec![WorkReport {
             title: "Física Básica: Mecânica".into(),
             creators: vec![Creator {

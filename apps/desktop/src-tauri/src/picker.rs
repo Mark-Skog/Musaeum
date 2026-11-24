@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use musaeum_i18n::{T, text};
 use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoCreateInstance,
@@ -22,7 +23,7 @@ use windows::core::{HSTRING, Interface, PCWSTR};
 /// What kind of file a picker shows: its name in the list, and its pattern, as `*.pdf`.
 #[derive(Clone, Copy, Debug)]
 pub struct FileKind {
-    pub name: &'static str,
+    pub name: T,
     pub pattern: &'static str,
 }
 
@@ -105,7 +106,7 @@ fn prepare(
     folder: Option<&Path>,
     extra: windows::Win32::UI::Shell::FILEOPENDIALOGOPTIONS,
 ) -> windows::core::Result<()> {
-    let name = HSTRING::from(kind.name);
+    let name = HSTRING::from(text(kind.name, &[]));
     let pattern = HSTRING::from(kind.pattern);
     let filters = [COMDLG_FILTERSPEC {
         pszName: PCWSTR(name.as_ptr()),

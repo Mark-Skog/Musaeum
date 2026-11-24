@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Radio, RadioGroup } from 'react-aria-components';
 
 import { api, type BookRow, type DuplicatePair, type Review, type SuggestionReview, type WorkMetadata } from '../api';
+import { type MessageKey, t as text, useT } from '../i18n';
 import { Frame, reasonOf } from './dialogs';
 
 const NO_FILTER = { folder: null, category: null, tag: null, collection: null, smart: null };
@@ -22,25 +23,28 @@ async function booksOf(works: number[]): Promise<BookRow[]> {
 }
 
 function BookLine({ row }: { row: BookRow }): React.JSX.Element {
+  const t = useT();
   return (
     <div className="review-book" data-document={row.documentId}>
       <span className="book-title">{row.title}</span>
       <span className="muted">
-        {row.creators ?? 'sem autor'} · {row.format.toUpperCase()} · {row.path.split(/[\\/]/).at(-1)}
+        {row.creators ?? t('batch.review.noAuthor')} · {row.format.toUpperCase()} · {row.path.split(/[\\/]/).at(-1)}
       </span>
     </div>
   );
 }
 
 function reasonText(pair: DuplicatePair): string {
-  return pair.reason.kind === 'same_identifier' ? `O mesmo ${pair.reason.scheme.toUpperCase()}: ${pair.reason.value}` : 'O mesmo título e o mesmo autor';
+  return pair.reason.kind === 'same_identifier'
+    ? text('batch.review.sameIdentifier', { scheme: pair.reason.scheme.toUpperCase(), value: pair.reason.value })
+    : text('batch.review.sameTitle');
 }
 
-const SUGGESTION_KINDS: Record<SuggestionReview['kind'], string> = {
-  same_internal_id: 'O mesmo identificador interno, com outro conteúdo',
-  same_file_id: 'O mesmo arquivo do sistema, com outro conteúdo',
-  same_path: 'Um arquivo no lugar de outro que sumiu',
-  same_fingerprint: 'O mesmo começo de um arquivo que sumiu',
+const SUGGESTION_KINDS: Record<SuggestionReview['kind'], MessageKey> = {
+  same_internal_id: 'batch.review.kind.same_internal_id',
+  same_file_id: 'batch.review.kind.same_file_id',
+  same_path: 'batch.review.kind.same_path',
+  same_fingerprint: 'batch.review.kind.same_fingerprint',
 };
 
 export interface MergeDialogProps {
@@ -51,6 +55,7 @@ export interface MergeDialogProps {
 
 /** Choosing the work that stays, and merging the others into it. */
 export function MergeDialog({ works, onClose, onMerged }: MergeDialogProps): React.JSX.Element {
+  const t = useT();
   const [loaded, setLoaded] = useState<WorkMetadata[] | null>(null);
   const [keep, setKeep] = useState<string>(String(Math.min(...works)));
   const [error, setError] = useState<string | null>(null);
@@ -77,22 +82,19 @@ export function MergeDialog({ works, onClose, onMerged }: MergeDialogProps): Rea
       .finally(() => setBusy(false));
   };
   return (
-    <Frame title="Fundir em um livro" onClose={onClose} onSubmit={merge} submitLabel="Fundir" error={error} busy={busy || loaded === null} wide>
-      <p>
-        Os {works.length} livros ficam um só. Os arquivos de todos passam para o que fica, cada um com as suas anotações, onde a leitura parou e o seu histórico; categorias, etiquetas e coleções
-        também. O que o que fica não tem é tirado dos outros. Uma fusão não se desfaz.
-      </p>
+    <Frame title={t('batch.review.merge.title')} onClose={onClose} onSubmit={merge} submitLabel={t('batch.review.merge.submit')} error={error} busy={busy || loaded === null} wide>
+      <p>{t('batch.review.merge.text', { count: works.length })}</p>
       {loaded === null ? (
-        <p className="muted">Lendo…</p>
+        <p className="muted">{t('details.reading')}</p>
       ) : (
-        <RadioGroup aria-label="O livro que fica" className="merge-choices" value={keep} onChange={setKeep}>
+        <RadioGroup aria-label={t('batch.review.keep')} className="merge-choices" value={keep} onChange={setKeep}>
           {loaded.map((work) => (
             <Radio key={work.id} value={String(work.id)} className="merge-choice" data-work={work.id}>
               <span className="radio-dot" aria-hidden="true" />
               <span className="merge-what">
                 <span className="book-title">{work.title}</span>
                 <span className="muted">
-                  {work.creators.map((credit) => credit.name).join('; ') || 'sem autor'} · {work.formats.map((format) => format.toUpperCase()).join(', ')}
+                  {work.creators.map((credit) => credit.name).join('; ') || t('batch.review.noAuthor')} · {work.formats.map((format) => format.toUpperCase()).join(', ')}
                   {work.year !== null ? ` · ${work.year}` : ''}
                 </span>
               </span>
@@ -116,6 +118,7 @@ interface Loaded {
 }
 
 export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JSX.Element {
+  const t = useT();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [merging, setMerging] = useState<number[] | null>(null);
@@ -155,21 +158,25 @@ export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JS
     work.then(done).catch((reason: unknown) => setError(reasonOf(reason)));
   };
   if (loaded === null) {
-    return <p className="empty">{error ?? 'Lendo…'}</p>;
+    return (
+      <p className="empty" aria-busy={error === null}>
+        {error ?? t('details.reading')}
+      </p>
+    );
   }
   const { review, books } = loaded;
   const lines = (work: number): React.JSX.Element[] => (books.get(work) ?? []).map((row) => <BookLine key={row.documentId} row={row} />);
   return (
-    <div className="review" aria-label="Revisar">
+    <div className="review" aria-label={t('batch.review.label')}>
       {error !== null ? (
         <p className="form-error" role="alert">
           {error}
         </p>
       ) : null}
-      {review.suggestions.length === 0 && review.duplicates.length === 0 ? <p className="empty">Nada esperando revisão.</p> : null}
+      {review.suggestions.length === 0 && review.duplicates.length === 0 ? <p className="empty">{t('batch.review.nothing')}</p> : null}
       {review.duplicates.length > 0 ? (
-        <section className="review-section" aria-label="Livros que podem ser um só">
-          <h2>Livros que podem ser um só</h2>
+        <section className="review-section" aria-label={t('batch.review.duplicates')}>
+          <h2>{t('batch.review.duplicates')}</h2>
           {review.duplicates.map((pair) => (
             <article key={pair.works.join('-')} className="review-item" data-pair={pair.works.join('-')}>
               <p className="review-reason">{reasonText(pair)}</p>
@@ -179,10 +186,10 @@ export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JS
               </div>
               <div className="modal-actions">
                 <Button className="button" onPress={() => act(api.dismissDuplicate(pair.works[0], pair.works[1]))}>
-                  São livros diferentes
+                  {t('batch.review.different')}
                 </Button>
                 <Button className="button primary" onPress={() => setMerging([...pair.works])}>
-                  Fundir…
+                  {t('batch.review.mergeButton')}
                 </Button>
               </div>
             </article>
@@ -190,11 +197,11 @@ export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JS
         </section>
       ) : null}
       {review.suggestions.length > 0 ? (
-        <section className="review-section" aria-label="Arquivos que podem ser o mesmo">
-          <h2>Arquivos que podem ser o mesmo</h2>
+        <section className="review-section" aria-label={t('batch.review.suggestions')}>
+          <h2>{t('batch.review.suggestions')}</h2>
           {review.suggestions.map((suggestion) => (
             <article key={suggestion.id} className="review-item" data-suggestion={suggestion.id}>
-              <p className="review-reason">{SUGGESTION_KINDS[suggestion.kind]}</p>
+              <p className="review-reason">{t(SUGGESTION_KINDS[suggestion.kind])}</p>
               <p className="muted">{suggestion.evidence}</p>
               <div className="review-books">
                 {lines(suggestion.candidateWorkId)}
@@ -202,10 +209,10 @@ export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JS
               </div>
               <div className="modal-actions">
                 <Button className="button" onPress={() => act(api.dismissSuggestion(suggestion.id))}>
-                  São diferentes
+                  {t('batch.review.differentFiles')}
                 </Button>
                 <Button className="button primary" onPress={() => act(api.acceptSuggestion(suggestion.id))}>
-                  É o mesmo arquivo
+                  {t('batch.review.sameFile')}
                 </Button>
               </div>
             </article>

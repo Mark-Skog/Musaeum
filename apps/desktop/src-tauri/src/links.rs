@@ -7,6 +7,7 @@
 
 use std::sync::Mutex;
 
+use musaeum_i18n::tr;
 use tauri::State;
 
 use crate::session::AppState;
@@ -89,7 +90,7 @@ pub fn open_in_browser(
     url: String,
 ) -> Result<(), String> {
     let Some(url) = browser_url(&url) else {
-        return Err("Este endereço não é um endereço da web que o Musaeum abra.".to_owned());
+        return Err(tr!(LinkNotWeb));
     };
     if state.is_e2e() {
         opened
@@ -151,19 +152,16 @@ fn open(url: &str) -> Result<(), String> {
         if result.0 as usize > 32 {
             Ok(())
         } else {
-            Err(format!(
-                "O navegador não abriu (código {}).",
-                result.0 as usize
-            ))
+            Err(tr!(BrowserDidNotOpenCode, code = result.0 as usize))
         }
     })
     .join()
-    .map_err(|_| "O navegador não abriu.".to_owned())?
+    .map_err(|_| tr!(BrowserDidNotOpen))?
 }
 
 #[cfg(not(windows))]
 fn open(_url: &str) -> Result<(), String> {
-    Err("Abrir no navegador ainda só existe no Windows.".to_owned())
+    Err(tr!(BrowserWindowsOnly))
 }
 
 #[cfg(test)]
