@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "\
 Usage: musaeum [--library DIR] [--json] COMMAND
+       musaeum --version
 
 Folders
   root add PATH [--exclude PATTERN]...   Start following a folder
@@ -168,6 +169,7 @@ pub struct Edit {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ArgsError {
     Help,
+    Version,
     Invalid(String),
 }
 
@@ -253,6 +255,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Invocation, ArgsError> {
             "--library" => library = Some(arguments.path("the library's folder")?),
             "--json" => json = true,
             "--help" | "-h" | "help" => return Err(ArgsError::Help),
+            "--version" | "-V" => return Err(ArgsError::Version),
             _ => break item,
         }
     };
@@ -488,6 +491,7 @@ mod tests {
     fn nothing_at_all_asks_for_help() {
         assert_eq!(parsed(&[]).unwrap_err(), ArgsError::Help);
         assert_eq!(parsed(&["--help"]).unwrap_err(), ArgsError::Help);
+        assert_eq!(parsed(&["--version"]).unwrap_err(), ArgsError::Version);
     }
 
     #[test]

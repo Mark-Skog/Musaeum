@@ -1,7 +1,7 @@
 //! Command line for the fixture generator.
 //!
 //! ```text
-//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow|ocr|annot]
+//! gen-fixtures [--out DIR] [--scan-pages N] [--vector-pages N] [--canary-port N] [--only flow|ocr|annot|comics|djvu]
 //! ```
 
 use std::error::Error;
@@ -50,6 +50,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             out.join("ocr-native.json"),
             gen_fixtures::ocr::truth_json(&book),
         )?;
+        report(&path, started)?;
+        return Ok(());
+    }
+
+    if only.as_deref() == Some("comics") {
+        let started = Instant::now();
+        gen_fixtures::comics::write_comic_fixtures(&out)?;
+        for name in ["comic.cbz", "comic-rar4.cbr", "comic-rar5.cbr", "manga.cbz"] {
+            report(&out.join(name), started)?;
+        }
+        return Ok(());
+    }
+
+    if only.as_deref() == Some("djvu") {
+        let started = Instant::now();
+        let path = out.join("book.djvu");
+        gen_fixtures::djvu::write_djvu_fixture(&path)?;
         report(&path, started)?;
         return Ok(());
     }

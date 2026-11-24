@@ -459,9 +459,13 @@ pub fn library_choose_root(
 }
 
 /// Starts following a folder named by path. The same as choosing it, for tests that cannot use the
-/// system's dialog.
+/// system's dialog, and only for them: a person chooses folders in the dialog, and a page that
+/// names one is not trusted to.
 #[tauri::command(async)]
 pub fn library_add_root(state: State<'_, AppState>, path: String) -> Result<LibraryInfo, String> {
+    if !state.is_e2e() {
+        return Err("a folder is only given by path under a test".to_owned());
+    }
     state.shelf.add_root(Path::new(&path))?;
     Ok(state.shelf.info())
 }

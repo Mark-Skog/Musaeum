@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use musaeum_core::{DeliveryMode, PoolConfig, PoolStats, RenderPool, encode_demand};
+use musaeum_core::{DeliveryMode, FixedFormat, PoolConfig, PoolStats, RenderPool, encode_demand};
 
-use musaeum_sandbox::{Policy, SandboxedChild, SpawnConfig};
+use musaeum_sandbox::{Documents, Policy, SandboxedChild, SpawnConfig};
 use musaeum_shm::region::duplicate_file_read_only;
 use musaeum_shm::slab::slab_len;
 use musaeum_shm::wire::{
@@ -44,11 +44,23 @@ impl Worker {
         send_geometry: bool,
         protocol: u32,
     ) -> Self {
+        Self::spawn_limited(exe, document, policy, slots, send_geometry, protocol, None)
+    }
+
+    fn spawn_limited(
+        exe: &Path,
+        document: &Path,
+        policy: Policy,
+        slots: u32,
+        send_geometry: bool,
+        protocol: u32,
+        memory_limit: Option<usize>,
+    ) -> Self {
         let mut child = musaeum_sandbox::spawn(SpawnConfig {
             exe,
             args: &[],
             policy,
-            memory_limit: None,
+            memory_limit,
         })
         .expect("the worker starts");
         let mut stdin = child.stdin.take().expect("a stdin pipe");
@@ -88,6 +100,46 @@ impl Worker {
             Some(WorkerMessage::Ready { .. }) => worker,
             other => panic!("the worker did not start: {other:?}"),
         }
+    }
+
+    /// Starts `exe` on `document` as the app's reader starts the worker of `format`: under the
+    /// policy the app gives that format, with its memory capped, and waits for it to report ready.
+    pub fn started_as_in_the_app(exe: &Path, document: &Path, format: FixedFormat) -> Self {
+        let mut worker = Self::spawn_limited(
+            exe,
+            document,
+            format.policy(),
+            4,
+            false,
+            PROTOCOL_VERSION,
+            Some(1 << 30),
+        );
+        match worker.receive() {
+            Some(WorkerMessage::Ready { .. }) => worker,
+            other => panic!("the worker did not start: {other:?}"),
+        }
+    }
+
+    /// Everything about this worker that falls short of `policy`, read from outside as the kernel
+    /// reports it: the job, the startup token, the token, the mitigations and every handle it
+    /// holds, where the only file may be `document`, read only. Prints what it read.
+    pub fn sandbox_violations(&self, policy: Policy, document: &Path) -> Vec<String> {
+        let report = self
+            .child
+            .report()
+            .expect("the worker's sandbox can be read");
+        let audit = self
+            .child
+            .audit()
+            .expect("the worker's handles can be read");
+        println!("{report:#?}\n{audit:#?}");
+        let name = document
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a document with a name");
+        let mut found = report.violations(policy);
+        found.extend(audit.violations(policy, Documents::Only(&[name])));
+        found
     }
 
     /// Starts the worker asking for the geometry, and collects it: ready, page sizes, hints.

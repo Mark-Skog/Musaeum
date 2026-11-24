@@ -1,0 +1,10 @@
+# Every executable carries the C and C++ runtimes inside it (/MT, and the same for what cc compiles:
+# Tesseract, Leptonica, DjVuLibre, libarchive, SQLite, zlib). The installed app then runs on a
+# Windows without the Visual C++ Redistributable, and a worker loads no DLL beyond the system's and
+# pdfium.dll, which links its own. ADR 0004 asked the installer to guarantee the runtime; ADR 0015
+# removes the need.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

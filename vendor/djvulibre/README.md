@@ -34,9 +34,9 @@ essa licença só para o que é vendorizado.
   nunca recebe um caminho ou URL.
 - Para achar seus catálogos de mensagens, o DjVuLibre lê o registro do Windows; dentro do sandbox
   não encontra nada, e as mensagens ficam em inglês.
-- O worker importa o runtime C++ da Microsoft (`MSVCP140.dll`, `VCRUNTIME140_1.dll`), assinado pela
-  Microsoft e portanto aceito pela política de DLLs do sandbox. O instalador precisa garantir que ele
-  esteja presente.
+- Desde a 1.0, o runtime C++ da Microsoft vai dentro do worker (`/MT`, por `.cargo/config.toml`): ele
+  não importa mais o `MSVCP140.dll` nem o `VCRUNTIME140_1.dll`, e roda num Windows sem o Visual C++
+  Redistributable (ADR 0015).
 
 ## Atualizar
 

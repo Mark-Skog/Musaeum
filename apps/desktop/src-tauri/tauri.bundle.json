@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "licenseFile": "../../../target/bundle-stage/LICENSE.txt",
+    "resources": {
+      "../../../target/bundle-stage/musaeum-render-pdf.exe": "musaeum-render-pdf.exe",
+      "../../../target/bundle-stage/musaeum-pdf-annots.exe": "musaeum-pdf-annots.exe",
+      "../../../target/bundle-stage/musaeum-render-raster.exe": "musaeum-render-raster.exe",
+      "../../../target/bundle-stage/musaeum-render-djvu.exe": "musaeum-render-djvu.exe",
+      "../../../target/bundle-stage/musaeum-ocr.exe": "musaeum-ocr.exe",
+      "../../../target/bundle-stage/musaeum-ingest.exe": "musaeum-ingest.exe",
+      "../../../target/bundle-stage/pdfium.dll": "pdfium.dll",
+      "../../../target/bundle-stage/tessdata/por.traineddata": "tessdata/por.traineddata",
+      "../../../target/bundle-stage/tessdata/eng.traineddata": "tessdata/eng.traineddata",
+      "../../../target/bundle-stage/tessdata/LICENSE": "tessdata/LICENSE",
+      "../../../target/bundle-stage/LICENSE.txt": "LICENSE.txt",
+      "../../../target/bundle-stage/THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["PortugueseBR", "English"],
+        "displayLanguageSelector": false
+      },
+      "wix": {
+        "language": ["pt-BR", "en-US"],
+        "upgradeCode": "038bf292-ffad-5c1b-985a-dbcbe8fd0452"
+      }
+    }
+  }
+}

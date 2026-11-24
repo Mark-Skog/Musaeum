@@ -76,6 +76,7 @@ fn main() {
     let result = tauri::Builder::default()
         .manage(AppState::new(options))
         .manage(links::OpenedLinks::default())
+        .manage(calibre::ChosenFolders::default())
         .manage(annotations::CharCache::default())
         .manage(book::BookState::default())
         .register_asynchronous_uri_scheme_protocol(

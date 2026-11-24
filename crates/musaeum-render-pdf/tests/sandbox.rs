@@ -525,6 +525,91 @@ fn the_real_worker_runs_with_the_token_and_mitigations_it_should_have() {
     assert_eq!(child.wait().unwrap(), 0);
 }
 
+/// The two PDFium workers as the app starts them, read from outside by the same audit the installed
+/// app is checked with (`tools/sandbox-audit`): the render worker on a book, as the reader opens
+/// it, and the annotations worker, which gets each PDF with a request and keeps none.
+#[test]
+fn the_pdfium_workers_as_the_app_starts_them_pass_the_audit() {
+    use musaeum_core::FixedFormat;
+    use musaeum_pdf_annot::client::AnnotWorkerConfig;
+    use musaeum_pdf_annot::protocol::{PROTOCOL_VERSION as ANNOT_PROTOCOL, Reply};
+    use musaeum_sandbox::Documents;
+    use musaeum_worker::harness::Worker;
+
+    let targets = Targets::new("audit");
+    assert_eq!(FixedFormat::Pdf.worker_exe(), "musaeum-render-pdf.exe");
+    let worker = Worker::started_as_in_the_app(
+        Path::new(env!("CARGO_BIN_EXE_musaeum-render-pdf")),
+        &targets.document,
+        FixedFormat::Pdf,
+    );
+    let found = worker.sandbox_violations(FixedFormat::Pdf.policy(), &targets.document);
+    assert!(found.is_empty(), "the render worker: {found:#?}");
+    drop(worker);
+
+    let config = AnnotWorkerConfig::default();
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_musaeum-pdf-annots"));
+    let mut child = musaeum_sandbox::spawn(SpawnConfig {
+        exe: &exe,
+        args: &[],
+        policy: config.policy,
+        memory_limit: Some(config.memory_limit),
+    })
+    .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let ready: Reply = musaeum_pdf_annot::protocol::read_frame(&mut stdout)
+        .unwrap()
+        .expect("the worker answers");
+    assert_eq!(
+        ready,
+        Reply::Ready {
+            protocol: ANNOT_PROTOCOL
+        }
+    );
+    let report = child.report().unwrap();
+    let audit = child.audit().unwrap();
+    println!("{report:#?}\n{audit:#?}");
+    let mut found = report.violations(config.policy);
+    found.extend(audit.violations(config.policy, Documents::Only(&[])));
+    assert!(found.is_empty(), "the annotations worker: {found:#?}");
+}
+
+/// The line the whole sandbox rests on, seen from outside: a worker starts with its main thread
+/// holding the startup token, which it needs to load its DLLs, and has dropped it by the time it says
+/// it is ready, before it reads anything from the host.
+#[test]
+fn a_worker_holds_its_startup_token_until_its_lockdown_and_never_after() {
+    let targets = Targets::new("lockdown-line");
+    let slab = new_slab();
+    let (child, stdin, stdout, _stderr) = start(
+        env!("CARGO_BIN_EXE_musaeum-render-pdf"),
+        &[],
+        Policy::Lockdown,
+        &targets.document,
+        &slab,
+        true,
+    );
+    // Loading PDFium takes milliseconds; this asks within microseconds of the start.
+    assert!(
+        child.is_impersonating().unwrap(),
+        "the main thread holds the startup token while the worker starts"
+    );
+    let mut reader = BufReader::new(stdout);
+    let frame = read_frame(&mut reader)
+        .unwrap()
+        .expect("the worker answers");
+    assert!(matches!(
+        WorkerMessage::decode(&frame).unwrap(),
+        WorkerMessage::Ready { .. }
+    ));
+    assert!(
+        !child.is_impersonating().unwrap(),
+        "ready means locked down: the startup token is gone"
+    );
+    drop(stdin);
+    assert_eq!(child.wait().unwrap(), 0);
+}
+
 /// Renders every page at one level of detail, and returns the pixels of all of them.
 fn render_all(document: &Path, pages: u32, policy: Policy) -> Vec<Vec<u8>> {
     let slab = new_slab();

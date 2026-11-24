@@ -281,6 +281,19 @@ impl Library {
             return Err(Error::Refused(tr!(NotAFolder, path = path.display())));
         }
         let lowered = lowercase_path(&path);
+        // The app writes to the library's own folders all the time. Following one of them, or a
+        // folder around them, would put what it writes among the books it must only read.
+        for own in [&self.paths.data_dir, &self.paths.cache_dir] {
+            let own = absolute_existing(own).unwrap_or_else(|_| own.clone());
+            let own_lowered = lowercase_path(&own);
+            if own_lowered.starts_with(&lowered) || lowered.starts_with(&own_lowered) {
+                return Err(Error::Refused(tr!(
+                    RootHoldsLibrary,
+                    path = path.display(),
+                    library = own.display()
+                )));
+            }
+        }
         for root in self.roots()? {
             let other = lowercase_path(&root.path);
             if lowered == other {
@@ -1152,11 +1165,13 @@ mod tests {
         }
     }
 
-    /// A library at the current schema, with something in it.
+    /// A library at the current schema, with something in it: a folder of books beside it.
     fn a_library(directory: &Path) -> PathBuf {
-        let paths = LibraryPaths::in_directory(directory);
+        let paths = LibraryPaths::in_directory(&directory.join("library"));
         let library = Library::open(paths.clone(), LibraryOptions::default()).unwrap();
-        library.add_root(directory, &[]).unwrap();
+        let books = directory.join("books");
+        fs::create_dir_all(&books).unwrap();
+        library.add_root(&books, &[]).unwrap();
         paths.library_db()
     }
 

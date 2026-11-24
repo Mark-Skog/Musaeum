@@ -4,7 +4,7 @@
 //! the folders the library follows, unless one already holds it.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use musaeum_i18n::tr;
@@ -22,6 +22,30 @@ pub const CALIBRE_PROGRESS: &str = "calibre-progress";
 /// tries again meanwhile.
 const PATIENCE: Duration = Duration::from_secs(120);
 const ROUND: Duration = Duration::from_secs(20);
+
+/// The Calibre folders the person chose in the system's dialog during this run. The page passes a
+/// folder back by its path, and only these are read: a page that names another is not trusted to.
+/// Under a test, which cannot use the dialog, any folder is.
+#[derive(Default)]
+pub struct ChosenFolders(Mutex<Vec<String>>);
+
+impl ChosenFolders {
+    fn remember(&self, path: &str) {
+        let mut chosen = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if !chosen.iter().any(|folder| folder == path) {
+            chosen.push(path.to_owned());
+        }
+    }
+
+    fn check(&self, state: &AppState, path: &str) -> Result<(), String> {
+        let chosen = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.is_e2e() || chosen.iter().any(|folder| folder == path) {
+            Ok(())
+        } else {
+            Err("this folder was not chosen in the dialog".to_owned())
+        }
+    }
+}
 
 fn library_of(state: &AppState) -> Result<Arc<Library>, String> {
     state
@@ -57,13 +81,25 @@ fn followed(library: &Library, folder: &Path) -> bool {
 }
 
 #[tauri::command(async)]
-pub fn calibre_choose(window: WebviewWindow) -> Result<Option<String>, String> {
-    Ok(pick_folder(owner_of(&window), &tr!(PickCalibreFolder))?
-        .map(|path| path.to_string_lossy().into_owned()))
+pub fn calibre_choose(
+    window: WebviewWindow,
+    chosen: State<'_, ChosenFolders>,
+) -> Result<Option<String>, String> {
+    let folder = pick_folder(owner_of(&window), &tr!(PickCalibreFolder))?
+        .map(|path| path.to_string_lossy().into_owned());
+    if let Some(folder) = &folder {
+        chosen.remember(folder);
+    }
+    Ok(folder)
 }
 
 #[tauri::command(async)]
-pub fn calibre_preview(state: State<'_, AppState>, path: String) -> Result<CalibrePreview, String> {
+pub fn calibre_preview(
+    state: State<'_, AppState>,
+    chosen: State<'_, ChosenFolders>,
+    path: String,
+) -> Result<CalibrePreview, String> {
+    chosen.check(&state, &path)?;
     let library = library_of(&state)?;
     let calibre = read_calibre(Path::new(&path)).map_err(|error| error.to_string())?;
     Ok(CalibrePreview {
@@ -101,8 +137,10 @@ struct ImportProgress {
 pub fn calibre_import(
     app: AppHandle,
     state: State<'_, AppState>,
+    chosen: State<'_, ChosenFolders>,
     path: String,
 ) -> Result<CalibreReport, String> {
+    chosen.check(&state, &path)?;
     let calibre = read_calibre(Path::new(&path)).map_err(|error| error.to_string())?;
     let tell = |phase: &'static str, report: Option<&CalibreReport>| {
         let _ = app.emit(

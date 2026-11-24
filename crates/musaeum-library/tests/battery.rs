@@ -1157,6 +1157,39 @@ fn overlapping_roots_are_refused() {
     );
 }
 
+#[test]
+fn a_folder_that_holds_the_library_or_is_inside_it_is_refused() {
+    let dir = TempDir::new();
+    let base = dir.0.join("Musaeum");
+    let paths = musaeum_library::LibraryPaths {
+        data_dir: base.join("library"),
+        cache_dir: base.join("cache"),
+    };
+    let library = Library::open(paths.clone(), common::options()).unwrap();
+    fs::create_dir_all(paths.backups_dir()).unwrap();
+    for folder in [
+        dir.0.clone(),
+        base.clone(),
+        paths.data_dir.clone(),
+        paths.backups_dir(),
+        paths.cache_dir.clone(),
+    ] {
+        match library.add_root(&folder, &[]) {
+            Err(Error::Refused(reason)) => assert!(
+                reason.contains("library") || reason.contains("biblioteca"),
+                "{}: {reason}",
+                folder.display()
+            ),
+            other => panic!("{} was taken: {other:?}", folder.display()),
+        }
+    }
+    assert!(library.roots().unwrap().is_empty(), "nothing is followed");
+    // A folder beside them is a folder of books like any other.
+    let books = dir.0.join("Livros");
+    fs::create_dir_all(&books).unwrap();
+    library.add_root(&books, &[]).unwrap();
+}
+
 // --- What a scan looks at ---
 
 #[test]

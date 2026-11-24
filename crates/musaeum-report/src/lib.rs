@@ -32,7 +32,7 @@ pub struct Report {
     pub generated_at: i64,
     /// The offset of the person's clock from UTC then, in minutes, as the dates are shown.
     pub utc_offset_minutes: i32,
-    /// What made it, as `Musaeum 0.0.1`.
+    /// What made it, as `Musaeum 1.0.0`.
     pub generator: String,
     pub works: Vec<WorkReport>,
     /// The language of its words: labels, counts, dates. Not part of what it holds.

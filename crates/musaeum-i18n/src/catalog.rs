@@ -566,6 +566,10 @@ catalog! {
         pt: "{path} se sobrepõe à pasta acompanhada {root}",
         en: "{path} overlaps the root at {root}",
     }
+    RootHoldsLibrary {
+        pt: "{path} contém os arquivos da própria biblioteca, ou está dentro deles ({library}): escolha uma pasta só de livros",
+        en: "{path} holds the library's own files, or is inside them ({library}): choose a folder of books only",
+    }
     DocumentNoFile {
         pt: "o documento {id} não tem arquivo disponível para ler",
         en: "document {id} has no file available to read",

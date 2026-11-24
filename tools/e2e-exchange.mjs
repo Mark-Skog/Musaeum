@@ -45,6 +45,8 @@ const root = resolve(import.meta.dirname, '..');
 const SCALE_ONE = 4096;
 const GENERATED_AT = 1_795_466_405_123;
 const PDF_ID = '4d7573616575d6d0e8e8a1b2c3d4e5f6';
+// The version the reports name, the app's own.
+const VERSION = JSON.parse(readFileSync(join(root, 'apps', 'desktop', 'src-tauri', 'tauri.conf.json'), 'utf8')).version;
 
 function parseArguments(argv) {
   const options = {
@@ -422,7 +424,7 @@ async function run(work) {
         markdown.includes(NOTE.replace('“aspas” → ✓', '“aspas” → ✓')) &&
         markdown.includes('**Sublinhado** · ') &&
         markdown.includes(' · p. 3 · ') &&
-        markdown.endsWith('pelo Musaeum 0.0.1.*\n'),
+        markdown.endsWith(`pelo Musaeum ${VERSION}.*\n`),
       { order, head: markdown.slice(0, 600) },
     );
     const readerPdf = await exchange(main, 'reader', 'report-pdf', files.readerPdf, GENERATED_AT);

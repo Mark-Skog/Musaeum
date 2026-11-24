@@ -1,6 +1,6 @@
 #!/bin/sh
 # Dependencies only change through these files, so that is the only time this has to run.
 # Enable it once per clone with: git config core.hooksPath .githooks
-if git diff --cached --name-only | grep -qE '(^|/)(Cargo\.lock|package-lock\.json|deny\.toml|third-party\.json)$'; then
+if git diff --cached --name-only | grep -qE '(^|/)(Cargo\.lock|package-lock\.json|deny\.toml|third-party\.json|THIRD-PARTY-NOTICES\.md|tauri\.conf\.json)$'; then
   exec node tools/check-licenses.mjs
 fi

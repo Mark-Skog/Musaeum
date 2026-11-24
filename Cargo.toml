@@ -27,11 +27,12 @@ members = [
     "tools/gen-fixtures",
     "tools/library-bench",
     "tools/pool-bench",
+    "tools/sandbox-audit",
     "tools/visual-check",
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"

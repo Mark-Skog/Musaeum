@@ -31,6 +31,7 @@
 #[cfg(not(windows))]
 compile_error!("musaeum-sandbox only implements Windows sandboxing in Phase 0.");
 
+pub mod audit;
 mod command_line;
 mod desktop;
 pub mod inspect;
@@ -40,6 +41,7 @@ mod spawn;
 pub mod target;
 mod token;
 
+pub use audit::{Documents, HeldHandle, ProcessAudit};
 pub use inspect::{SandboxReport, TokenReport};
 pub use job::JobReport;
 pub use mitigation::MitigationReport;

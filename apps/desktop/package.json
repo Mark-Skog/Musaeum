@@ -1,7 +1,7 @@
 {
   "name": "musaeum-desktop",
   "private": true,
-  "version": "0.0.1",
+  "version": "1.0.0",
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "test": "vitest run",
     "tauri": "tauri",
     "build:app": "cargo build --release -p musaeum-render-pdf -p musaeum-render-raster -p musaeum-render-djvu -p musaeum-ocr-worker -p gen-fixtures && cargo build --release -p musaeum-library --bin musaeum-ingest && tauri build --no-bundle",
-    "bench": "node ../../tools/run-bench.mjs"
+    "bench": "node ../../tools/run-bench.mjs",
+    "build:bundle": "npm run build:app && node ../../tools/stage-bundle.mjs && tauri build --config src-tauri/tauri.bundle.json"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",

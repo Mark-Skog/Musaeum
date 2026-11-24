@@ -2,9 +2,46 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-O projeto chegou ao **marco Beta** do Plano Diretor (o fim da Fase 6, a organização da biblioteca),
-depois do **marco Alpha** (uma biblioteca de uso diário com o leitor integrado), das anotações de texto
-da Fase 4 e das anotações sobre livros escaneados da Fase 5. O que existe hoje: a biblioteca, que segue
+**Versão 1.0.0**, para Windows 10 e 11 (x64). O histórico das versões está no
+[`CHANGELOG.md`](CHANGELOG.md), e como uma versão é construída, conferida e assinada, em
+[`docs/release.md`](docs/release.md).
+
+## Instalar
+
+Baixe `Musaeum_1.0.0_x64-setup.exe` e execute: ele instala só para o seu usuário, sem pedir
+administrador, em português do Brasil ou em inglês. Para várias máquinas há também um MSI para a máquina
+toda (`Musaeum_1.0.0_x64_pt-BR.msi` ou `..._en-US.msi`). Nada mais é preciso: o WebView2 já vem no
+Windows 11 (numa máquina sem ele, o instalador o baixa da Microsoft), e o runtime do Visual C++ vai dentro
+de cada executável. Desinstalar apaga o programa, não a biblioteca, as anotações nem as preferências.
+
+Nesta versão os instaladores não são assinados: o Windows pode avisar que o editor não é conhecido. Confira
+o SHA-256 do arquivo baixado com o publicado junto com ele (`Get-FileHash arquivo -Algorithm SHA256`).
+
+## O que o Musaeum garante
+
+- **Os livros são só lidos.** O Musaeum nunca grava numa pasta que a biblioteca acompanha: nem o banco, nem
+  o cache, nem uma exportação, nem um relatório, nem uma cópia anotada de um PDF. A biblioteca, o cache e as
+  preferências ficam em `%LOCALAPPDATA%\Musaeum` (ou na pasta dada com `--library`), e ela recusa
+  acompanhar uma pasta que contenha esses arquivos. Um arquivo só muda por uma ação explícita da pessoa na
+  linha de comando (`musaeum move`), com diário e desfazer.
+- **Nada se perde.** Um arquivo que some fica ausente com tudo o que estava ligado a ele; uma anotação que
+  não acha mais o seu trecho fica órfã, listada, nunca apagada; o banco recusa apagar o que perderia
+  dados.
+- **Todo arquivo de livro é tratado como hostil.** Cada formato é lido num processo isolado, com um token
+  restrito de integridade baixa, mitigações do processo, um job object e uma estação de janelas própria:
+  sem rede, sem abrir arquivos por caminho, sem iniciar processos. Os de quadrinhos, DjVu, OCR e ingestão
+  também não alcançam o win32k e só carregam DLLs da Microsoft. Os testes e o app instalado conferem isso
+  de fora (`tools/sandbox-audit`). Os livros fluidos são normalizados antes de serem mostrados, sem
+  scripts, cada um numa origem própria que não alcança os comandos do app.
+- **Sem rede.** O app não acessa a rede. Os idiomas opcionais do OCR são baixados por um script, à parte,
+  e só são usados depois de conferido o SHA-256.
+
+## O que existe
+
+O projeto cumpriu o Plano Diretor até a Fase 8: o **marco Alpha** (uma biblioteca de uso diário com o
+leitor integrado), as anotações de texto da Fase 4 e as de livros escaneados da Fase 5, o **marco Beta**
+(a organização da biblioteca, na Fase 6), o intercâmbio de anotações da Fase 7 e, na Fase 8, as
+preferências, os dois idiomas, a acessibilidade e esta versão. O que existe hoje: a biblioteca, que segue
 as pastas escolhidas e lista os livros em capas ou em lista, com busca instantânea nos títulos ou no
 texto dos livros (com o trecho achado, a página ou a seção, e o livro aberto ali), e os filtra por pasta,
 por uma árvore de categorias e subcategorias, por etiquetas, por coleções feitas à mão (na ordem que a
@@ -46,10 +83,34 @@ As decisões e os números de cada fase estão em
 [`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md),
 [`docs/adr/0011-fase-6-parte-2.md`](docs/adr/0011-fase-6-parte-2.md),
 [`docs/adr/0012-fase-7-parte-1.md`](docs/adr/0012-fase-7-parte-1.md),
-[`docs/adr/0013-fase-7-parte-2.md`](docs/adr/0013-fase-7-parte-2.md) e
-[`docs/adr/0014-fase-8-parte-1.md`](docs/adr/0014-fase-8-parte-1.md).
+[`docs/adr/0013-fase-7-parte-2.md`](docs/adr/0013-fase-7-parte-2.md),
+[`docs/adr/0014-fase-8-parte-1.md`](docs/adr/0014-fase-8-parte-1.md) e
+[`docs/adr/0015-fase-8-parte-2-release-1-0.md`](docs/adr/0015-fase-8-parte-2-release-1-0.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
+
+## A arquitetura
+
+```text
+ musaeum-desktop.exe (Tauri 2)                       processos isolados, um por tarefa
+ ┌──────────────────────────────────────────┐        ┌──────────────────────────────────────┐
+ │ WebView2: a página do app (React, React  │        │ musaeum-render-pdf      PDFium       │
+ │ Aria), o compositor WebGL2 num Worker,   │  tiles │ musaeum-pdf-annots      PDFium       │
+ │ e cada livro fluido numa origem          │◄──────►│ musaeum-render-raster   libarchive   │
+ │ própria, sem IPC                         │  shm   │ musaeum-render-djvu     DjVuLibre    │
+ ├──────────────────────────────────────────┤ + pipe │ musaeum-ocr             Tesseract    │
+ │ o host em Rust: comandos que conferem    │        │ musaeum-ingest          metadados,   │
+ │ o que a página pede, a biblioteca        │        │                         normalizador │
+ │ (SQLite, Tantivy), os tiles, o cache     │        └──────────────────────────────────────┘
+ └──────────────────────────────────────────┘          token restrito, integridade baixa,
+                                                       job object, mitigações, sem rede
+```
+
+O host é o único que abre arquivos: entrega a cada worker um handle só de leitura do livro, ou os bytes
+pelo pipe, e trata cada resposta como vinda de um atacante. A página do app só fala com o host pelos
+comandos dele, cada um conferindo o que recebe; ela não pode dar um caminho para ler ou gravar (os
+diálogos do sistema dão os caminhos), e das permissões do próprio Tauri só tem a de ouvir eventos. O
+núcleo (`crates/`) não depende do Tauri: a CLI usa a mesma biblioteca.
 
 ## Estrutura
 
@@ -129,6 +190,12 @@ tools/
   e2e-beta.mjs         Testa na janela real a Beta: vários livros, revisão e fusão, texto, Calibre
   e2e-pdf-annotations.mjs  Testa na janela real as anotações levadas ao PDF e trazidas dele, e o XFDF
   e2e-exchange.mjs     Testa na janela real o JSON-LD nos dois sentidos e os relatórios de estudo
+  e2e-preferences.mjs  Testa na janela real as Preferências, os dois idiomas, o tema e o teclado
+  e2e-ipc.mjs          Pede ao host, da página do app aberto sem --e2e, o que uma página hostil pediria
+  sandbox-audit/       Audita de fora o sandbox de cada worker de um app em execução
+  stage-bundle.mjs     Junta o que o instalador leva e recusa um que pediria o runtime do Visual C++
+  smoke-bundle.mjs     Instala, roda, audita e desinstala os instaladores, fora do repositório
+  third-party-notices.mjs  Escreve o THIRD-PARTY-NOTICES.md a partir dos lockfiles e do vendor
   reader-check.mjs     Testa o leitor fluido sem janela, num Chrome headless, em livros normalizados
   lib/cdp.mjs          O que os testes de janela usam para falar com o WebView2 pelo CDP
   lib/clipboard.mjs    A área de transferência nos testes de janela, guardada antes e reposta depois
@@ -139,13 +206,18 @@ tools/
   measure-memory.mjs   Mede a RAM do app inteiro
   test-cascade.mjs     Testa a escolha automática do caminho de entrega no app real
   test-epub-security.mjs  Abre o EPUB hostil no app real, com cada barreira isolada
-  check-licenses.mjs   Confere as licenças de todas as dependências
+  check-licenses.mjs   Confere as licenças de todas as dependências e os avisos de terceiros
+docs/
+  adr/                 As decisões e as medições de cada fase
+  release.md           Como uma versão é construída, conferida e assinada
 ```
 
-## Como rodar
+## Como construir e rodar
 
 Pré-requisitos: Rust (a versão é fixada em `rust-toolchain.toml`), Visual Studio Build Tools
-com C++, Node.js e o runtime do WebView2, que já vem no Windows 11.
+com C++ e o Windows SDK, Node.js 24, o `cargo-deny` (`cargo install cargo-deny`) e o runtime do
+WebView2, que já vem no Windows 11. O runtime do C e do C++ é ligado estaticamente em todos os
+executáveis (`.cargo/config.toml`).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\fetch-pdfium.ps1
@@ -153,12 +225,15 @@ powershell -ExecutionPolicy Bypass -File tools\fetch-ocr.ps1
 powershell -ExecutionPolicy Bypass -File tools\fetch-fonts.ps1
 
 cd apps\desktop
-npm install
+npm ci
 npm run build:app
 cd ..\..
 
 .\target\release\gen-fixtures.exe --out fixtures
 ```
+
+`npm run build:app` constrói o app e os workers em `target\release`; `npm run build:bundle` faz o mesmo
+e depois os instaladores, em `target\release\bundle` ([`docs/release.md`](docs/release.md)).
 
 Abrir o app:
 
@@ -601,9 +676,22 @@ o host duplicou para ele: um handle somente leitura do documento e a memória co
 `tests/sandbox.rs` prova isso tentando: `sandbox-probe` se comporta como um worker comprometido,
 e cada tentativa negada dentro do sandbox precisa dar certo fora dele.
 
-Os workers de quadrinhos e DjVu não carregam DLL nenhuma de terceiros, então rodam com uma política
-ainda mais estrita: sem win32k e sem DLLs que a Microsoft não assinou. O do PDF não pode, porque o
-`pdfium.dll` atual usa o user32.
+Os workers de quadrinhos, DjVu, OCR e ingestão não carregam DLL nenhuma de terceiros, então rodam com uma
+política ainda mais estrita: sem win32k e sem DLLs que a Microsoft não assinou. Os dois do PDFium (o
+render e o das anotações do PDF) não podem, porque o `pdfium.dll` atual usa o user32.
+
+Cada worker tem o seu `tests/sandbox.rs`, que o inicia como o app o inicia e o lê de fora, como o kernel o
+descreve (`musaeum_sandbox::ProcessAudit`): o token, as mitigações, o job, cada handle que ele segura e
+cada DLL que ele carregou. Nenhum pode segurar um arquivo que possa mudar, um arquivo que o host não lhe
+deu, uma chave gravável ou do usuário, outro processo, um token, uma seção com nome ou a área de trabalho
+da pessoa, nem ter uma DLL de fora do Windows e da própria pasta. Um programa que injeta código em todo
+processo (alguns antivírus, o Windhawk) entra por alguns milissegundos nos workers do PDFium ao nascerem;
+os outros quatro o barram. Quem usa um desses pode excluir `musaeum-*.exe` nele.
+`tools/sandbox-audit` faz a mesma leitura nos workers de um app em execução, o instalado inclusive:
+
+```powershell
+.\target\release\sandbox-audit.exe --under "$env:LOCALAPPDATA\Musaeum"
+```
 
 `--no-sandbox` existe só para medir o custo do sandbox e exige `--bench`.
 
@@ -627,11 +715,43 @@ normalizado sem nenhuma outra barreira.
 ## Testes
 
 ```powershell
-cargo test --workspace
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 cd apps\desktop; npm test; npx tsc --noEmit; cd ..\..
 node --test tools\lib\spdx.test.mjs
 node tools\check-licenses.mjs
+cargo deny check advisories
+```
+
+O `npm test` inclui a paridade dos dois idiomas (`src/app/i18n/i18n.test.ts`), a procura de palavras
+escritas fora dos catálogos e de botões sem nome (`checks/strings.test.mjs`) e o contraste WCAG AA dos dois
+temas, lido do próprio `app.css` (`checks/contrast.test.mjs`); no Rust, o `musaeum-i18n` confere as
+mensagens do lado do host. `check-licenses.mjs` confere também que o `THIRD-PARTY-NOTICES.md` está em dia.
+
+Cada worker tem um teste `tests/sandbox.rs` que o inicia como o app o inicia e o audita de fora: o token,
+as mitigações, o job e cada handle que ele segura. O do PDF (`musaeum-render-pdf/tests/sandbox.rs`)
+também faz o papel de um worker comprometido e tenta, um a um, ler e gravar arquivos, abrir a rede,
+iniciar processos, abrir objetos com nome, ler o registro, a área de transferência e a tela.
+
+As passadas na janela real, com a máquina livre (cada uma espera um minuto sem uso e para se alguém usar o
+computador), depois de `npm run build:app` e `cargo build --release -p musaeum-cli -p visual-check`:
+
+```powershell
+node tools\e2e-preferences.mjs
+node tools\e2e-exchange.mjs
+node tools\e2e-pdf-annotations.mjs
+node tools\e2e-annotations.mjs --phase fixtures
+node tools\e2e-annotations.mjs --phase ocr
+node tools\e2e-beta.mjs --phase synthetic
+node tools\e2e-taxonomy.mjs
+node tools\e2e-ipc.mjs
+```
+
+E a do instalador, que instala, roda e desinstala ([`docs/release.md`](docs/release.md)):
+
+```powershell
+node tools\smoke-bundle.mjs
 ```
 
 Os testes de integração em `crates/musaeum-render-pdf/tests/` usam processos reais, memória
@@ -661,7 +781,47 @@ node tools\test-cascade.mjs
 node tools\test-epub-security.mjs
 ```
 
-## Licenças
+## Limitações conhecidas da 1.0
+
+- **Só Windows**, 10 e 11, x64. O portão da Fase 0 foi aceito só para o Windows: macOS, Linux, uma GPU
+  integrada e uma tela de 120 Hz não foram medidos. Não há versão para iOS ou Android, nem leitura de
+  livros com DRM.
+- **O worker do PDF ainda alcança o win32k.** O `pdfium.dll` pré-compilado importa o `user32`, então os
+  workers do PDFium rodam no sandbox sem a mitigação do win32k e sem exigir DLLs da Microsoft; os outros
+  quatro têm as duas. Uma build própria do PDFium resolve, e fica para depois da 1.0.
+- **O caminho de entrega mais rápido** depende de um comportamento do WebView2 que a Microsoft não
+  documenta (um buffer transferido a um Worker continua memória viva). O app o testa a cada início e recai
+  nos outros dois caminhos.
+- **PDFs cifrados** têm as anotações lidas e trazidas, mas não recebem anotações numa cópia. PDFs
+  truncados abrem até onde o PDFium os repara.
+- **O OCR** vem com o português e o inglês; outros idiomas são baixados por `tools\fetch-ocr.ps1`. Num
+  escaneado de duas páginas por imagem, achar as linhas leva até cerca de 65 ms, acima da meta de 50 ms.
+  Uma página escaneada não se cancela no meio da decodificação da imagem (cerca de 18 ms).
+- **Texto que corre na vertical** no espaço do próprio PDF não se seleciona por arrasto.
+- **A busca no texto** dobra maiúsculas e acentos, mas não tem radicais ("livro" não acha "livros").
+- **Fusões de obras e exclusões** de categorias, etiquetas e coleções não se desfazem (pedem confirmação).
+- **Dois idiomas, duas formas de plural**; mensagens que só aparecem com o programa inconsistente ficam
+  em inglês, depois de uma frase no idioma da pessoa.
+- **Os instaladores desta versão não são assinados**; o procedimento para assinar está em
+  [`docs/release.md`](docs/release.md). A linha de comando (`musaeum.exe`) não vai no instalador: ela
+  se constrói do código.
+
+## Créditos e licenças
+
+O Musaeum é GPL-3.0-or-later (`LICENSE`). Ele é feito sobre o trabalho de muitos outros, que o
+instalador credita em `THIRD-PARTY-NOTICES.md`, com o texto de cada licença:
+[PDFium](https://pdfium.googlesource.com/pdfium/) (pela build do projeto
+[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)),
+[Tesseract](https://github.com/tesseract-ocr/tesseract) e [Leptonica](http://www.leptonica.org/), os
+modelos [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast),
+[DjVuLibre](https://djvu.sourceforge.net/), [libarchive](https://www.libarchive.org/),
+[foliate-js](https://github.com/johnfactotum/foliate-js), as fontes
+[Noto](https://notofonts.github.io/) (SIL Open Font License 1.1), [Tauri](https://tauri.app/),
+[React](https://react.dev/) e [React Aria](https://react-spectrum.adobe.com/react-aria/),
+[SQLite](https://sqlite.org/) e [Tantivy](https://github.com/quickwit-oss/tantivy), e as crates Rust e os
+pacotes npm listados lá.
+
+### A verificação das licenças
 
 O projeto é GPL-3.0-or-later, e `deny.toml` lista as licenças aceitas nas dependências. Qualquer
 outra licença reprova a verificação, então uma licença nova exige uma decisão. Em cada clone,
@@ -671,6 +831,8 @@ ative o hook que roda a verificação quando uma dependência muda:
 git config core.hooksPath .githooks
 ```
 
-A verificação precisa do `cargo-deny` (`cargo install cargo-deny`). As fontes dos relatórios em PDF
+O `THIRD-PARTY-NOTICES.md` é escrito por `node tools\third-party-notices.mjs`, a partir do
+`Cargo.lock`, do `package-lock.json` e do `vendor/third-party.json`, e a verificação falha se ele não
+estiver em dia. Ela precisa do `cargo-deny` (`cargo install cargo-deny`). As fontes dos relatórios em PDF
 (Noto, baixadas por `tools/fetch-fonts.ps1`) estão sob a SIL Open Font License 1.1, aceita só para
 fontes vendorizadas.

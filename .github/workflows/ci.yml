@@ -23,6 +23,11 @@ jobs:
         run: cargo install cargo-deny --locked --version 0.20.2
       - name: Check licenses
         run: node tools/check-licenses.mjs
+      - name: Check for known vulnerabilities (RustSec)
+        run: cargo deny check advisories
+      - name: Check the npm packages for known vulnerabilities
+        working-directory: apps/desktop
+        run: npm audit --audit-level=low
       - name: Test the license checker
         run: node --test tools/lib/spdx.test.mjs
       - name: Fetch PDFium

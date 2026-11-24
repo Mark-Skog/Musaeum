@@ -104,9 +104,15 @@ fn policy_with(script: &str) -> String {
         "base-uri 'none'".to_owned(),
         "form-action 'none'".to_owned(),
         "manifest-src 'none'".to_owned(),
-        "frame-ancestors http://tauri.localhost https://tauri.localhost tauri://localhost \
-         http://localhost:1420"
-            .to_owned(),
+        // The app's own page, and the development server only in a development build.
+        if cfg!(debug_assertions) {
+            "frame-ancestors http://tauri.localhost https://tauri.localhost tauri://localhost \
+             http://localhost:1420"
+                .to_owned()
+        } else {
+            "frame-ancestors http://tauri.localhost https://tauri.localhost tauri://localhost"
+                .to_owned()
+        },
     ]
     .join("; ")
 }
@@ -503,6 +509,11 @@ mod tests {
         }
         assert!(!directive("script-src").contains("unsafe-inline"));
         assert!(!directive("script-src").contains("'self'"));
+        assert_eq!(
+            directive("frame-ancestors").contains("localhost:1420"),
+            cfg!(debug_assertions),
+            "the development server may frame a book only in a development build"
+        );
     }
 
     #[test]

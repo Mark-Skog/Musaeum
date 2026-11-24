@@ -37,6 +37,9 @@ const RING_CAPACITY: u32 = 64;
 const RING_WINDOW: u32 = 16;
 /// Committed memory allowed per render worker, not counting the shared slab.
 const WORKER_MEMORY_LIMIT: usize = 2 << 30;
+/// The most render workers one document gets. The page asks for its number, and a page is not
+/// trusted to keep it sensible.
+const MAX_WORKERS: usize = 16;
 /// How long workers get to open a document.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -264,6 +267,23 @@ pub fn open_session(
     state: State<'_, AppState>,
     args: OpenSessionArgs,
 ) -> Result<SessionInfo, OpenSessionError> {
+    // A page can name any path, so the host opens only what it shows anyway: a book of the
+    // library, or the document named on the command line. A test or a benchmark opens what it
+    // likes. Checked before anything is read, and before the open book is closed.
+    // A benchmark measures opening a document from scratch, so it does not use the library.
+    let known = match state.library() {
+        Some(library) if state.options.bench.is_none() => {
+            reading::look_up(&library, &args.document)
+        }
+        _ => reading::Known::default(),
+    };
+    let named = state.options.document.as_deref() == Some(args.document.as_path());
+    if known.file.is_none() && !named && !state.is_e2e() && state.options.bench.is_none() {
+        return Err(OpenSessionError::other(format!(
+            "{} is neither a book of the library nor the document the app was started with",
+            args.document.display()
+        )));
+    }
     stop_and_release(&window, &state);
     // A book open in the reader: the full-text indexer gives way.
     state.shelf.set_reading(true);
@@ -277,17 +297,10 @@ pub fn open_session(
     let worker_exe = std::env::current_exe()
         .map_err(|error| OpenSessionError::other(format!("locating the app: {error}")))?
         .with_file_name(format.worker_exe());
-    // A benchmark measures opening a document from scratch, so it does not use the library.
-    let known = match state.library() {
-        Some(library) if state.options.bench.is_none() => {
-            reading::look_up(&library, &args.document)
-        }
-        _ => reading::Known::default(),
-    };
     let config = PoolConfig {
         worker_exe,
         document: args.document.clone(),
-        worker_count: args.workers,
+        worker_count: args.workers.clamp(1, MAX_WORKERS),
         process_memory_limit: Some(WORKER_MEMORY_LIMIT),
         policy: if state.options.no_sandbox {
             Policy::Unrestricted

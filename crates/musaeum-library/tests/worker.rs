@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use common::{Fixture, TempDir, epub, ingest_config, options, pdf, pdf_with_id};
 use musaeum_ingest::protocol::{Format, PROTOCOL_VERSION, Reply, Request, read_frame, write_frame};
 use musaeum_library::{IngestConfig, LibraryOptions};
-use musaeum_sandbox::{Policy, SpawnConfig, spawn};
+use musaeum_sandbox::{Documents, Policy, SpawnConfig, spawn};
 use musaeum_shm::region::duplicate_file_read_only;
 use std::os::windows::io::AsHandle;
 
@@ -52,6 +52,17 @@ fn the_worker_runs_with_everything_locked_and_still_reads_a_book() {
     assert!(report.mitigations.strict_handle_checks);
     assert!(report.mitigations.control_flow_guard);
     assert!(report.mitigations.image_load_restricted);
+    // Read from outside as the installed app is checked (tools/sandbox-audit): no file at all yet.
+    let policy = IngestConfig::default().policy;
+    assert_eq!(policy, Policy::LockdownParser);
+    let mut found = report.violations(policy);
+    found.extend(
+        child
+            .audit()
+            .unwrap()
+            .violations(policy, Documents::Only(&[])),
+    );
+    assert!(found.is_empty(), "once ready: {found:#?}");
 
     let file = File::open(&path).unwrap();
     let handle = duplicate_file_read_only(&file, child.as_handle()).unwrap();
@@ -70,6 +81,12 @@ fn the_worker_runs_with_everything_locked_and_still_reads_a_book() {
     };
     assert_eq!(extracted.title.as_deref(), Some("Um Título"));
     assert_eq!(extracted.dc_identifier.as_deref(), Some("urn:x:1"));
+
+    // The book came as a handle with the request, and went with the answer.
+    let audit = child.audit().unwrap();
+    println!("{audit:#?}");
+    let found = audit.violations(policy, Documents::Only(&[]));
+    assert!(found.is_empty(), "after a book: {found:#?}");
 }
 
 /// A library whose worker is the one that misbehaves in this way.

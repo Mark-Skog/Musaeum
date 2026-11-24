@@ -26,6 +26,7 @@ use windows_sys::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
+use crate::audit::ProcessAudit;
 use crate::command_line::{command_line, minimal_environment, wide};
 use crate::desktop::sandbox_desktop_path;
 use crate::inspect::{SandboxReport, read_report, thread_is_impersonating};
@@ -120,6 +121,11 @@ impl SandboxedChild {
     /// the process says it is ready.
     pub fn is_impersonating(&self) -> io::Result<bool> {
         thread_is_impersonating(self.main_thread.as_handle())
+    }
+
+    /// Reads, as anyone outside could, its token, mitigations and every handle it holds.
+    pub fn audit(&self) -> io::Result<ProcessAudit> {
+        ProcessAudit::of(self.process.as_handle())
     }
 
     /// Reads back what this process really runs with.

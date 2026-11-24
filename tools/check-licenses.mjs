@@ -5,6 +5,8 @@
 //
 //   node tools/check-licenses.mjs
 //
+// It also checks that THIRD-PARTY-NOTICES.md is what tools/third-party-notices.mjs would write.
+//
 // The pre-commit hook in .githooks runs this when a dependency changes, and so does CI.
 
 import { spawnSync } from 'node:child_process';
@@ -115,9 +117,20 @@ function checkVendored() {
   return `${manifest.components.length} components${fetchedNote}`;
 }
 
+/** THIRD-PARTY-NOTICES.md, the notices the installer carries, has to say what the lockfiles say. */
+function checkNotices() {
+  const run = spawnSync(process.execPath, [join(root, 'tools', 'third-party-notices.mjs'), '--check'], { cwd: root, encoding: 'utf8' });
+  if (run.status !== 0) {
+    failures.push(`THIRD-PARTY-NOTICES.md: ${run.stderr.trim() || run.stdout.trim()}`);
+    return 'out of date';
+  }
+  return run.stdout.trim();
+}
+
 console.log(`Rust: ${checkRust()}`);
 console.log(`npm: ${checkNpm()}`);
 console.log(`Vendored: ${checkVendored()}`);
+console.log(`Notices: ${checkNotices()}`);
 
 if (failures.length > 0) {
   console.error('\nLicense check failed:');

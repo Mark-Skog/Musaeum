@@ -24,6 +24,10 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
+        Err(ArgsError::Version) => {
+            println!("musaeum {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
         Err(ArgsError::Invalid(message)) => {
             eprintln!("musaeum: {message}\n\n{USAGE}");
             return ExitCode::from(2);
