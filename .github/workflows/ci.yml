@@ -4,7 +4,17 @@ name: CI
 
 on:
   push:
+    paths-ignore:
+      - 'README.md'
+      - 'README.pt-BR.md'
+      - 'images/**'
+      - '.github/FUNDING.yml'
   pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'README.pt-BR.md'
+      - 'images/**'
+      - '.github/FUNDING.yml'
 
 permissions:
   contents: read
@@ -33,6 +43,12 @@ jobs:
       - name: Fetch PDFium
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File tools\fetch-pdfium.ps1
+      - name: Fetch OCR (Tesseract, Leptonica, and models)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools\fetch-ocr.ps1
+      - name: Fetch report fonts (Noto)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools\fetch-fonts.ps1
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm ci
