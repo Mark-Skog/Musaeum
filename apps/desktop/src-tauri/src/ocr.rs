@@ -442,8 +442,11 @@ fn read_region_by_ocr(
                 words: encode_line(text),
             })
             .collect();
-        if let Err(error) = library.store_ocr_lines(&blake3, found.page, reading, &records) {
-            eprintln!("what the OCR read could not be kept: {error}");
+        match library.store_ocr_lines(&blake3, found.page, reading, &records) {
+            // The file's text in the index now has fewer lines than the cache: it is read again,
+            // giving way to the reader while the book is open.
+            Ok(()) => state.shelf.wake_fulltext(),
+            Err(error) => eprintln!("what the OCR read could not be kept: {error}"),
         }
         read.extend(missing.into_iter().zip(fresh));
     }
@@ -823,6 +826,10 @@ mod tests {
             confidence: 90.0,
             flipped: true,
         };
+        // The shape `0005_ocr_line.sql` documents, which the full-text index reads too.
+        let kept: Value = serde_json::from_str(&encode_line(&text)).unwrap();
+        assert_eq!(kept["words"][0][0], "Olá");
+        assert_eq!(kept["words"][1][0], "\"mundo\"");
         assert_eq!(decode_line(&encode_line(&text)), Some(text));
         assert_eq!(decode_line("[1, 2]"), None);
         assert_eq!(

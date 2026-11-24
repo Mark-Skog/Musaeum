@@ -1,5 +1,5 @@
 {
-  "comment": "What is in the app without a package manager to report it. tools/check-licenses.mjs checks each entry against the same list of licenses as everything else. A build that ships these has to carry the notices in the files named here. `fetched` means the file comes from tools/fetch-pdfium.ps1 or tools/fetch-ocr.ps1 and is not in the repository.",
+  "comment": "What is in the app without a package manager to report it. tools/check-licenses.mjs checks each entry against the same list of licenses as everything else. A build that ships these has to carry the notices in the files named here. `fetched` means the file comes from tools/fetch-pdfium.ps1, tools/fetch-ocr.ps1 or tools/fetch-fonts.ps1 and is not in the repository.",
   "components": [
     {
       "name": "foliate-js",
@@ -139,6 +139,12 @@
       "name": "tessdata_fast 4.1.0, the por and eng models, in tessdata/",
       "license": "Apache-2.0",
       "file": "vendor/tesseract/tessdata/LICENSE",
+      "fetched": true
+    },
+    {
+      "name": "Noto Sans, Noto Serif, Noto Sans Mono, Noto Sans Math and Noto Sans Symbols 2, embedded as subsets in the study reports",
+      "license": "OFL-1.1",
+      "file": "vendor/fonts/OFL.txt",
       "fetched": true
     }
   ]

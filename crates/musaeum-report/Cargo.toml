@@ -1,0 +1,19 @@
+[package]
+name = "musaeum-report"
+description = "Study reports of what a person marked and wrote in their books: Markdown, and a PDF with its fonts embedded, both written the same way every time from the same annotations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+blake3.workspace = true
+flate2.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

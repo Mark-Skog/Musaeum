@@ -39,6 +39,9 @@ const allowedForVendored = new Set([
   'ICU',
   'IJG',
   'libpng-2.0',
+  // Fonts, embedded as subsets in the reports the app writes. The OFL lets them be bundled with any
+  // software and embedded in documents; only the fonts themselves stay under it.
+  'OFL-1.1',
 ]);
 
 const failures = [];
@@ -102,6 +105,11 @@ function checkVendored() {
     if (!manifest.components.some(({ file }) => file.startsWith(`vendor/tesseract/${folder}/`))) {
       failures.push(`vendor/third-party.json does not cover ${folder}`);
     }
+  }
+  // Nor the fonts tools/fetch-fonts.ps1 pins: they are covered by the license file it fetches.
+  const fonts = readFileSync(join(root, 'tools', 'fetch-fonts.ps1'), 'utf8');
+  if (fonts.includes("'OFL.txt'") && !manifest.components.some(({ file }) => file === 'vendor/fonts/OFL.txt')) {
+    failures.push('vendor/third-party.json does not cover the fonts of tools/fetch-fonts.ps1');
   }
   const fetchedNote = notFetched > 0 ? `, ${notFetched} license files not fetched yet` : '';
   return `${manifest.components.length} components${fetchedNote}`;

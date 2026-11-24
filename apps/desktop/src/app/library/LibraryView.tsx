@@ -17,6 +17,10 @@ import {
   GridListLoadMoreItem,
   GridLayout,
   Input,
+  Menu,
+  MenuItem,
+  MenuTrigger,
+  Popover,
   Row,
   SearchField,
   Size,
@@ -33,6 +37,8 @@ import {
 } from 'react-aria-components';
 
 import { type BookRow, coverUrl, type FolderEntry, type LibraryInfo, type ReaderTarget, type SelectedBook, api } from '../api';
+import type { ExchangeAction } from '../exchange';
+import { useExchange } from '../ExchangeSection';
 import { BatchPanel } from './BatchPanel';
 import { CalibreDialog } from './CalibreDialog';
 import { reasonOf } from './dialogs';
@@ -203,6 +209,13 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     refreshTaxonomy();
     setVersion((value) => value + 1);
   }, [refreshTaxonomy]);
+  // The whole library's annotations, out and in, from the toolbar's menu.
+  const everything = useExchange({ kind: 'library' }, () => changed(), 'library');
+  useEffect(() => {
+    if (everything.report !== null) {
+      setNotice(everything.report.text);
+    }
+  }, [everything.report]);
 
   useEffect(() => {
     if (memory !== undefined) {
@@ -413,10 +426,26 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
         <Button className="button" onPress={() => setCalibre({ folder: null })}>
           Importar do Calibre…
         </Button>
+        <MenuTrigger>
+          <Button id="library-annotations" className="button" isDisabled={everything.busy !== null}>
+            Anotações ▾
+          </Button>
+          <Popover className="popover select-popover">
+            <Menu className="select-list" aria-label="Anotações da biblioteca" onAction={(key) => void everything.run(String(key) as ExchangeAction)}>
+              <MenuItem id="export-jsonld" className="select-item">
+                Exportar todas as anotações (JSON-LD)…
+              </MenuItem>
+              <MenuItem id="import-jsonld" className="select-item">
+                Importar anotações (JSON-LD)…
+              </MenuItem>
+            </Menu>
+          </Popover>
+        </MenuTrigger>
         <span className="toolbar-status" aria-live="polite">
           {chosen.size > 1 ? `${chosen.size} escolhidos · ` : ''}
           {books.total === info.books || filtered ? count : `${books.total} de ${info.books} livros`}
           {info.indexing ? ' · lendo a pasta…' : ''}
+          {everything.busy !== null ? ' · lendo e gravando as anotações…' : ''}
         </span>
       </header>
       {notice !== null ? (

@@ -43,6 +43,22 @@ pub struct FlowBook {
 }
 
 impl FlowBook {
+    /// A normalized book read outside the reader: for finding annotations again, or a report.
+    pub fn new(
+        document_id: i64,
+        revision_id: Option<i64>,
+        dir: PathBuf,
+        manifest: Manifest,
+    ) -> Self {
+        FlowBook {
+            document_id,
+            revision_id,
+            dir,
+            manifest,
+            documents: Mutex::new(Vec::new()),
+        }
+    }
+
     /// One whole document, put back together from its parts.
     pub fn document(&self, index: usize) -> Result<Arc<LogicalDocument>, String> {
         {

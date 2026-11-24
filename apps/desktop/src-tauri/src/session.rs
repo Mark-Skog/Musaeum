@@ -113,6 +113,14 @@ impl AppState {
             .cloned()
     }
 
+    /// The open session, whichever it is.
+    pub fn current_session(&self) -> Option<Arc<Session>> {
+        self.current
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Stops the current session's pool, joining its thread. Once this returns, nothing
     /// in this process uses the slab, so WebView2 buffers behind it may be closed.
     pub fn stop_current_session(&self) {

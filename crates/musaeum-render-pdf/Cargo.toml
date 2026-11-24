@@ -47,8 +47,10 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+flate2.workspace = true
 gen-fixtures.workspace = true
 musaeum-core.workspace = true
+musaeum-report.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-vision.workspace = true
 musaeum-worker = { workspace = true, features = ["harness"] }

@@ -871,14 +871,18 @@ impl Library {
             })?;
             for row in rows {
                 let (page, words) = row?;
-                let Ok(serde_json::Value::Array(words)) =
-                    serde_json::from_str::<serde_json::Value>(&words)
-                else {
+                // As the reader keeps a line (`0005_ocr_line.sql`):
+                // {"words": [[text, from, to, confidence], ...], "confidence": …, "flipped": …}.
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&words) else {
+                    continue;
+                };
+                let Some(words) = value.get("words").and_then(|words| words.as_array()) else {
                     continue;
                 };
                 let line: Vec<&str> = words
                     .iter()
-                    .filter_map(|word| word.get("text").and_then(|text| text.as_str()))
+                    .filter_map(|word| word.get(0).and_then(|text| text.as_str()))
+                    .filter(|text| !text.trim().is_empty())
                     .collect();
                 if line.is_empty() {
                     continue;

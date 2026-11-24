@@ -111,6 +111,12 @@ pub struct FixedAnnotationView {
     marks: Vec<PageMark>,
 }
 
+impl FixedAnnotationView {
+    pub fn annotation(&self) -> &Annotation {
+        &self.annotation
+    }
+}
+
 /// A stretch of a flowing book, as the reader's CFIs of where it starts and ends.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +131,12 @@ pub struct FlowRange {
 pub struct FlowAnnotationView {
     annotation: Annotation,
     ranges: Vec<FlowRange>,
+}
+
+impl FlowAnnotationView {
+    pub fn annotation(&self) -> &Annotation {
+        &self.annotation
+    }
 }
 
 /// What a person chose for a new annotation.
@@ -206,7 +218,7 @@ fn page_hash_of(library: &Library, session: &Session, page: u32) -> Option<u64> 
 /// page is checked against `page_hash`, the hash of that page now; while a page it needs has
 /// none yet, the annotation shows where it was and nothing is recorded, so it is checked again
 /// next time.
-fn anchor_fixed(
+pub(crate) fn anchor_fixed(
     annotation: &Annotation,
     pages: &mut dyn fixed::Pages,
     revision: i64,
@@ -325,7 +337,7 @@ fn fixed_progression(page: u32, quads: &[[f32; 8]], count: u32) -> f64 {
 
 /// Writes what re-anchoring found. A failure is logged: the annotations stay as they were and are
 /// found again next time.
-fn record(library: &Library, outcomes: Vec<Reanchoring>) {
+pub(crate) fn record(library: &Library, outcomes: Vec<Reanchoring>) {
     if outcomes.is_empty() {
         return;
     }
@@ -602,7 +614,7 @@ pub fn create_region_annotation(
 
 /// Where a flowing book's annotation is now, worked out again if it was found on another revision or
 /// normalizer version, and what to record if it was.
-fn anchor_flow(
+pub(crate) fn anchor_flow(
     annotation: &Annotation,
     book: &FlowBook,
     revision: i64,

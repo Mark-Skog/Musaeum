@@ -93,6 +93,10 @@ pub(crate) const CACHE_MIGRATIONS: &[Migration] = &[
         version: 6,
         sql: include_str!("../../migrations/cache/0006_fulltext.sql"),
     },
+    Migration {
+        version: 7,
+        sql: include_str!("../../migrations/cache/0007_fulltext_ocr_again.sql"),
+    },
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(10);

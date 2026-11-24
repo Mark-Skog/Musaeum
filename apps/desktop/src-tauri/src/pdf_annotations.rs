@@ -839,7 +839,7 @@ fn same_as_existing(new: &ImportedAnnotation, existing: &[Annotation]) -> bool {
 
 /// A file opened only to be read, as the library opens books: others may read, write and delete
 /// it meanwhile, and nothing here ever writes to it.
-fn open_to_read(path: &Path) -> io::Result<File> {
+pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
@@ -983,7 +983,7 @@ fn current_annotations(
 
 /// Where a file the person chose goes, or comes from: the dialog's answer, or under a test the
 /// path it gave.
-fn chosen(
+pub(crate) fn chosen(
     state: &AppState,
     given: Option<String>,
     ask: impl FnOnce() -> Result<Option<PathBuf>, String>,

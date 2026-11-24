@@ -19,6 +19,7 @@ members = [
     "crates/musaeum-ocr",
     "crates/musaeum-ocr-worker",
     "crates/musaeum-pdf-annot",
+    "crates/musaeum-report",
     "apps/cli",
     "apps/desktop/src-tauri",
     "tools/corpus-check",
@@ -49,6 +50,7 @@ musaeum-vision = { path = "crates/musaeum-vision" }
 musaeum-tesseract = { path = "crates/musaeum-tesseract" }
 musaeum-ocr = { path = "crates/musaeum-ocr" }
 musaeum-pdf-annot = { path = "crates/musaeum-pdf-annot" }
+musaeum-report = { path = "crates/musaeum-report" }
 musaeum-worker = { path = "crates/musaeum-worker" }
 gen-fixtures = { path = "tools/gen-fixtures" }
 
@@ -64,8 +66,9 @@ serde = { version = "1", features = ["derive"] }
 # The full-text index of the books' contents (the plan: Tantivy for full text, BM25). Without its
 # default features: no zstd (a C library) and no stemmer, which would suit one language only.
 tantivy = { version = "=0.27.0", default-features = false, features = ["mmap", "lz4-compression"] }
-serde_json = "1"
-tauri = { version = "2", features = [] }
+# Numbers read to their last bit: a position in a book written to JSON-LD comes back the same.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tauri ={ version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
 thiserror = "2"
 trash = "5"

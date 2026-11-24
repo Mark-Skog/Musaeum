@@ -58,6 +58,8 @@ import { formatName } from '../library/LibraryView';
 import { FlowReader, type Relocation } from './flow-reader';
 import { Inspector, NoteEditor, type PdfAction, type PdfActions, type ScreenRect, SelectionToolbar, UndoToast } from './annotations/AnnotationUi';
 import { AnnotationStore, draft, type Entry } from './annotations/store';
+import { type ExchangeControls, useExchange } from '../ExchangeSection';
+import type { ExchangeAction, ExchangeOutcome } from '../exchange';
 
 /** What the reader has selected now, in either kind of book, with its box on the screen. */
 export type ReaderSelection =
@@ -105,6 +107,9 @@ export interface ReaderProbe {
   pdf: ((action: PdfAction, path?: string) => Promise<PdfOutcome>) | null;
   /** What the panel says about the last of them. */
   pdfReport: { text: string; failed: boolean } | null;
+  /** The book's annotations as JSON-LD and its reports, with a path a test gives instead of the dialog. */
+  exchange: (action: ExchangeAction, path?: string, generatedAt?: number) => Promise<ExchangeOutcome>;
+  exchangeReport: ExchangeControls['report'];
 }
 
 /** What one of a PDF's actions did: its report, nothing when cancelled, or why it failed. */
@@ -412,6 +417,27 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
     },
     [store],
   );
+  // JSON-LD and the reports, for every kind of book. After an import, the book's annotations are
+  // read again: what came from other bytes has been found on these by then.
+  const reloadAnnotations = useCallback(async (): Promise<void> => {
+    if (kind === 'fixed') {
+      const session = fixed.current?.session;
+      if (session !== null && session !== undefined) {
+        store.load((await api.fixedAnnotations(session.id)).map(fixedEntry));
+      }
+    } else {
+      store.load((await api.flowAnnotations(book.documentId)).map(flowEntry));
+    }
+  }, [kind, store, book.documentId]);
+  const exchange = useExchange(
+    { kind: 'document', documentId: book.documentId },
+    (action) => {
+      if (action === 'import-jsonld') {
+        void reloadAnnotations();
+      }
+    },
+    'reader',
+  );
   const pdfActions = useMemo<PdfActions | undefined>(
     () => (isPdf ? { busy: pdfBusy, report: pdfReport, run: (action) => void pdfAction(action) } : undefined),
     [isPdf, pdfBusy, pdfReport, pdfAction],
@@ -431,9 +457,11 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
         selection,
         pdf: isPdf ? pdfAction : null,
         pdfReport,
+        exchange: exchange.run,
+        exchangeReport: exchange.report,
       };
     }
-  }, [probe, kind, book.documentId, ready, error, outline, entries, selection, isPdf, pdfAction, pdfReport]);
+  }, [probe, kind, book.documentId, ready, error, outline, entries, selection, isPdf, pdfAction, pdfReport, exchange.run, exchange.report]);
   useEffect(updateProbe, [updateProbe]);
 
   // The typography chosen before, for every flowing book.
@@ -1112,6 +1140,7 @@ export function ReaderView({ book, options, onBack, probe, target = null }: Read
             onClose={() => setPanelOpen(false)}
             onLink={setLink}
             pdf={pdfActions}
+            exchange={exchange}
           />
         ) : null}
         {!ready && error === null ? <div className="reader-loading">Abrindo…</div> : null}

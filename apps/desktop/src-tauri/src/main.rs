@@ -12,6 +12,7 @@ mod background;
 mod book;
 mod calibre;
 mod covers;
+mod exchange;
 mod flow;
 mod fulltext;
 mod lines;
@@ -112,6 +113,10 @@ fn main() {
             pdf_annotations::xfdf_export,
             pdf_annotations::xfdf_import,
             pdf_annotations::e2e_pdf_annotations,
+            exchange::annotations_export_jsonld,
+            exchange::annotations_import_jsonld,
+            exchange::study_report,
+            exchange::e2e_pdf_text,
             links::e2e_opened_links,
             shelf::library_info,
             shelf::library_choose_root,

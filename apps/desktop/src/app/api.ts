@@ -540,7 +540,88 @@ export const api = {
     invoke<PdfImportReport | null>('xfdf_import', { session, source: source ?? null }),
   /** Under a test: what PDFium reads in a file. */
   e2ePdfAnnotations: (path: string) => invoke<unknown>('e2e_pdf_annotations', { path }),
+  /**
+   * Writes annotations as W3C Web Annotations (JSON-LD), where the person chooses (a test gives the
+   * path): of a document, of works, or of the whole library. `null`: cancelled.
+   */
+  exportJsonLd: (scope: ExchangeScope, target?: string) =>
+    invoke<JsonLdExported | null>('annotations_export_jsonld', { scope, target: target ?? null }),
+  /** Brings the annotations of a JSON-LD file into a document, a work's documents, or the library. */
+  importJsonLd: (target: ExchangeTarget, source?: string) =>
+    invoke<JsonLdImported | null>('annotations_import_jsonld', { target, source: source ?? null }),
+  /** Writes a study report of a document or of works, as Markdown or as a PDF. */
+  studyReport: (format: 'markdown' | 'pdf', scope: ReportScope, target?: string, generatedAt?: number) =>
+    invoke<ReportWritten | null>('study_report', {
+      format,
+      scope,
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      target: target ?? null,
+      generatedAt: generatedAt ?? null,
+    }),
+  /** Under a test: each page's text of a PDF, as PDFium reads it. */
+  e2ePdfText: (path: string) => invoke<string[]>('e2e_pdf_text', { path }),
 };
+
+/** Which annotations an export writes. */
+export type ExchangeScope = { kind: 'document'; ids: number } | { kind: 'works'; ids: number[] } | { kind: 'library' };
+
+/** Where an import may put what it brings. */
+export type ExchangeTarget = { kind: 'document'; id: number } | { kind: 'work'; id: number } | { kind: 'library' };
+
+/** Which books a report is about. */
+export type ReportScope = { kind: 'document'; ids: number } | { kind: 'works'; ids: number[] };
+
+/** What a JSON-LD export wrote. */
+export interface JsonLdExported {
+  path: string;
+  annotations: number;
+  documents: number;
+  works: number;
+  bytes: number;
+}
+
+/** How the annotations an import brought into one book were found on it. */
+export interface BroughtInto {
+  documentId: number;
+  title: string;
+  added: number;
+  exact: number;
+  approximate: number;
+  orphan: number;
+  /** Not found again yet: the book is not there now, or its pages have not been looked at. */
+  pending: number;
+}
+
+/** A work of the file the library does not have. */
+export interface UnmatchedWork {
+  title: string;
+  creators: string[];
+  annotations: number;
+}
+
+/** What a JSON-LD import brought. */
+export interface JsonLdImported {
+  path: string;
+  total: number;
+  added: number;
+  /** Already in the library, by their UUID. */
+  already: number;
+  /** Of other books than the one asked for. */
+  elsewhere: number;
+  /** Brought into the book chosen though the file names another work. */
+  otherWork: number;
+  unmatched: UnmatchedWork[];
+  books: BroughtInto[];
+}
+
+/** What a study report wrote. */
+export interface ReportWritten {
+  path: string;
+  works: number;
+  annotations: number;
+  pages: number | null;
+  bytes: number;
+}
 
 /** What an export to PDF or XFDF wrote. */
 export interface PdfExportReport {

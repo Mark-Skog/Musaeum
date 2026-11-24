@@ -21,6 +21,7 @@ import {
 } from 'react-aria-components';
 
 import { type AnchorState, type AnnotationKind, api } from '../../api';
+import { type ExchangeControls, ExchangeSection } from '../../ExchangeSection';
 import { type LinkHandler, Markdown } from './markdown';
 import type { Entry } from './store';
 
@@ -222,10 +223,12 @@ export interface InspectorProps {
   onLink?: LinkHandler;
   /** For a PDF: its own annotations, in and out. */
   pdf?: PdfActions;
+  /** The book's annotations as JSON-LD, both ways, and its study reports. */
+  exchange?: ExchangeControls;
 }
 
 /** The book's annotations, by where they are: filtered, searched, and each a way back to its place. */
-export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRemove, onClose, onLink, pdf }: InspectorProps): React.JSX.Element {
+export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRemove, onClose, onLink, pdf, exchange }: InspectorProps): React.JSX.Element {
   const [query, setQuery] = useState('');
   const [found, setFound] = useState<Set<string> | null>(null);
   const [colors, setColors] = useState<Set<string>>(new Set());
@@ -374,6 +377,15 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
           })}
         </ol>
       )}
+      <div className="panel-foot">
+      {exchange !== undefined ? (
+        <ExchangeSection
+          heading="Exportar e importar"
+          controls={exchange}
+          id="exchange"
+          idle="JSON-LD do W3C com tudo das anotações; relatórios de estudo na ordem de leitura."
+        />
+      ) : null}
       {pdf !== undefined ? (
         <section className="pdf-exchange" aria-label="Anotações do PDF">
           <Heading level={3} className="pdf-exchange-heading">
@@ -403,6 +415,7 @@ export function Inspector({ documentId, entries, pageCount, onJump, onEdit, onRe
           </p>
         </section>
       ) : null}
+      </div>
     </aside>
   );
 }

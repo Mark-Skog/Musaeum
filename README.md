@@ -25,7 +25,9 @@ imagem da página, retas, curvas ou giradas a 45° e 90°, para selecionar por e
 ou um traço à mão, e o texto sob cada marca lido por OCR (Tesseract, num processo isolado), para
 copiar e buscar como num livro digital; e, num PDF, as anotações do Musaeum levadas a uma cópia do
 arquivo como anotações do próprio PDF, que o Acrobat e o PDFium mostram, as anotações de um PDF trazidas
-para a biblioteca sem duplicar, e as duas coisas também em XFDF. Por baixo, o normalizador e o motor de posição (EPUB CFI e
+para a biblioteca sem duplicar, e as duas coisas também em XFDF; e as anotações de qualquer livro levadas e
+trazidas como Web Annotations do W3C (JSON-LD), sem perder nada, de um livro, de vários ou da biblioteca
+toda, e os relatórios de estudo em Markdown e em PDF, na ordem de leitura e pelos capítulos. Por baixo, o normalizador e o motor de posição (EPUB CFI e
 Locator) da Fase 3, o pipeline de tiles da Fase 2 e a biblioteca da Fase 1, com SQLite, identidade de
 arquivos, indexador, diário de operações em disco e uma CLI.
 
@@ -39,8 +41,10 @@ As decisões e os números de cada fase estão em
 [`docs/adr/0007-fase-4.md`](docs/adr/0007-fase-4.md),
 [`docs/adr/0008-fase-5-parte-1.md`](docs/adr/0008-fase-5-parte-1.md),
 [`docs/adr/0009-fase-5-parte-2.md`](docs/adr/0009-fase-5-parte-2.md),
-[`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md) e
-[`docs/adr/0011-fase-6-parte-2.md`](docs/adr/0011-fase-6-parte-2.md).
+[`docs/adr/0010-fase-6-parte-1.md`](docs/adr/0010-fase-6-parte-1.md),
+[`docs/adr/0011-fase-6-parte-2.md`](docs/adr/0011-fase-6-parte-2.md),
+[`docs/adr/0012-fase-7-parte-1.md`](docs/adr/0012-fase-7-parte-1.md) e
+[`docs/adr/0013-fase-7-parte-2.md`](docs/adr/0013-fase-7-parte-2.md).
 
 Por enquanto, o código só compila e roda no **Windows**.
 
@@ -59,6 +63,9 @@ crates/
                        do PDF (musaeum-pdf-annots.exe)
   musaeum-pdf-annot/   As anotações do próprio PDF: a estrutura do arquivo lida como um leitor a lê,
                        a atualização incremental de uma cópia, o XFDF, e a conversa com o worker
+  musaeum-report/      Os relatórios de estudo: a ordem de leitura e os capítulos, o Markdown das
+                       notas lido como o leitor o lê, o Markdown do relatório e o PDF, escrito aqui,
+                       com as fontes embutidas em subconjuntos
   musaeum-archive/     libarchive vendorizada, só a leitura de ZIP, RAR e RAR5
   musaeum-render-raster/  Processo isolado que desenha quadrinhos (CBZ, CBR)
   musaeum-djvu/        DjVuLibre vendorizada, atrás de uma ponte em C++
@@ -73,7 +80,8 @@ crates/
                        livros fluidos
   musaeum-library/     SQLite, reconhecimento de arquivos, indexador, diário de operações,
                        posição de leitura, geometria das páginas, anotações e a re-ancoragem, o
-                       cache dos livros normalizados e os modelos de linhas
+                       intercâmbio em JSON-LD do W3C, o cache dos livros normalizados e os modelos
+                       de linhas
   musaeum-vision/      As linhas de texto na imagem de uma página escaneada: Sauvola, componentes,
                        inclinação, colunas por faixas, linhas de base como polilinhas, texto girado,
                        a máscara de fotografias, gráficos e tabelas, hash perceptual; e um corpus
@@ -98,10 +106,13 @@ vendor/
   djvulibre/           DjVuLibre 3.5.30, a biblioteca libdjvu
   tesseract/           Tesseract 5.5.4, Leptonica 1.87.0 e os modelos por e eng (baixados pelo
                        fetch-ocr.ps1; só o README está no repositório)
+  fonts/               Noto Sans, Noto Serif, Noto Sans Mono, Noto Sans Math e Noto Sans Symbols 2,
+                       das fontes dos relatórios em PDF (baixadas pelo fetch-fonts.ps1)
   third-party.json     Licenças do que entra no app sem passar por um gerenciador de pacotes
 tools/
   fetch-pdfium.ps1     Baixa a build fixada do PDFium e confere o SHA-256
   fetch-ocr.ps1        Baixa o Tesseract, o Leptonica e os modelos fixados e confere o SHA-256
+  fetch-fonts.ps1      Baixa as fontes fixadas dos relatórios em PDF e confere o SHA-256
   gen-fixtures/        Gera os PDFs, quadrinhos, DjVu e EPUBs de teste, um EPUB hostil e um mesmo
                        livro em EPUB 3, EPUB 2, MOBI, AZW3, FB2, TXT e Markdown
   pool-bench/          Mede o pool de render sem WebView
@@ -114,6 +125,7 @@ tools/
   e2e-taxonomy.mjs     Testa na janela real a organização da biblioteca e o painel de detalhes
   e2e-beta.mjs         Testa na janela real a Beta: vários livros, revisão e fusão, texto, Calibre
   e2e-pdf-annotations.mjs  Testa na janela real as anotações levadas ao PDF e trazidas dele, e o XFDF
+  e2e-exchange.mjs     Testa na janela real o JSON-LD nos dois sentidos e os relatórios de estudo
   reader-check.mjs     Testa o leitor fluido sem janela, num Chrome headless, em livros normalizados
   lib/cdp.mjs          O que os testes de janela usam para falar com o WebView2 pelo CDP
   lib/clipboard.mjs    A área de transferência nos testes de janela, guardada antes e reposta depois
@@ -135,6 +147,7 @@ com C++, Node.js e o runtime do WebView2, que já vem no Windows 11.
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\fetch-pdfium.ps1
 powershell -ExecutionPolicy Bypass -File tools\fetch-ocr.ps1
+powershell -ExecutionPolicy Bypass -File tools\fetch-fonts.ps1
 
 cd apps\desktop
 npm install
@@ -262,8 +275,8 @@ Três regras valem para tudo isso:
 - **No texto.** Com algo digitado na busca, *Títulos / No texto*. No texto, cada livro aparece com as
   páginas ou seções em que estão todas as palavras (ou a "frase entre aspas"), um trecho com o achado
   realçado, e um clique abre o livro ali. O texto vem da camada de texto dos PDFs e DjVus, das linhas
-  já lidas por OCR nos escaneados e do texto dos livros fluidos, lido em segundo plano e devagar, mais
-  devagar ainda com um livro aberto. Ao voltar do livro, a busca está como foi deixada.
+  já lidas por OCR nos escaneados (que entram no índice logo depois de lidas) e do texto dos livros
+  fluidos, lido em segundo plano e devagar, mais devagar ainda com um livro aberto. Ao voltar do livro, a busca está como foi deixada.
 - **Do Calibre.** *Importar do Calibre…* escolhe a pasta da biblioteca (a do `metadata.db`), mostra o
   que ela tem e a traz: cada livro com os seus formatos numa obra, autores, série e número, etiquetas,
   avaliação, identificadores, comentários e colunas personalizadas como campos. A pasta é só lida, nem o
@@ -335,6 +348,37 @@ PDF. PDFs cifrados têm as anotações lidas, mas não recebem novas. As decisõ
 ```powershell
 node tools\e2e-pdf-annotations.mjs
 target\release\corpus-check.exe --pdf-annots --corpus D:\Livros --work D:\trabalho --out D:\trabalho\report.json
+```
+
+## As anotações em JSON-LD e os relatórios de estudo
+
+O painel *Anotações* do leitor, em qualquer livro, tem a seção *Exportar e importar*; os detalhes de uma
+obra na biblioteca têm a seção *Anotações*, e os de vários livros escolhidos, *Anotações dos escolhidos*;
+o menu *Anotações* da barra da biblioteca leva e traz as da biblioteca toda.
+
+- **Exportar JSON-LD…** grava as anotações como uma `AnnotationCollection` do modelo de Web Annotations
+  do W3C: cada anotação com o seu UUIDv7, as datas, a nota em Markdown, a cor, a citação e todos os
+  seletores do livro (`TextQuoteSelector`, `TextPositionSelector`, os CFIs de EPUB num
+  `RangeSelector`, e os da biblioteca para as páginas e as marcas na imagem), sobre o arquivo exato
+  (`urn:blake3:…`) e descrito pela obra (título, pessoas, identificadores).
+- **Importar JSON-LD…** lê o arquivo inteiro antes de gravar qualquer coisa, com um leitor estrito (sem
+  buscar contextos na rede, sem propriedades que esta versão não escreve, sem chaves repetidas, até 16
+  níveis e 256 MB). O que a biblioteca já tem, pelo UUID, não vem de novo. Cada anotação volta ao livro
+  com os mesmos bytes; se ele não está, a um livro da mesma obra (um identificador em comum, ou o mesmo
+  título do mesmo primeiro autor), onde é achada de novo na hora: exata, aproximada ou órfã, nunca
+  perdida.
+- **Relatório em Markdown…** e **Relatório em PDF…** escrevem um caderno de estudo: o cabeçalho da obra,
+  as anotações na ordem de leitura, sob os capítulos do sumário, as citações e as notas, e as que não
+  foram achadas ao final. O Markdown serve ao Obsidian, ao Notion e ao Git; o PDF é A4, com texto de
+  verdade (selecionável, com os acentos), uma faixa na cor de cada marca, o título no alto e o número da
+  página embaixo, e os capítulos como marcadores. O mesmo relatório dá sempre os mesmos bytes.
+
+Nada disso é gravado dentro de uma pasta da biblioteca: cada arquivo é escrito num temporário ao lado do
+destino, levado ao disco e renomeado, e um relatório em PDF é lido pelo PDFium, no sandbox, antes de
+tomar o nome. As decisões estão no ADR 0013.
+
+```powershell
+node tools\e2e-exchange.mjs
 ```
 
 ## Validar num acervo real
@@ -589,4 +633,6 @@ ative o hook que roda a verificação quando uma dependência muda:
 git config core.hooksPath .githooks
 ```
 
-A verificação precisa do `cargo-deny` (`cargo install cargo-deny`).
+A verificação precisa do `cargo-deny` (`cargo install cargo-deny`). As fontes dos relatórios em PDF
+(Noto, baixadas por `tools/fetch-fonts.ps1`) estão sob a SIL Open Font License 1.1, aceita só para
+fontes vendorizadas.

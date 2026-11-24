@@ -18,6 +18,8 @@ npm-debug.log*
 # Sources and models that tools/fetch-ocr.ps1 downloads and verifies
 /vendor/tesseract/*
 !/vendor/tesseract/README.md
+# Fonts that tools/fetch-fonts.ps1 downloads and verifies
+/vendor/fonts/
 
 # Test artifacts: everything here can be generated again
 /fixtures/

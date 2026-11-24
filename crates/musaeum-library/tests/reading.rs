@@ -567,3 +567,52 @@ fn what_the_ocr_read_is_kept_line_by_line_for_the_reading_that_read_it() {
             .is_empty()
     );
 }
+
+#[test]
+fn what_the_ocr_read_is_a_scanned_page_s_text_for_the_full_text_index() {
+    let fixture = Fixture::new();
+    let library = fixture.library();
+    let hash = [7u8; 32];
+    let reading = OcrReading {
+        lines_version: 2,
+        ocr_version: 1,
+        languages: "por+eng",
+    };
+    // As the reader writes a line (`encode_line`), the keys in serde_json's order.
+    let line = |line: u32, words: &[&str]| OcrLineRecord {
+        line,
+        words: format!(
+            r#"{{"confidence":91.5,"flipped":false,"words":[{}]}}"#,
+            words
+                .iter()
+                .enumerate()
+                .map(|(at, word)| format!(r#"["{word}",{}.0,{}.5,90.0]"#, at, at))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    };
+    library
+        .store_ocr_lines(
+            &hash,
+            2,
+            reading,
+            &[
+                line(3, &["estantes", "de", "ferro"]),
+                line(1, &["Um", "prédio", "novo,"]),
+            ],
+        )
+        .unwrap();
+    library
+        .store_ocr_lines(&hash, 0, reading, &[line(0, &["Capítulo"]), line(2, &[])])
+        .unwrap();
+    let pages = library.ocr_page_texts(&hash).unwrap();
+    assert_eq!(
+        pages.into_iter().collect::<Vec<_>>(),
+        vec![
+            (0, "Capítulo".to_owned()),
+            (2, "Um prédio novo,\nestantes de ferro".to_owned()),
+        ],
+        "each page's lines in the model's order, a line with no words left out"
+    );
+    assert!(library.ocr_page_texts(&[8u8; 32]).unwrap().is_empty());
+}

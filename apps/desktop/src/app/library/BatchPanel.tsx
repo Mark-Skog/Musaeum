@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { Button, Input, Label, TextField, ToggleButton } from 'react-aria-components';
 
 import { api, type BatchSummary, type Credit, type Taxonomy } from '../api';
+import { ExchangeSection, useExchange } from '../ExchangeSection';
 import { reasonOf } from './dialogs';
 import { Chips, Picker } from './Inspector';
 import { type BatchDraft, batchEditOf, categoryPath, emptyBatch, STATUSES } from './taxonomy-model';
@@ -45,6 +46,7 @@ export function BatchPanel({ works, books, taxonomy, onSaved, onClose, onMerge }
   const [summary, setSummary] = useState<BatchSummary | null>(null);
   const [draft, setDraft] = useState<BatchDraft>(emptyBatch);
   const [error, setError] = useState<string | null>(null);
+  const exchange = useExchange({ kind: 'works', works }, undefined, 'batch');
   const [saving, setSaving] = useState(false);
   const [version, setVersion] = useState(0);
   const key = works.join(',');
@@ -225,6 +227,14 @@ export function BatchPanel({ works, books, taxonomy, onSaved, onClose, onMerge }
             Fundir em um livro…
           </Button>
         ) : null}
+        <ExchangeSection
+          heading="Anotações dos escolhidos"
+          controls={exchange}
+          actions={['export-jsonld', 'report-md', 'report-pdf']}
+          id="batch-exchange"
+          className="inspector-exchange"
+          idle="As anotações destes livros em um JSON-LD, ou num relatório de estudo só."
+        />
       </div>
       <footer className="inspector-foot">
         {problems.length > 0 ? (

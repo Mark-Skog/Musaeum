@@ -273,7 +273,7 @@ pub fn new_uuid() -> String {
     uuid::Uuid::now_v7().hyphenated().to_string()
 }
 
-fn uuid_bytes(text: &str) -> Result<[u8; 16]> {
+pub(crate) fn uuid_bytes(text: &str) -> Result<[u8; 16]> {
     let parsed = uuid::Uuid::try_parse(text)
         .map_err(|_| Error::Refused(format!("{text:?} is not a UUID")))?;
     if parsed.get_version_num() != 7 {
@@ -343,7 +343,7 @@ fn check_segment(segment: &Segment) -> Result<()> {
     Ok(())
 }
 
-fn check_new(new: &NewAnnotation) -> Result<()> {
+pub(crate) fn check_new(new: &NewAnnotation) -> Result<()> {
     check_color(&new.color)?;
     check_note(&new.note)?;
     if new
@@ -398,7 +398,7 @@ fn insert_selector(transaction: &Transaction<'_>, segment: i64, selector: &Selec
     Ok(())
 }
 
-fn insert_segment(
+pub(crate) fn insert_segment(
     transaction: &Transaction<'_>,
     annotation: AnnotationId,
     segment: &Segment,
@@ -532,7 +532,7 @@ fn attach_segments(connection: &Connection, annotations: &mut [Annotation]) -> R
     Ok(())
 }
 
-fn load_where(
+pub(crate) fn load_where(
     connection: &Connection,
     condition: &str,
     value: &dyn rusqlite::ToSql,

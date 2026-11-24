@@ -18,6 +18,7 @@ mod content;
 mod content_kind;
 mod db;
 mod error;
+pub mod exchange;
 mod fingerprint;
 pub mod flow;
 mod fulltext;
@@ -54,6 +55,10 @@ pub use catalog::{BookFile, BookRow, BrowsePage, BrowseQuery, FolderEntry, MAX_B
 pub use content::ContentReport;
 pub use db::backup::{BackupInfo, BackupPolicy};
 pub use error::{Error, Result};
+pub use exchange::{
+    ExchangeExport, ExchangeImport, ExchangeScope, ExchangeTarget, ImportedInto, MAX_JSONLD_BYTES,
+    UnmatchedWork,
+};
 pub use fingerprint::Hash;
 pub use flow::FlowStore;
 pub use fulltext::{

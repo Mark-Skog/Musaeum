@@ -27,6 +27,7 @@ import {
 } from 'react-aria-components';
 
 import { api, type BookRow, type CustomField, type Taxonomy, type WorkMetadata } from '../api';
+import { ExchangeSection, useExchange } from '../ExchangeSection';
 import { reasonOf, Tick } from './dialogs';
 import { categoryPath, type Draft, draftOf, editOf, matching, named, provenanceLabel, ROLES, SCHEMES, STATUSES } from './taxonomy-model';
 
@@ -199,6 +200,7 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const exchange = useExchange({ kind: 'works', works: [book.workId] }, undefined, 'details');
 
   useEffect(() => {
     let current = true;
@@ -463,6 +465,13 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
             ))}
           </div>
         ) : null}
+        <ExchangeSection
+          heading="Anotações"
+          controls={exchange}
+          id="work-exchange"
+          className="inspector-exchange"
+          idle="As anotações desta obra em JSON-LD, um JSON-LD trazido para ela, ou um relatório de estudo."
+        />
       </div>
       <footer className="inspector-foot">
         {problems.length > 0 ? (

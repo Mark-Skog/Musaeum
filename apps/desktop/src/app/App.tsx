@@ -11,6 +11,8 @@ import type { StartupOptions } from '../protocol';
 import { api, type BookRow, type ReaderTarget, type SelectedBook } from './api';
 import { FRESH_LIBRARY, type LibraryMemory, LibraryView } from './library/LibraryView';
 import { useLibrary } from './library/use-books';
+import { exchangeHooks } from './ExchangeSection';
+import type { ExchangeAction } from './exchange';
 import type { PdfAction } from './reader/annotations/AnnotationUi';
 import { type ReaderProbe, ReaderView } from './reader/ReaderView';
 
@@ -82,6 +84,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
           status: current.fixed?.status() ?? null,
           outline: current.outline,
           saved: current.fixed?.saved() ?? null,
+          exchangeReport: current.exchangeReport,
           selection: current.selection,
           annotations: current.annotations.map((entry) => ({
             uuid: entry.annotation.uuid,
@@ -144,6 +147,16 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       pdf: (action: string, path?: string) => probe.current?.pdf?.(action as PdfAction, path) ?? null,
       /** What PDFium reads in a file. */
       pdfAnnotations: (path: string) => api.e2ePdfAnnotations(path),
+      /**
+       * JSON-LD and the reports, run as a button of `surface` runs them (`reader`, `details`, `batch`,
+       * `library`), with the path the dialog would have given and, for a report, a fixed time.
+       */
+      exchange: (surface: string, action: string, path?: string, generatedAt?: number) => {
+        const run = exchangeHooks.get(surface);
+        return run === undefined ? Promise.resolve({ ok: false, error: `no ${surface} here` }) : run(action as ExchangeAction, path, generatedAt);
+      },
+      /** Each page's text of a PDF, as PDFium reads it. */
+      pdfText: (path: string) => api.e2ePdfText(path),
       resizeWindow: (width: number, height: number) => invoke('e2e_resize_window', { width, height }),
       openedLinks: () => invoke<string[]>('e2e_opened_links'),
       /** A page's characters as the compositor gets them, as bytes, for a test to aim a drag with. */

@@ -2356,6 +2356,7 @@ dependencies = [
  "musaeum-library",
  "musaeum-ocr",
  "musaeum-pdf-annot",
+ "musaeum-report",
  "musaeum-sandbox",
  "musaeum-shm",
  "musaeum-vision",
@@ -2488,11 +2489,13 @@ dependencies = [
 name = "musaeum-render-pdf"
 version = "0.0.1"
 dependencies = [
+ "flate2",
  "gen-fixtures",
  "memmap2",
  "musaeum-core",
  "musaeum-ingest",
  "musaeum-pdf-annot",
+ "musaeum-report",
  "musaeum-sandbox",
  "musaeum-shm",
  "musaeum-vision",
@@ -2515,6 +2518,16 @@ dependencies = [
  "musaeum-shm",
  "musaeum-worker",
  "quick-xml",
+]
+
+[[package]]
+name = "musaeum-report"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "flate2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@ musaeum-ingest.workspace = true
 musaeum-library.workspace = true
 musaeum-ocr.workspace = true
 musaeum-pdf-annot.workspace = true
+musaeum-report.workspace = true
 musaeum-sandbox.workspace = true
 musaeum-shm.workspace = true
 musaeum-vision.workspace = true

@@ -76,6 +76,12 @@ export function parseBlocks(source: string): Block[] {
       paragraph.push(lines[at].trim());
       at++;
     }
+    if (paragraph.length === 0) {
+      // A line that starts like a heading but is not one (a line terminator in it, which `.` does
+      // not match): nothing above took it, and the loop would never move past it.
+      paragraph.push(line.trim());
+      at++;
+    }
     blocks.push({ type: 'paragraph', text: paragraph.join(' ') });
   }
   return blocks;

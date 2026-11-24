@@ -8,8 +8,10 @@ import { deflateSync } from 'node:zlib';
 /**
  * A PDF of text pages in Helvetica, one string per line, WinAnsi-encoded so accents come through.
  * A page listed in `dark` is white type on a black ground, as a scanned slide or an inverted page.
+ * With an `id`, the trailer has it as the file's permanent identifier, `/ID[0]`, which a PDF keeps
+ * through the editions saved over it.
  */
-export function textPdf(pages, { dark = [] } = {}) {
+export function textPdf(pages, { dark = [], id = null } = {}) {
   const objects = [];
   const add = (body) => {
     objects.push(body);
@@ -40,7 +42,8 @@ export function textPdf(pages, { dark = [] } = {}) {
   for (const offset of offsets) {
     out += `${String(offset).padStart(10, '0')} 00000 n \n`;
   }
-  out += `trailer\n<< /Size ${objects.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  const identifier = id === null ? '' : ` /ID [<${id}> <${id}>]`;
+  out += `trailer\n<< /Size ${objects.length + 1} /Root ${catalog} 0 R${identifier} >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, 'latin1');
 }
 
@@ -150,8 +153,8 @@ export function sentence(tag, seed, words = 9) {
   return `${tag}: ${picked.join(' ')}.`;
 }
 
-/** The PDF in its two revisions, and the lines the test marks. */
-export function annotatedPdf() {
+/** The PDF in its two revisions, and the lines the test marks; both with the `/ID[0]` given, if any. */
+export function annotatedPdf({ id = null } = {}) {
   const page = (number, lines) => Array.from({ length: lines }, (_, line) => sentence(`Página ${number}, linha ${line + 1}`, number * 100 + line));
   // Full pages: the last line of one and the first of the next fit on the screen together. The
   // fourth is white type on black, where a highlight has to show the other way round.
@@ -172,7 +175,7 @@ export function annotatedPdf() {
   v2[1][3] = v2[1][3].replace('o farol', 'o moinho');
   v2[2].splice(5, 1);
   v2.unshift(['Prefácio desta edição', 'Uma página nova antes de tudo o que havia.']);
-  return { v1: textPdf(v1, { dark: [3] }), v2: textPdf(v2, { dark: [4] }), targets, editedTo: v2[2][3] };
+  return { v1: textPdf(v1, { dark: [3], id }), v2: textPdf(v2, { dark: [4], id }), targets, editedTo: v2[2][3] };
 }
 
 /** The EPUB in its two editions, with a chapter long enough to be cut, and what the test marks. */

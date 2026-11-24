@@ -1,10 +1,17 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Markdown, parseBlocks } from './markdown';
+import shared from './notes-cases.json';
 
 const html = (source: string): string => renderToStaticMarkup(<Markdown source={source} />);
 
 describe('notes in Markdown', () => {
+  it('reads every note of the shared cases as the study reports read them', () => {
+    for (const { note, blocks } of shared.cases) {
+      expect(parseBlocks(note), JSON.stringify(note)).toEqual(blocks);
+    }
+  });
+
   it('has blocks: headings, paragraphs, lists, quotes and code', () => {
     const blocks = parseBlocks('# Título\n\nUma linha\ne outra.\n\n- um\n- dois\n\n1. primeiro\n\n> citado\n\n```\ncódigo <b>\n```');
     expect(blocks.map((block) => block.type)).toEqual(['heading', 'paragraph', 'list', 'list', 'quote', 'code']);

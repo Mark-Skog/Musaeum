@@ -1,0 +1,64 @@
+{
+  "comment": "Notes and the blocks the reader reads in them. markdown.test.tsx checks the reader's parser against these, and crates/musaeum-report checks its own, so a report shows a note as the app does.",
+  "cases": [
+    {
+      "note": "# Título\n\nUm parágrafo\nem duas linhas.\n\n- um\n- dois\n1. três\n\n> citado\n> e mais\n\n```\nlet x = 1;\n  y\n```\n####### sete\n",
+      "blocks": [
+        { "type": "heading", "level": 1, "text": "Título" },
+        { "type": "paragraph", "text": "Um parágrafo em duas linhas." },
+        { "type": "list", "ordered": false, "items": ["um", "dois", "três"] },
+        { "type": "quote", "text": "citado e mais" },
+        { "type": "code", "text": "let x = 1;\n  y" },
+        { "type": "paragraph", "text": "####### sete" }
+      ]
+    },
+    {
+      "note": "```\nnunca fechado\n# não é título",
+      "blocks": [{ "type": "code", "text": "nunca fechado\n# não é título" }]
+    },
+    { "note": "#semespaço", "blocks": [{ "type": "paragraph", "text": "#semespaço" }] },
+    {
+      "note": "1.x\n2) y",
+      "blocks": [
+        { "type": "paragraph", "text": "1.x" },
+        { "type": "list", "ordered": true, "items": ["y"] }
+      ]
+    },
+    {
+      "note": "# a b\nfim",
+      "blocks": [
+        { "type": "paragraph", "text": "# a b" },
+        { "type": "paragraph", "text": "fim" }
+      ]
+    },
+    { "note": "#  x", "blocks": [{ "type": "heading", "level": 1, "text": "x" }] },
+    {
+      "note": "  - indentado\n+ mais",
+      "blocks": [{ "type": "list", "ordered": false, "items": ["indentado", "mais"] }]
+    },
+    { "note": ">sem espaço\n> com", "blocks": [{ "type": "quote", "text": "sem espaço com" }] },
+    {
+      "note": "texto\n# título no meio\nmais",
+      "blocks": [
+        { "type": "paragraph", "text": "texto" },
+        { "type": "heading", "level": 1, "text": "título no meio" },
+        { "type": "paragraph", "text": "mais" }
+      ]
+    },
+    {
+      "note": "\r\nlinha\r\n\r\n- a\r- b",
+      "blocks": [
+        { "type": "paragraph", "text": "linha" },
+        { "type": "list", "ordered": false, "items": ["a", "b"] }
+      ]
+    },
+    {
+      "note": "###### seis\n#######  x\n#\tcom tab",
+      "blocks": [
+        { "type": "heading", "level": 6, "text": "seis" },
+        { "type": "paragraph", "text": "#######  x" },
+        { "type": "heading", "level": 1, "text": "com tab" }
+      ]
+    }
+  ]
+}

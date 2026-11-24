@@ -1907,13 +1907,33 @@ textarea.text-input {
   gap: 6px;
 }
 
-.pdf-exchange-status {
+.pdf-exchange-status,
+.exchange-status {
   margin: 0;
   font-size: 0.8rem;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-.pdf-exchange-status.failed {
+.pdf-exchange-status.failed,
+.exchange-status.failed {
   color: var(--danger);
+}
+
+/* The annotations' ways in and out, at the foot of the panel, the PDF's own under them. */
+.panel-foot {
+  flex: none;
+  margin: auto -10px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-foot .pdf-exchange {
+  margin: 0;
+}
+
+/* In the details beside the books: one more group of the form. */
+.inspector-exchange {
+  margin: 16px 0 0;
+  padding: 12px 0 0;
 }
