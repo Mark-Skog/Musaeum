@@ -4,10 +4,22 @@
 
 Free and open-source digital book reader and library manager (`GPL-3.0-or-later`).
 
+<p align="center">
+  <img src="images/library.png" alt="Musaeum Library Grid" width="800">
+  <br>
+  <em>The integrated digital book library showing covers and taxonomy</em>
+</p>
+
 **Version 1.0.0**, for Windows 10 and 11 (x64). Version history is in
 [`CHANGELOG.md`](CHANGELOG.md), and build, verification, and code-signing instructions are in
-[`docs/release.md`](docs/release.md) *(currently written in Portuguese)*.
+[`docs/release.md`](docs/release.md).
 
+<p align="center">
+  <img src="images/reader.png" alt="Digital Book Reader and Annotations" width="48%">
+  <img src="images/ocr.png" alt="On-demand OCR on Scanned Books" width="48%">
+  <br>
+  <em>High-fidelity digital reading & annotations (left); curved-line detection & on-demand Tesseract OCR on scanned pages (right)</em>
+</p>
 ## Install
 
 Download `Musaeum_1.0.0_x64-setup.exe` and run it: it installs per-user without requiring administrator

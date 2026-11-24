@@ -4,10 +4,22 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
+<p align="center">
+  <img src="images/library.png" alt="Grade da Biblioteca Musaeum" width="800">
+  <br>
+  <em>A biblioteca integrada de livros digitais exibindo capas e taxonomia</em>
+</p>
+
 **Versão 1.0.0**, para Windows 10 e 11 (x64). O histórico das versões está no
 [`CHANGELOG.md`](CHANGELOG.md), e como uma versão é construída, conferida e assinada, em
 [`docs/release.md`](docs/release.md).
 
+<p align="center">
+  <img src="images/reader.png" alt="Leitor Digital e Anotações" width="48%">
+  <img src="images/ocr.png" alt="OCR sob Demanda em Livros Escaneados" width="48%">
+  <br>
+  <em>Leitura digital e anotações de alta fidelidade (esquerda); detecção de linhas e OCR do Tesseract em páginas escaneadas (direita)</em>
+</p>
 ## Instalar
 
 Baixe `Musaeum_1.0.0_x64-setup.exe` e execute: ele instala só para o seu usuário, sem pedir
