@@ -581,6 +581,19 @@ governance, phase-by-phase auditing, and manual QA against a real personal libra
   - **15** Architecture Decision Records (`docs/adr/0001` – `docs/adr/0015`) documenting design choices,
     defects caught, and known limitations
 
+## Support the Project
+
+Musaeum is free, open-source (`GPL-3.0-or-later`), offline-first, and ships with no ads or telemetry. Development and maintenance are funded independently.
+
+If Musaeum is useful in your daily reading or research, voluntary donations help cover real project costs:
+
+* **Windows code-signing certificate** (to remove Windows SmartScreen warnings on future installers);
+* **Ongoing development, testing infrastructure, and AI tooling subscriptions**;
+* **Post-1.0 roadmap maintenance** (such as custom static PDFium builds for stricter sandboxing and future platform support).
+
+* [GitHub Sponsors](https://github.com/sponsors/Mark-Skog) *(0% platform fee for individual sponsors)*
+* [Ko-fi](https://ko-fi.com/markskog) *(one-time donations via PayPal or card)*
+
 ## Credits and Licenses
 
 Musaeum is licensed under `GPL-3.0-or-later` (`LICENSE`). Third-party components and full license texts

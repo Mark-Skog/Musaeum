@@ -841,6 +841,19 @@ O Musaeum `v1.0.0` foi desenvolvido por meio de um **fluxo de engenharia multiag
   - **9/9** suítes E2E na janela real verdes (incluindo 36 recusas hostis de IPC/ACL e teste de fumaça de 52 passos com instalação, auditoria de sandbox e desinstalação)
   - **15** Registros de Decisão Arquitetural (`docs/adr/0001` – `docs/adr/0015`) documentando decisões, defeitos corrigidos e limitações conhecidas
 
+## Apoiar o Projeto
+
+O Musaeum é livre, de código aberto (`GPL-3.0-or-later`), funciona 100% offline e não possui anúncios nem telemetria. O desenvolvimento e a manutenção são financiados de forma independente.
+
+Se o Musaeum for útil na sua leitura ou pesquisa diária, doações voluntárias ajudam a custear despesas reais do projeto:
+
+* **Certificado de assinatura de código para Windows** (para eliminar os avisos do Windows SmartScreen nos instaladores futuros);
+* **Custos contínuos de desenvolvimento, infraestrutura de testes e assinaturas de ferramentas de IA**;
+* **Manutenção do ciclo pós-1.0** (como a build estática própria do PDFium para endurecer o sandbox e futuro suporte a outras plataformas).
+
+* [GitHub Sponsors](https://github.com/sponsors/Mark-Skog) *(0% de taxa da plataforma para patrocinadores individuais)*
+* [Ko-fi](https://ko-fi.com/markskog) *(doações pontuais via PayPal ou cartão)*
+
 ## Créditos e licenças
 
 O Musaeum é GPL-3.0-or-later (`LICENSE`). Ele é feito sobre o trabalho de muitos outros, que o
