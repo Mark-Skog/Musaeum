@@ -20,6 +20,7 @@ Free and open-source digital book reader and library manager (`GPL-3.0-or-later`
   <br>
   <em>High-fidelity digital reading & annotations (left); curved-line detection & on-demand Tesseract OCR on scanned pages (right)</em>
 </p>
+
 ## Install
 
 Download `Musaeum_1.0.0_x64-setup.exe` and run it: it installs per-user without requiring administrator

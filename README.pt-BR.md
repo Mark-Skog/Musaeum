@@ -20,6 +20,7 @@ Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-l
   <br>
   <em>Leitura digital e anotações de alta fidelidade (esquerda); detecção de linhas e OCR do Tesseract em páginas escaneadas (direita)</em>
 </p>
+
 ## Instalar
 
 Baixe `Musaeum_1.0.0_x64-setup.exe` e execute: ele instala só para o seu usuário, sem pedir
