@@ -851,8 +851,14 @@ Se o Musaeum for útil na sua leitura ou pesquisa diária, doações voluntária
 * **Custos contínuos de desenvolvimento, infraestrutura de testes e assinaturas de ferramentas de IA**;
 * **Manutenção do ciclo pós-1.0** (como a build estática própria do PDFium para endurecer o sandbox e futuro suporte a outras plataformas).
 
-* [GitHub Sponsors](https://github.com/sponsors/Mark-Skog) *(0% de taxa da plataforma para patrocinadores individuais)*
-* [Ko-fi](https://ko-fi.com/markskog) *(doações pontuais via PayPal ou cartão)*
+<p align="center">
+  <a href="https://github.com/sponsors/Mark-Skog">
+    <img alt="Apoiar no GitHub Sponsors" src="https://img.shields.io/badge/Apoiar_no_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white">
+  </a>
+  <a href="https://ko-fi.com/markskog">
+    <img alt="Apoiar no Ko-fi" src="https://img.shields.io/badge/Apoiar_no_Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white">
+  </a>
+</p>
 
 ## Créditos e licenças
 
