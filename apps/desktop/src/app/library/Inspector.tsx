@@ -29,6 +29,7 @@ import {
 import { api, type BookRow, type CustomField, type Taxonomy, type WorkMetadata } from '../api';
 import { ExchangeSection, useExchange } from '../ExchangeSection';
 import { getLocale, tn, useT } from '../i18n';
+import { ScrollFrame } from '../OverlayScrollbar';
 import { reasonOf, Tick } from './dialogs';
 import { categoryPath, type Draft, draftOf, editOf, matching, named, provenanceLabel, roles, schemes, statuses } from './taxonomy-model';
 
@@ -264,218 +265,220 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
           ×
         </Button>
       </header>
-      <div className="inspector-body">
-        <p className="muted file-line" title={book.path}>
-          {work.formats.map((format) => format.toUpperCase()).join(', ')} · {book.path.split(/[\\/]/).at(-1)}
-        </p>
+      <ScrollFrame target=".inspector-body">
+        <div className="inspector-body">
+          <p className="muted file-line" title={book.path}>
+            {work.formats.map((format) => format.toUpperCase()).join(', ')} · {book.path.split(/[\\/]/).at(-1)}
+          </p>
 
-        <TextField className="field" value={draft.title} onChange={(title) => set('title', title)}>
-          <Label>
-            {t('details.field.title')} <Origin work={work} field="title" />
-          </Label>
-          <Input className="text-input" data-field="title" />
-        </TextField>
-
-        <div className="field" role="group" aria-label={t('details.creators')}>
-          <span className="field-label">
-            {t('details.creators')} <Origin work={work} field="creators" />
-          </span>
-          {draft.creators.map((credit, index) => (
-            <div key={index} className="row">
-              <TextField
-                className="grow"
-                value={credit.name}
-                aria-label={t('details.creatorName', { number: index + 1 })}
-                onChange={(name) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, name } : old)))}
-              >
-                <Input className="text-input" />
-              </TextField>
-              <Picker label={t('details.creatorRole', { number: index + 1 })} value={credit.role} options={roles()} onChange={(role) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, role } : old)))} />
-              <Button
-                className="button small"
-                aria-label={t('details.creatorUp', { name: credit.name })}
-                isDisabled={index === 0}
-                onPress={() => {
-                  const next = [...draft.creators];
-                  [next[index - 1], next[index]] = [next[index], next[index - 1]];
-                  set('creators', next);
-                }}
-              >
-                ↑
-              </Button>
-              <Button className="button small" aria-label={t('details.removeChip', { name: credit.name })} onPress={() => set('creators', draft.creators.filter((_, at) => at !== index))}>
-                ×
-              </Button>
-            </div>
-          ))}
-          <Button className="button small" onPress={() => set('creators', [...draft.creators, { name: '', role: 'author' }])}>
-            {t('details.addCreator')}
-          </Button>
-        </div>
-
-        <div className="row">
-          <TextField className="field grow" value={draft.series} onChange={(series) => set('series', series)}>
+          <TextField className="field" value={draft.title} onChange={(title) => set('title', title)}>
             <Label>
-              {t('details.series')} <Origin work={work} field="series" />
+              {t('details.field.title')} <Origin work={work} field="title" />
             </Label>
-            <Input className="text-input" data-field="series" />
+            <Input className="text-input" data-field="title" />
           </TextField>
-          <TextField className="field narrow" value={draft.seriesPosition} onChange={(position) => set('seriesPosition', position)}>
-            <Label>{t('details.seriesPosition')}</Label>
-            <Input className="text-input" inputMode="decimal" data-field="series-position" />
-          </TextField>
-        </div>
 
-        <div className="row">
-          <TextField className="field narrow" value={draft.year} onChange={(year) => set('year', year)}>
-            <Label>
-              {t('details.year')} <Origin work={work} field="year" />
-            </Label>
-            <Input className="text-input" inputMode="numeric" data-field="year" />
-          </TextField>
-          <TextField className="field grow" value={draft.language} onChange={(language) => set('language', language)}>
-            <Label>
-              {t('details.language')} <Origin work={work} field="language" />
-            </Label>
-            <Input className="text-input" placeholder="pt-BR" data-field="language" />
-          </TextField>
-        </div>
-
-        <div className="field" role="group" aria-label={t('details.identifiers')}>
-          <span className="field-label">
-            {t('details.identifiers')} <Origin work={work} field="identifiers" />
-          </span>
-          {draft.identifiers.map((identifier, index) => (
-            <div key={index} className="row">
-              <Picker label={t('details.scheme', { number: index + 1 })} value={identifier.scheme} options={schemes()} onChange={(scheme) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, scheme } : old)))} />
-              <TextField
-                className="grow"
-                value={identifier.value}
-                aria-label={t('details.identifier', { number: index + 1 })}
-                onChange={(value) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, value } : old)))}
-              >
-                <Input className="text-input" />
-              </TextField>
-              <Button className="button small" aria-label={t('details.removeIdentifier')} onPress={() => set('identifiers', draft.identifiers.filter((_, at) => at !== index))}>
-                ×
-              </Button>
-            </div>
-          ))}
-          <Button className="button small" onPress={() => set('identifiers', [...draft.identifiers, { scheme: 'isbn', value: '' }])}>
-            {t('details.addIdentifier')}
-          </Button>
-        </div>
-
-        <div className="row">
-          <div className="field" role="group" aria-label={t('details.rating')}>
-            <span className="field-label">{t('details.rating')}</span>
-            <div className="stars">
-              {[1, 2, 3, 4, 5].map((stars) => (
-                <ToggleButton
-                  key={stars}
-                  className="star"
-                  isSelected={draft.rating !== null && stars <= draft.rating}
-                  aria-label={tn('details.stars', stars)}
-                  onChange={() => set('rating', draft.rating === stars ? null : stars)}
+          <div className="field" role="group" aria-label={t('details.creators')}>
+            <span className="field-label">
+              {t('details.creators')} <Origin work={work} field="creators" />
+            </span>
+            {draft.creators.map((credit, index) => (
+              <div key={index} className="row">
+                <TextField
+                  className="grow"
+                  value={credit.name}
+                  aria-label={t('details.creatorName', { number: index + 1 })}
+                  onChange={(name) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, name } : old)))}
                 >
-                  ★
-                </ToggleButton>
-              ))}
-            </div>
-          </div>
-          <div className="field" role="group" aria-label={t('details.statusGroup')}>
-            <span className="field-label">{t('details.status')}</span>
-            <Picker label={t('details.statusGroup')} value={draft.status} options={statuses()} onChange={(status) => set('status', status)} />
-          </div>
-        </div>
-
-        <TextField className="field" value={draft.description} onChange={(description) => set('description', description)}>
-          <Label>
-            {t('details.description')} <Origin work={work} field="description" />
-          </Label>
-          <TextArea className="text-input description" rows={4} data-field="description" />
-        </TextField>
-
-        <div className="field" role="group" aria-label={t('details.categories')}>
-          <span className="field-label">{t('details.categories')}</span>
-          <Chips
-            label={t('details.categories')}
-            chosen={categories}
-            options={taxonomy.categories.map((category) => ({ key: String(category.id), text: categoryPath(taxonomy.categories, category.id) }))}
-            onChange={(keys) => set('categories', keys.map(Number))}
-          />
-        </div>
-
-        <div className="field" role="group" aria-label={t('details.tags')}>
-          <span className="field-label">{t('details.tags')}</span>
-          <Chips
-            label={t('details.tags')}
-            chosen={draft.tags.map((name) => ({ key: name, text: name }))}
-            options={taxonomy.tags.map((tag) => ({ key: tag.name, text: tag.name }))}
-            allowsNew
-            onChange={(names) => set('tags', names)}
-          />
-        </div>
-
-        {place !== null ? (
-          <div className="field" role="group" aria-label={t('details.orderIn', { name: place.name })}>
-            <span className="field-label">{t('details.orderInShown', { name: place.name })}</span>
-            <div className="row">
-              <Button
-                className="button small"
-                isDisabled={place.before === null}
-                onPress={() => {
-                  if (place.before !== null) {
-                    api.addToCollection(place.collection, [work.id], { at: 'before', id: place.before }).then(onSaved).catch((reason: unknown) => setError(reasonOf(reason)));
-                  }
-                }}
-              >
-                {t('details.up')}
-              </Button>
-              <Button
-                className="button small"
-                isDisabled={place.after === null}
-                onPress={() => {
-                  if (place.after !== null) {
-                    api.addToCollection(place.collection, [work.id], { at: 'after', id: place.after }).then(onSaved).catch((reason: unknown) => setError(reasonOf(reason)));
-                  }
-                }}
-              >
-                {t('details.down')}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="field" role="group" aria-label={t('details.collections')}>
-          <span className="field-label">{t('details.collections')}</span>
-          <Chips
-            label={t('details.collections')}
-            chosen={collections}
-            options={taxonomy.collections.map((collection) => ({ key: String(collection.id), text: collection.name }))}
-            onChange={(keys) => set('collections', keys.map(Number))}
-          />
-        </div>
-
-        {taxonomy.fields.length > 0 ? (
-          <div className="field" role="group" aria-label={t('details.custom')}>
-            <span className="field-label">{t('details.custom')}</span>
-            {taxonomy.fields.map((field) => (
-              <div key={field.id} className="custom-row">
-                {field.kind === 'boolean' ? null : <span className="custom-name">{field.name}</span>}
-                <CustomInput field={field} value={draft.custom[field.id] ?? null} onChange={(value) => set('custom', { ...draft.custom, [field.id]: value })} />
+                  <Input className="text-input" />
+                </TextField>
+                <Picker label={t('details.creatorRole', { number: index + 1 })} value={credit.role} options={roles()} onChange={(role) => set('creators', draft.creators.map((old, at) => (at === index ? { ...old, role } : old)))} />
+                <Button
+                  className="button small"
+                  aria-label={t('details.creatorUp', { name: credit.name })}
+                  isDisabled={index === 0}
+                  onPress={() => {
+                    const next = [...draft.creators];
+                    [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                    set('creators', next);
+                  }}
+                >
+                  ↑
+                </Button>
+                <Button className="button small" aria-label={t('details.removeChip', { name: credit.name })} onPress={() => set('creators', draft.creators.filter((_, at) => at !== index))}>
+                  ×
+                </Button>
               </div>
             ))}
+            <Button className="button small" onPress={() => set('creators', [...draft.creators, { name: '', role: 'author' }])}>
+              {t('details.addCreator')}
+            </Button>
           </div>
-        ) : null}
-        <ExchangeSection
-          heading={t('details.annotations')}
-          controls={exchange}
-          id="work-exchange"
-          className="inspector-exchange"
-          idle={t('details.annotations.idle')}
-        />
-      </div>
+
+          <div className="row">
+            <TextField className="field grow" value={draft.series} onChange={(series) => set('series', series)}>
+              <Label>
+                {t('details.series')} <Origin work={work} field="series" />
+              </Label>
+              <Input className="text-input" data-field="series" />
+            </TextField>
+            <TextField className="field narrow" value={draft.seriesPosition} onChange={(position) => set('seriesPosition', position)}>
+              <Label>{t('details.seriesPosition')}</Label>
+              <Input className="text-input" inputMode="decimal" data-field="series-position" />
+            </TextField>
+          </div>
+
+          <div className="row">
+            <TextField className="field narrow" value={draft.year} onChange={(year) => set('year', year)}>
+              <Label>
+                {t('details.year')} <Origin work={work} field="year" />
+              </Label>
+              <Input className="text-input" inputMode="numeric" data-field="year" />
+            </TextField>
+            <TextField className="field grow" value={draft.language} onChange={(language) => set('language', language)}>
+              <Label>
+                {t('details.language')} <Origin work={work} field="language" />
+              </Label>
+              <Input className="text-input" placeholder="pt-BR" data-field="language" />
+            </TextField>
+          </div>
+
+          <div className="field" role="group" aria-label={t('details.identifiers')}>
+            <span className="field-label">
+              {t('details.identifiers')} <Origin work={work} field="identifiers" />
+            </span>
+            {draft.identifiers.map((identifier, index) => (
+              <div key={index} className="row">
+                <Picker label={t('details.scheme', { number: index + 1 })} value={identifier.scheme} options={schemes()} onChange={(scheme) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, scheme } : old)))} />
+                <TextField
+                  className="grow"
+                  value={identifier.value}
+                  aria-label={t('details.identifier', { number: index + 1 })}
+                  onChange={(value) => set('identifiers', draft.identifiers.map((old, at) => (at === index ? { ...old, value } : old)))}
+                >
+                  <Input className="text-input" />
+                </TextField>
+                <Button className="button small" aria-label={t('details.removeIdentifier')} onPress={() => set('identifiers', draft.identifiers.filter((_, at) => at !== index))}>
+                  ×
+                </Button>
+              </div>
+            ))}
+            <Button className="button small" onPress={() => set('identifiers', [...draft.identifiers, { scheme: 'isbn', value: '' }])}>
+              {t('details.addIdentifier')}
+            </Button>
+          </div>
+
+          <div className="row">
+            <div className="field" role="group" aria-label={t('details.rating')}>
+              <span className="field-label">{t('details.rating')}</span>
+              <div className="stars">
+                {[1, 2, 3, 4, 5].map((stars) => (
+                  <ToggleButton
+                    key={stars}
+                    className="star"
+                    isSelected={draft.rating !== null && stars <= draft.rating}
+                    aria-label={tn('details.stars', stars)}
+                    onChange={() => set('rating', draft.rating === stars ? null : stars)}
+                  >
+                    ★
+                  </ToggleButton>
+                ))}
+              </div>
+            </div>
+            <div className="field" role="group" aria-label={t('details.statusGroup')}>
+              <span className="field-label">{t('details.status')}</span>
+              <Picker label={t('details.statusGroup')} value={draft.status} options={statuses()} onChange={(status) => set('status', status)} />
+            </div>
+          </div>
+
+          <TextField className="field" value={draft.description} onChange={(description) => set('description', description)}>
+            <Label>
+              {t('details.description')} <Origin work={work} field="description" />
+            </Label>
+            <TextArea className="text-input description" rows={4} data-field="description" />
+          </TextField>
+
+          <div className="field" role="group" aria-label={t('details.categories')}>
+            <span className="field-label">{t('details.categories')}</span>
+            <Chips
+              label={t('details.categories')}
+              chosen={categories}
+              options={taxonomy.categories.map((category) => ({ key: String(category.id), text: categoryPath(taxonomy.categories, category.id) }))}
+              onChange={(keys) => set('categories', keys.map(Number))}
+            />
+          </div>
+
+          <div className="field" role="group" aria-label={t('details.tags')}>
+            <span className="field-label">{t('details.tags')}</span>
+            <Chips
+              label={t('details.tags')}
+              chosen={draft.tags.map((name) => ({ key: name, text: name }))}
+              options={taxonomy.tags.map((tag) => ({ key: tag.name, text: tag.name }))}
+              allowsNew
+              onChange={(names) => set('tags', names)}
+            />
+          </div>
+
+          {place !== null ? (
+            <div className="field" role="group" aria-label={t('details.orderIn', { name: place.name })}>
+              <span className="field-label">{t('details.orderInShown', { name: place.name })}</span>
+              <div className="row">
+                <Button
+                  className="button small"
+                  isDisabled={place.before === null}
+                  onPress={() => {
+                    if (place.before !== null) {
+                      api.addToCollection(place.collection, [work.id], { at: 'before', id: place.before }).then(onSaved).catch((reason: unknown) => setError(reasonOf(reason)));
+                    }
+                  }}
+                >
+                  {t('details.up')}
+                </Button>
+                <Button
+                  className="button small"
+                  isDisabled={place.after === null}
+                  onPress={() => {
+                    if (place.after !== null) {
+                      api.addToCollection(place.collection, [work.id], { at: 'after', id: place.after }).then(onSaved).catch((reason: unknown) => setError(reasonOf(reason)));
+                    }
+                  }}
+                >
+                  {t('details.down')}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="field" role="group" aria-label={t('details.collections')}>
+            <span className="field-label">{t('details.collections')}</span>
+            <Chips
+              label={t('details.collections')}
+              chosen={collections}
+              options={taxonomy.collections.map((collection) => ({ key: String(collection.id), text: collection.name }))}
+              onChange={(keys) => set('collections', keys.map(Number))}
+            />
+          </div>
+
+          {taxonomy.fields.length > 0 ? (
+            <div className="field" role="group" aria-label={t('details.custom')}>
+              <span className="field-label">{t('details.custom')}</span>
+              {taxonomy.fields.map((field) => (
+                <div key={field.id} className="custom-row">
+                  {field.kind === 'boolean' ? null : <span className="custom-name">{field.name}</span>}
+                  <CustomInput field={field} value={draft.custom[field.id] ?? null} onChange={(value) => set('custom', { ...draft.custom, [field.id]: value })} />
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <ExchangeSection
+            heading={t('details.annotations')}
+            controls={exchange}
+            id="work-exchange"
+            className="inspector-exchange"
+            idle={t('details.annotations.idle')}
+          />
+        </div>
+      </ScrollFrame>
       <footer className="inspector-foot">
         {problems.length > 0 ? (
           <ul className="form-error" role="alert">

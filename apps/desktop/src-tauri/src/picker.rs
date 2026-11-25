@@ -14,9 +14,10 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST,
-    FOS_PICKFOLDERS, FOS_STRICTFILETYPES, FileOpenDialog, FileSaveDialog, IFileDialog,
-    IFileOpenDialog, IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+    FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_OVERWRITEPROMPT,
+    FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, FOS_STRICTFILETYPES, FileOpenDialog, FileSaveDialog,
+    IFileDialog, IFileOpenDialog, IFileSaveDialog, IShellItem, IShellItemArray,
+    SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
 };
 use windows::core::{HSTRING, Interface, PCWSTR};
 
@@ -46,6 +47,60 @@ pub fn pick_folder(owner: Option<isize>, title: &str) -> Result<Option<PathBuf>,
             },
             false,
         )
+    })
+}
+
+/// Asks for one or more folders, with `title` over the dialog. Empty if the person cancelled.
+pub fn pick_folders(owner: Option<isize>, title: &str) -> Result<Vec<PathBuf>, String> {
+    let title = title.to_owned();
+    on_own_thread("folders-picker", move || {
+        // SAFETY: COM is set up on this thread, which is ours alone and ends after the dialog, and
+        // undone below on every path through this function.
+        let initialized =
+            unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+        if initialized.is_err() {
+            return Err(format!("COM could not start: {initialized:?}"));
+        }
+        let result = (|| -> windows::core::Result<Vec<PathBuf>> {
+            // SAFETY: plain COM calls on interfaces this thread created; every pointer returned
+            // is owned by the wrappers or freed with CoTaskMemFree right after use.
+            unsafe {
+                let open_dialog: IFileOpenDialog =
+                    CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+                let options = open_dialog.GetOptions()?;
+                open_dialog.SetOptions(
+                    options
+                        | FOS_PICKFOLDERS
+                        | FOS_ALLOWMULTISELECT
+                        | FOS_FORCEFILESYSTEM
+                        | FOS_PATHMUSTEXIST,
+                )?;
+                open_dialog.SetTitle(&HSTRING::from(title.as_str()))?;
+                let parent = owner.map(|handle| HWND(handle as *mut core::ffi::c_void));
+                if let Err(error) = open_dialog.Show(parent) {
+                    if error.code() == ERROR_CANCELLED.to_hresult() {
+                        return Ok(Vec::new());
+                    }
+                    return Err(error);
+                }
+                let items: IShellItemArray = open_dialog.GetResults()?;
+                let count = items.GetCount()?;
+                let mut paths = Vec::with_capacity(count as usize);
+                for index in 0..count {
+                    let item = items.GetItemAt(index)?;
+                    let name = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+                    let path = name.to_string();
+                    CoTaskMemFree(Some(name.0 as *const core::ffi::c_void));
+                    if let Ok(path) = path {
+                        paths.push(PathBuf::from(path));
+                    }
+                }
+                Ok(paths)
+            }
+        })();
+        // SAFETY: matches the successful CoInitializeEx above.
+        unsafe { CoUninitialize() };
+        result.map_err(|error| error.to_string())
     })
 }
 
@@ -132,10 +187,10 @@ fn prepare(
     Ok(())
 }
 
-fn on_own_thread(
+fn on_own_thread<R: Send + 'static>(
     name: &str,
-    run: impl FnOnce() -> Result<Option<PathBuf>, String> + Send + 'static,
-) -> Result<Option<PathBuf>, String> {
+    run: impl FnOnce() -> Result<R, String> + Send + 'static,
+) -> Result<R, String> {
     std::thread::Builder::new()
         .name(name.to_owned())
         .spawn(run)

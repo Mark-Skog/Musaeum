@@ -25,6 +25,16 @@ export const preferences: Record<keyof typeof pt, string> = {
   'prefs.motion.reduce': 'Always reduced',
   'prefs.motion.hint': 'Reduced: pages turn without animation, and the library and the reader change without transitions.',
 
+  'prefs.sidebar.heading': 'Sidebar',
+  'prefs.sidebar.showEmpty': 'Show empty sections in sidebar',
+  'prefs.sidebar.showEmptyHint': 'When unchecked, Categories, Tags, Collections and Smart collections appear only after you create the first item.',
+  'prefs.sidebar.showCounts': 'Show book counts in sidebar',
+  'prefs.sidebar.showCountsHint': 'Shows the number of books next to folders, categories, tags and collections.',
+  'prefs.covers.label': 'Cover size',
+  'prefs.covers.value': '{width} px',
+  'prefs.covers.reset': 'Reset default',
+  'prefs.covers.hint': 'You can also resize covers by holding Ctrl and scrolling the mouse wheel over the book grid.',
+
   'prefs.annotations.heading': 'Annotations',
   'prefs.author.label': 'Annotations’ author name',
   'prefs.author.hint': 'Signs the annotations taken to a PDF (/T) and an XFDF, and appears in the reports. Left blank, the PDF and the XFDF carry the Windows user name ({user}) and the reports carry no name.',

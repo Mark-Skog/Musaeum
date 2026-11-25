@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::covers::{CoverService, CoverWaker};
 use crate::fulltext::{FullTextService, FullTextWaker, Progress};
-use crate::picker::pick_folder;
+use crate::picker::{pick_folder, pick_folders};
 use crate::session::AppState;
 
 /// Sent to the page whenever what the library holds may have changed.
@@ -278,6 +278,62 @@ impl Shelf {
         Ok(())
     }
 
+    /// Opens the library if needed, validates and adds each folder in `paths` independently, and
+    /// returns the updated library state together with which folders were added or refused.
+    pub fn add_roots(&self, paths: &[PathBuf]) -> Result<AddRootsResult, String> {
+        let mut added = Vec::new();
+        let mut rejected = Vec::new();
+        {
+            let mut inner = self.lock();
+            inner.looked = true;
+            if inner.opened.is_none() {
+                let library_paths = self.new_paths()?;
+                self.open_into(&mut inner, library_paths);
+            }
+            let opened = inner.opened.as_ref().ok_or_else(|| {
+                inner
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "there is no library".to_owned())
+            })?;
+            for path in paths {
+                match opened.library.add_root(path, &[]) {
+                    Ok(root) => {
+                        let kept = root.path.to_string_lossy().into_owned();
+                        if !added.contains(&kept) {
+                            added.push(kept);
+                        }
+                    }
+                    Err(error) => rejected.push(RejectedFolder {
+                        path: path.to_string_lossy().into_owned(),
+                        reason: error.to_string(),
+                    }),
+                }
+            }
+            if !added.is_empty() {
+                if let Some(indexer) = &opened.indexer {
+                    indexer.reconcile_now();
+                }
+                if let Some(covers) = &opened.covers {
+                    covers.waker().wake();
+                }
+            }
+        }
+        Ok(AddRootsResult {
+            info: self.info(),
+            added,
+            rejected,
+        })
+    }
+
+    /// Stops following a root folder without touching its files on disk.
+    pub fn remove_root(&self, id: i64) -> Result<(), String> {
+        let library = self
+            .library()
+            .ok_or_else(|| "there is no library open".to_owned())?;
+        library.remove_root(id).map_err(|error| error.to_string())
+    }
+
     /// Closes the open library and opens the one in `directory`, which has to exist.
     pub fn switch_to(&self, directory: &Path) -> Result<(), String> {
         let paths = LibraryPaths::in_directory(directory);
@@ -393,6 +449,23 @@ pub struct RootSummary {
     status: String,
 }
 
+/// A folder refused when adding one or more roots.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectedFolder {
+    pub path: String,
+    pub reason: String,
+}
+
+/// Outcome of adding one or more folders chosen in the native dialog.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddRootsResult {
+    pub info: LibraryInfo,
+    pub added: Vec<String>,
+    pub rejected: Vec<RejectedFolder>,
+}
+
 /// What the page shows about the library.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -445,17 +518,24 @@ pub fn library_info(state: State<'_, AppState>) -> LibraryInfo {
     state.shelf.info()
 }
 
-/// Asks for a folder of books and starts following it, creating the library if there is none.
+/// Asks for one or more folders of books and starts following them, creating the library if there is none.
 #[tauri::command(async)]
 pub fn library_choose_root(
     window: WebviewWindow,
     state: State<'_, AppState>,
-) -> Result<Option<LibraryInfo>, String> {
-    let Some(folder) = pick_folder(owner_of(&window), &tr!(PickBooksFolder))? else {
+) -> Result<Option<AddRootsResult>, String> {
+    let folders = pick_folders(owner_of(&window), &tr!(PickBooksFolder))?;
+    if folders.is_empty() {
         return Ok(None);
-    };
-    state.shelf.add_root(&folder)?;
-    Ok(Some(state.shelf.info()))
+    }
+    state.shelf.add_roots(&folders).map(Some)
+}
+
+/// Stops following a root folder without touching files on disk.
+#[tauri::command(async)]
+pub fn library_remove_root(state: State<'_, AppState>, id: i64) -> Result<LibraryInfo, String> {
+    state.shelf.remove_root(id)?;
+    Ok(state.shelf.info())
 }
 
 /// Starts following a folder named by path. The same as choosing it, for tests that cannot use the
@@ -603,6 +683,26 @@ pub fn set_reader_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("musaeum-shelf-{}-{id}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn only_plain_names_are_settings() {
@@ -612,5 +712,47 @@ mod tests {
         assert!(!is_setting_name("Typography"));
         assert!(!is_setting_name("a.b"));
         assert!(!is_setting_name(&"a".repeat(41)));
+    }
+
+    #[test]
+    fn add_roots_keeps_valid_folders_and_reports_refused_ones() {
+        let dir = TempDir::new();
+        let lib_dir = dir.0.join("lib");
+        let valid_a = dir.0.join("books-a");
+        let child_of_a = valid_a.join("sub");
+        let valid_b = dir.0.join("books-b");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::create_dir_all(&child_of_a).unwrap();
+        std::fs::create_dir_all(&valid_b).unwrap();
+
+        let shelf = Shelf::new(Some(lib_dir.clone()), true);
+        let outcome = shelf
+            .add_roots(&[
+                valid_a.clone(),
+                child_of_a.clone(),
+                lib_dir.clone(),
+                valid_b.clone(),
+            ])
+            .unwrap();
+
+        assert_eq!(outcome.added.len(), 2);
+        assert_eq!(outcome.rejected.len(), 2);
+        assert_eq!(outcome.info.roots.len(), 2);
+        assert!(
+            outcome
+                .rejected
+                .iter()
+                .any(|item| item.path == child_of_a.to_string_lossy())
+        );
+        assert!(
+            outcome
+                .rejected
+                .iter()
+                .any(|item| item.path == lib_dir.to_string_lossy())
+        );
+
+        let root_id = outcome.info.roots[0].id;
+        shelf.remove_root(root_id).unwrap();
+        assert_eq!(shelf.info().roots.len(), 1);
     }
 }

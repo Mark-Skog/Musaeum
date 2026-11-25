@@ -244,9 +244,18 @@ const textOf = (main, selector) => main.evaluate(`document.querySelector(${JSON.
 const background = (main) => main.evaluate('getComputedStyle(document.body).backgroundColor');
 const dialogOpen = (main) => main.evaluate("document.querySelector('[data-surface=\"preferences\"]') !== null");
 
+async function openPreferences(main) {
+  await click(main, '#library-actions');
+  await waitFor(main, "document.querySelector('[role=\"menuitem\"][data-action=\"preferences\"]') !== null", {
+    timeoutMs: 5000,
+    what: 'the library actions menu',
+  });
+  await click(main, '[role="menuitem"][data-action="preferences"]');
+}
+
 async function keyboardInDialog(main, label) {
-  // Opened from its button: the focus comes back to it.
-  await click(main, '#open-preferences');
+  // Opened from the actions menu: the focus comes back to its trigger button.
+  await openPreferences(main);
   await waitFor(main, "document.querySelector('[data-surface=\"preferences\"]') !== null", { timeoutMs: 5000, what: 'the Preferences' });
   await delay(200);
   const inside = [];
@@ -262,7 +271,7 @@ async function keyboardInDialog(main, label) {
   await waitFor(main, "document.querySelector('[data-surface=\"preferences\"]') === null", { timeoutMs: 5000, what: 'the Preferences to close' });
   await delay(150);
   const back = await activeId(main);
-  step(`${label}: Tab and Shift+Tab stay in the Preferences, Escape closes them and the focus goes back to its button`, inside.every(Boolean) && back === 'open-preferences', {
+  step(`${label}: Tab and Shift+Tab stay in the Preferences, Escape closes them and the focus goes back to its button`, inside.every(Boolean) && back === 'library-actions', {
     outside: inside.filter((value) => !value).length,
     back,
   });
@@ -310,7 +319,7 @@ async function run(work) {
     await keyboardInDialog(main, 'library');
 
     // 3. The themes, chosen in the dialog.
-    await click(main, '#open-preferences');
+    await openPreferences(main);
     await waitFor(main, "document.querySelector('[data-surface=\"preferences\"]') !== null", { timeoutMs: 5000, what: 'the Preferences' });
     await click(main, '#prefs-theme-dark');
     await waitFor(main, "document.documentElement.dataset.theme === 'dark'", { timeoutMs: 5000, what: 'the dark theme' });
@@ -349,9 +358,9 @@ async function run(work) {
     const heading = await textOf(main, '[data-surface="preferences"] .dialog-title');
     await press(main, 'Escape');
     await waitFor(main, "document.querySelector('[data-surface=\"preferences\"]') === null", { timeoutMs: 5000, what: 'the Preferences to close' });
-    const button = await textOf(main, '#open-preferences');
+    const button = await main.evaluate("document.querySelector('#library-actions')?.getAttribute('aria-label') ?? null");
     const grid = await main.evaluate("document.querySelector('.book-grid, .book-table')?.getAttribute('aria-label') ?? null");
-    step('English at once: the dialog, the toolbar and the books\' grid', heading === EN['prefs.title'] && button === EN['prefs.open'] && grid === EN['library.books.label'], { heading, button, grid });
+    step('English at once: the dialog, the toolbar and the books\' grid', heading === EN['prefs.title'] && button === EN['library.actions.label'] && grid === EN['library.books.label'], { heading, button, grid });
 
     // 7. The details beside the books: Escape in them goes back to the books, and Escape there
     // puts them away, the focus staying with the books.
@@ -523,11 +532,11 @@ async function run(work) {
   try {
     await waitForLibrary(main);
     const kept = await main.evaluate('window.musaeumApp.preferences().preferences');
-    const page = await main.evaluate("({ lang: document.documentElement.lang, theme: document.documentElement.dataset.theme ?? null, motion: document.documentElement.dataset.motion ?? null, bg: getComputedStyle(document.body).backgroundColor, button: document.querySelector('#open-preferences')?.textContent?.trim() })");
+    const page = await main.evaluate("({ lang: document.documentElement.lang, theme: document.documentElement.dataset.theme ?? null, motion: document.documentElement.dataset.motion ?? null, bg: getComputedStyle(document.body).backgroundColor, button: document.querySelector('#library-actions')?.getAttribute('aria-label') ?? null })");
     step(
       'opened again: every preference kept, and the page in English, dark and still from the start',
       kept.language === 'en' && kept.theme === 'dark' && kept.motion === 'reduce' && kept.annotationAuthor === 'Ana Lima' && JSON.stringify(kept.ocrLanguages) === '["eng"]' &&
-        page.lang === 'en' && page.theme === 'dark' && page.motion === 'reduce' && page.bg === 'rgb(24, 25, 27)' && page.button === EN['prefs.open'],
+        page.lang === 'en' && page.theme === 'dark' && page.motion === 'reduce' && page.bg === 'rgb(24, 25, 27)' && page.button === EN['library.actions.label'],
       { kept, page },
     );
     await keyboardInDialog(main, 'opened again, in English');

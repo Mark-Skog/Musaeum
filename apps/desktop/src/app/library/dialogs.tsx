@@ -26,7 +26,9 @@ import {
 } from 'react-aria-components';
 
 import { type MessageKey, t, tn, useLocale, useT } from '../i18n';
-import { api, type Category, type CustomField, type FieldKind, type FolderEntry, type SmartCollection, type SmartRule, type SmartRules, type Tag, type Taxonomy } from '../api';
+import { ScrollFrame } from '../OverlayScrollbar';
+import { api, type Category, type CustomField, type FieldKind, type FolderEntry, type RootSummary, type SmartCollection, type SmartRule, type SmartRules, type Tag, type Taxonomy } from '../api';
+import { shortName } from './sidebar-model';
 import { categoryPath, defaultRule, fieldKinds, FORMATS, moveTargets, ruleFields, ruleOps, ruleProblem, statuses } from './taxonomy-model';
 
 /** What the host said when it refused, without the noise of the transport. */
@@ -596,5 +598,91 @@ export function Tick({ label, isSelected, onChange }: { label: string; isSelecte
       </span>
       {label}
     </Checkbox>
+  );
+}
+
+/** Monitored library roots: lets the user inspect, add, or stop following folders. */
+export function FoldersDialog({
+  roots,
+  onClose,
+  onAddFolders,
+  onRemoveRoot,
+}: {
+  roots: RootSummary[];
+  onClose(): void;
+  onAddFolders(): Promise<void>;
+  onRemoveRoot(id: number): Promise<void>;
+}): React.JSX.Element {
+  const t = useT();
+  const [removing, setRemoving] = useState<RootSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const add = (): void => {
+    setError(null);
+    setBusy(true);
+    onAddFolders()
+      .catch((reason: unknown) => setError(reasonOf(reason)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <>
+      <ModalOverlay isOpen isDismissable onOpenChange={(open) => !open && onClose()} className="modal-overlay">
+        <Modal className="modal library-dialog wide">
+          <Dialog aria-label={t('dialogs.folders.title')} className="library-dialog-body">
+            <div className="library-form">
+              <Heading slot="title" className="dialog-title">
+                {t('dialogs.folders.title')}
+              </Heading>
+              <p className="dialog-text muted">{t('dialogs.folders.intro')}</p>
+              {roots.length === 0 ? (
+                <p className="dialog-text muted">{t('dialogs.folders.none')}</p>
+              ) : (
+                <ScrollFrame className="shrink" target=".roots-list">
+                  <ul className="roots-list" aria-label={t('dialogs.folders.list')}>
+                    {roots.map((root) => (
+                      <li key={root.id} className="root-row">
+                        <div className="root-meta">
+                          <span className="root-name">{shortName(root.path)}</span>
+                          <span className="root-path muted" title={root.path}>
+                            {root.path}
+                          </span>
+                        </div>
+                        <Button className="button small" aria-label={t('dialogs.folders.removeNamed', { name: shortName(root.path) })} onPress={() => setRemoving(root)}>
+                          {t('dialogs.folders.remove')}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </ScrollFrame>
+              )}
+              {error !== null ? (
+                <p className="form-error" role="alert">
+                  {error}
+                </p>
+              ) : null}
+              <div className="modal-actions">
+                <Button className="button" onPress={add} isDisabled={busy}>
+                  {t('dialogs.folders.add')}
+                </Button>
+                <Button className="button primary" onPress={onClose}>
+                  {t('common.close')}
+                </Button>
+              </div>
+            </div>
+          </Dialog>
+        </Modal>
+      </ModalOverlay>
+      {removing !== null ? (
+        <ConfirmDialog
+          title={t('dialogs.folders.confirmTitle', { name: shortName(removing.path) })}
+          message={t('dialogs.folders.confirmMessage')}
+          confirmLabel={t('dialogs.folders.remove')}
+          onConfirm={() => onRemoveRoot(removing.id)}
+          onClose={() => setRemoving(null)}
+        />
+      ) : null}
+    </>
   );
 }
