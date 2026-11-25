@@ -298,9 +298,22 @@ export interface ReaderViewProps {
   target?: ReaderTarget | null;
   /** Opens the Preferences. */
   onPreferences?(): void;
+  /** Whether the window is currently in `F11` fullscreen. */
+  isFullscreen?: boolean;
+  /** Toggles `F11` fullscreen from reader shortcuts (including inside flowing books). */
+  onToggleFullscreen?(): void;
 }
 
-export function ReaderView({ book, options, onBack, probe, target = null, onPreferences }: ReaderViewProps): React.JSX.Element {
+export function ReaderView({
+  book,
+  options,
+  onBack,
+  probe,
+  target = null,
+  onPreferences,
+  isFullscreen = false,
+  onToggleFullscreen,
+}: ReaderViewProps): React.JSX.Element {
   const t = useT();
   const surface = useRef<HTMLDivElement>(null);
   const fixed = useRef<FixedReader | null>(null);
@@ -878,14 +891,21 @@ export function ReaderView({ book, options, onBack, probe, target = null, onPref
           }
           return;
         case 'escape':
-          setTocOpen(false);
+          if (tocOpen) {
+            setTocOpen(false);
+          } else if (isFullscreen) {
+            onToggleFullscreen?.();
+          }
           return;
         case 'contents':
           setTocOpen((open) => !open);
           return;
+        case 'fullscreen':
+          onToggleFullscreen?.();
+          return;
       }
     },
-    [mode, animated, changeMode, changeAnimation],
+    [mode, animated, tocOpen, isFullscreen, onToggleFullscreen, changeMode, changeAnimation],
   );
   onShortcut.current = shortcut;
 

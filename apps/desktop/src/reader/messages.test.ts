@@ -56,6 +56,7 @@ describe('messages of the app reader', () => {
     expect(isFromReader({ type: 'opened', openMs: 12 })).toBe(true);
     expect(isFromReader({ type: 'layout', ms: 40, change: 'typography' })).toBe(true);
     expect(isFromReader({ type: 'shortcut', key: 'mode' })).toBe(true);
+    expect(isFromReader({ type: 'shortcut', key: 'fullscreen' })).toBe(true);
     expect(isFromReader({ type: 'link', href: 'https://example.org/a' })).toBe(true);
     expect(isFromReader({ type: 'link', href: 'mailto:a@example.org' })).toBe(true);
   });

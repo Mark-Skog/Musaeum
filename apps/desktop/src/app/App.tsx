@@ -17,6 +17,7 @@ import type { PdfAction } from './reader/annotations/AnnotationUi';
 import { type ReaderProbe, ReaderView } from './reader/ReaderView';
 import { PreferencesDialog } from './preferences/PreferencesDialog';
 import { currentPreferences, updatePreferences } from './preferences/store';
+import { TitleBar, useWindowChrome } from './TitleBar';
 
 export function App({ options }: { options: StartupOptions }): React.JSX.Element {
   const library = useLibrary();
@@ -35,18 +36,25 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
   const opened = useRef(0);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const openPreferences = useCallback(() => setPreferencesOpen(true), []);
+  const windowTitle = book === null ? 'Musaeum' : book.title;
+  const chrome = useWindowChrome(windowTitle);
 
-  // Ctrl+, opens the Preferences from anywhere, as in most programs.
+  // Ctrl+, opens the Preferences from anywhere; F11 toggles fullscreen in the reader.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === ',' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
         event.preventDefault();
         setPreferencesOpen(true);
+        return;
+      }
+      if (event.key === 'F11' && !event.ctrlKey && !event.altKey && !event.metaKey && (book !== null || chrome.fullscreen)) {
+        event.preventDefault();
+        void chrome.toggleFullscreen();
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, []);
+  }, [book, chrome]);
 
   const onRows = useCallback(
     (list: BookRow[], total: number, shown: { text: string; folder: number | null; filter: unknown }) => {
@@ -61,11 +69,14 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
 
   const back = useCallback(() => {
     probe.current = null;
+    if (chrome.fullscreen) {
+      void chrome.setFullscreen(false);
+    }
     setBook(null);
     setTarget(null);
     setCalibreRequest(null);
     library.refresh();
-  }, [library]);
+  }, [chrome, library]);
 
   const open = useCallback((next: BookRow, at?: ReaderTarget) => {
     opened.current++;
@@ -212,6 +223,14 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
 
   return (
     <div className="app">
+      <TitleBar
+        title={windowTitle}
+        maximized={chrome.maximized}
+        hidden={chrome.fullscreen}
+        onMinimize={chrome.minimize}
+        onToggleMaximize={chrome.toggleMaximize}
+        onClose={chrome.close}
+      />
       {book === null ? (
         <LibraryView
           info={library.info}
@@ -226,7 +245,17 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
           onPreferences={openPreferences}
         />
       ) : (
-        <ReaderView key={`${book.documentId}-${opened.current}`} book={book} options={options} onBack={back} probe={probe} target={target} onPreferences={openPreferences} />
+        <ReaderView
+          key={`${book.documentId}-${opened.current}`}
+          book={book}
+          options={options}
+          onBack={back}
+          probe={probe}
+          target={target}
+          onPreferences={openPreferences}
+          isFullscreen={chrome.fullscreen}
+          onToggleFullscreen={() => void chrome.toggleFullscreen()}
+        />
       )}
       {preferencesOpen ? <PreferencesDialog onClose={() => setPreferencesOpen(false)} /> : null}
     </div>

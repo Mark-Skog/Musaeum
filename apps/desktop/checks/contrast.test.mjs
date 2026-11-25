@@ -45,6 +45,8 @@ const TEXT = [
   ...['text', 'muted', 'accent', 'danger'].flatMap((fg) => GROUNDS.map((bg) => [fg, bg])),
   ['accent-text', 'accent'],
   ['text', 'mark'],
+  ['window-close-text', 'window-close-bg'],
+  ['window-close-text', 'window-close-active'],
 ];
 /** What is not text but has to be seen: 3:1 against every ground it stands on. */
 const NON_TEXT = ['focus', 'control-line', 'star', 'accent', 'scrollbar-thumb-hover', 'scrollbar-thumb-active'].flatMap((fg) =>
