@@ -3,5 +3,15 @@
   "identifier": "default",
   "description": "The main window, and only what its page uses of Tauri's own commands: listening to the app's events. The app's commands are its own, each checking what it is given. Book content, at its own remote origin, gets no capability at all.",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen"
+  ]
 }

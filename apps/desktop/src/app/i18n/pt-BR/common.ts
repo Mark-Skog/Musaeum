@@ -5,4 +5,8 @@ export const common = {
   'common.save': 'Salvar',
   'common.couldNot': 'Não foi possível: {reason}',
   'common.loading': 'Carregando…',
+  'common.window.minimize': 'Minimizar',
+  'common.window.maximize': 'Maximizar',
+  'common.window.restore': 'Restaurar',
+  'common.window.close': 'Fechar',
 };

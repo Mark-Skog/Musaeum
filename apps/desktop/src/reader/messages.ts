@@ -82,7 +82,7 @@ export const NAVIGATION_KEYS = new Set([
 ]);
 
 /** Keys the reader passes up, because what they do belongs to the app. */
-export type Shortcut = 'mode' | 'animation' | 'escape' | 'contents';
+export type Shortcut = 'mode' | 'animation' | 'escape' | 'contents' | 'fullscreen';
 
 export type FromReader =
   | { type: 'ready'; sections: number; openMs: number }
@@ -183,7 +183,7 @@ export function isFromReader(data: unknown): data is FromReader {
         message.change.length <= 32
       );
     case 'shortcut':
-      return ['mode', 'animation', 'escape', 'contents'].includes(message.key as string);
+      return ['mode', 'animation', 'escape', 'contents', 'fullscreen'].includes(message.key as string);
     case 'link':
       return (
         typeof message.href === 'string' &&

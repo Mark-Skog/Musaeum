@@ -404,7 +404,9 @@ export class FlowEngine {
           ? 'animation'
           : event.key === 'Escape'
             ? 'escape'
-            : null;
+            : event.key === 'F11'
+              ? 'fullscreen'
+              : null;
     if (shortcut !== null) {
       event.preventDefault();
       this.send({ type: 'shortcut', key: shortcut });

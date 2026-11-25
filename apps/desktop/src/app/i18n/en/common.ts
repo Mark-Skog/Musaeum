@@ -7,4 +7,8 @@ export const common: Record<keyof typeof pt, string> = {
   'common.save': 'Save',
   'common.couldNot': 'Could not: {reason}',
   'common.loading': 'Loading…',
+  'common.window.minimize': 'Minimize',
+  'common.window.maximize': 'Maximize',
+  'common.window.restore': 'Restore',
+  'common.window.close': 'Close',
 };

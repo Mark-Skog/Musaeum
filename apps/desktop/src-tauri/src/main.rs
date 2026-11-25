@@ -29,6 +29,8 @@ mod review;
 mod session;
 mod shelf;
 mod taxonomy;
+#[cfg(windows)]
+mod titlebar;
 mod webview2;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -72,6 +74,7 @@ fn main() {
     let window_args = browser_args(&options);
     let (width, height) = options.window_size();
     let is_bench = options.bench.is_some();
+    let is_app_mode = !is_bench && options.document.is_none() && options.epub.is_none();
 
     let result = tauri::Builder::default()
         .manage(AppState::new(options))
@@ -193,14 +196,19 @@ fn main() {
         .setup(move |app| {
             app.state::<AppState>().shelf.set_app(app.handle().clone());
             let theme = app.state::<AppState>().preferences.current().theme;
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("Musaeum")
-                .theme(preferences::window_theme(theme))
-                .inner_size(f64::from(width), f64::from(height))
-                .additional_browser_args(&window_args)
-                .always_on_top(is_bench)
-                .focused(true)
-                .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("Musaeum")
+                    .theme(preferences::window_theme(theme))
+                    .inner_size(f64::from(width), f64::from(height))
+                    .additional_browser_args(&window_args)
+                    .always_on_top(is_bench)
+                    .focused(true)
+                    .build()?;
+            #[cfg(windows)]
+            if is_app_mode && let Err(error) = titlebar::install(&window) {
+                eprintln!("custom titlebar setup failed: {error}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!());

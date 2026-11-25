@@ -21,6 +21,9 @@
   --star: #a87400;
   --scrollbar-thumb-hover: #858178;
   --scrollbar-thumb-active: #6b6860;
+  --window-close-bg: #c42b1c;
+  --window-close-active: #a82014;
+  --window-close-text: #ffffff;
   --overlay: rgb(0 0 0 / 35%);
   --shadow: 0 1px 2px rgb(0 0 0 / 8%), 0 4px 14px rgb(0 0 0 / 8%);
   --shadow-raised: 0 2px 6px rgb(0 0 0 / 12%), 0 12px 32px rgb(0 0 0 / 14%);
@@ -80,6 +83,9 @@
     --star: #f2c94c;
     --scrollbar-thumb-hover: #7c7f86;
     --scrollbar-thumb-active: #a19e97;
+    --window-close-bg: #c42b1c;
+    --window-close-active: #a82014;
+    --window-close-text: #ffffff;
     --overlay: rgb(0 0 0 / 55%);
     --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 35%);
     --shadow-raised: 0 2px 6px rgb(0 0 0 / 45%), 0 14px 36px rgb(0 0 0 / 45%);
@@ -103,6 +109,9 @@
   --star: #f2c94c;
   --scrollbar-thumb-hover: #7c7f86;
   --scrollbar-thumb-active: #a19e97;
+  --window-close-bg: #c42b1c;
+  --window-close-active: #a82014;
+  --window-close-text: #ffffff;
   --overlay: rgb(0 0 0 / 55%);
   --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 6px 18px rgb(0 0 0 / 35%);
   --shadow-raised: 0 2px 6px rgb(0 0 0 / 45%), 0 14px 36px rgb(0 0 0 / 45%);
@@ -280,9 +289,129 @@ body.app-mode {
   color: var(--text);
 }
 
-#app,
-.app {
+#app {
   height: 100%;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Custom Win32/Tauri title bar (36px fixed, seamless with --surface toolbar below). */
+.titlebar {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  flex: none;
+  background: var(--surface);
+  color: var(--text);
+  user-select: none;
+}
+
+.titlebar-resize-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  z-index: 2;
+  -webkit-app-region: drag;
+}
+
+.titlebar-drag {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 14px;
+  -webkit-app-region: drag;
+}
+
+.titlebar-seal {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+}
+
+.titlebar-seal-plate {
+  fill: var(--surface-2);
+  stroke: var(--line);
+  stroke-width: 1.25;
+}
+
+.titlebar-seal-spine {
+  fill: var(--accent);
+}
+
+.titlebar-seal-cover {
+  fill: var(--text);
+  opacity: 0.88;
+}
+
+.titlebar-title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-controls {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-button {
+  display: inline-grid;
+  place-items: center;
+  width: 46px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: default;
+  -webkit-app-region: no-drag;
+  transition:
+    background-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+}
+
+.titlebar-button:hover {
+  background: var(--surface-2);
+}
+
+.titlebar-button:active {
+  opacity: 0.82;
+}
+
+.titlebar-button.close:hover {
+  background: var(--window-close-bg);
+  color: var(--window-close-text);
+}
+
+.titlebar-button.close:active {
+  background: var(--window-close-active);
+  color: var(--window-close-text);
+  opacity: 1;
+}
+
+.titlebar-button:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.titlebar-glyph {
+  display: block;
+  stroke-width: 1;
 }
 
 :focus-visible {
@@ -401,6 +530,8 @@ body.app-mode {
 .library {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
   height: 100%;
 }
 
@@ -409,7 +540,7 @@ body.app-mode {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 14px;
+  padding: 4px 14px 8px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   min-width: 0;
@@ -831,6 +962,8 @@ body.app-mode {
 .reader {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
   height: 100%;
 }
 
