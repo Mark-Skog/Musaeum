@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Musaeum — Selo de Arquivo (aco)</title>
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#20232C"/>
+      <stop offset="1" stop-color="#16181F"/>
+    </linearGradient>
+  </defs>
+  <!-- Container: squircle sóbrio, placa 960 u, raio 184 u -->
+  <rect x="32" y="32" width="960" height="960" rx="184" fill="url(#plate)"/>
+  <!-- Borda interna sutil -->
+  <rect x="35" y="35" width="954" height="954" rx="181" fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="6"/>
+  <!-- Capa com marcador recortado do topo -->
+  <path d="M428.4 212 L561.3 212 L561.3 488 L609.6 447.4 L657.9 488 L657.9 212 L752 212 L752 812 L428.4 812 Z" fill="#F2F4F8"/>
+  <!-- Lombada (acento) -->
+  <path d="M272 212 L364 212 L364 812 L272 812 Z" fill="#6D9EEB"/>
+</svg>
