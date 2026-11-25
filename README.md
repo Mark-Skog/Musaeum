@@ -595,10 +595,8 @@ If Musaeum is useful in your daily reading or research, voluntary donations help
   <a href="https://github.com/sponsors/Mark-Skog">
     <img alt="Sponsor on GitHub" src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white">
   </a>
-  <a href="https://ko-fi.com/markskog">
-    <img alt="Support on Ko-fi" src="https://img.shields.io/badge/Support_on_Ko--fi-FF5E5B?style=for-the-badge&logo=kofi&logoColor=white">
-  </a>
 </p>
+<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Support me on Ko-fi', '#72a4f2', 'A2L12B8W4X');kofiwidget2.draw();</script> 
 
 ## Credits and Licenses
 
