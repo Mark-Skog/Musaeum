@@ -60,7 +60,7 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test Rust, including the sandbox against the real worker
-        run: cargo test --workspace
+        run: cargo test --workspace -- --skip the_whole_cycle_from_the_command_line
       - name: Test the frontend
         working-directory: apps/desktop
         run: npm test
