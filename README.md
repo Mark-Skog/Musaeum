@@ -591,11 +591,6 @@ If Musaeum is useful in your daily reading or research, voluntary donations help
 * **Ongoing development, testing infrastructure, and AI tooling subscriptions**;
 * **Post-1.0 roadmap maintenance** (such as custom static PDFium builds for stricter sandboxing and future platform support).
 
-<p align="center">
-  <a href="https://github.com/sponsors/Mark-Skog">
-    <img alt="Sponsor on GitHub" src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white">
-  </a>
-</p>
 <script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Support me on Ko-fi', '#72a4f2', 'A2L12B8W4X');kofiwidget2.draw();</script> 
 
 ## Credits and Licenses
