@@ -510,8 +510,12 @@ async function run(work) {
     await back(main);
 
     // The library's menu: every book's annotations, in one file.
-    await click(main, '#library-annotations');
-    const menu = await waitFor(main, "(() => { const items = [...document.querySelectorAll('[role=menuitem]')].map((n) => n.textContent); return items.length === 2 ? items : null; })()", { timeoutMs: 8000, what: 'the menu' }).catch(() => null);
+    await click(main, '#library-actions');
+    const menu = await waitFor(
+      main,
+      "(() => { const items = [...document.querySelectorAll('[role=menuitem]')].map((n) => n.textContent); return items.some((t) => t.includes('Exportar')) && items.some((t) => t.includes('Importar')) ? items : null; })()",
+      { timeoutMs: 8000, what: 'the menu' },
+    ).catch(() => null);
     await press(main, 'Escape');
     step('the library’s toolbar has a menu for every book’s annotations', menu !== null && menu.some((item) => item.includes('Exportar')) && menu.some((item) => item.includes('Importar')), { menu });
     const all = await exchange(main, 'library', 'export-jsonld', files.all);

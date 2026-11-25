@@ -12,6 +12,7 @@ import { Button, Input, Label, TextField, ToggleButton } from 'react-aria-compon
 import { api, type BatchSummary, type Credit, type Taxonomy } from '../api';
 import { ExchangeSection, useExchange } from '../ExchangeSection';
 import { tn, useT } from '../i18n';
+import { ScrollFrame } from '../OverlayScrollbar';
 import { reasonOf } from './dialogs';
 import { Chips, Picker } from './Inspector';
 import { type BatchDraft, batchEditOf, categoryPath, emptyBatch, statuses } from './taxonomy-model';
@@ -135,7 +136,8 @@ export function BatchPanel({ works, books, taxonomy, onSaved, onClose, onMerge }
           ×
         </Button>
       </header>
-      <div className="inspector-body">
+      <ScrollFrame target=".inspector-body">
+        <div className="inspector-body">
         <p className="muted">
           {t('batch.intro')} {summary.works < books ? t('batch.works', { count: summary.works }) : ''}
         </p>
@@ -239,7 +241,8 @@ export function BatchPanel({ works, books, taxonomy, onSaved, onClose, onMerge }
           className="inspector-exchange"
           idle={t('batch.annotations.idle')}
         />
-      </div>
+        </div>
+      </ScrollFrame>
       <footer className="inspector-foot">
         {problems.length > 0 ? (
           <ul className="form-error" role="alert">

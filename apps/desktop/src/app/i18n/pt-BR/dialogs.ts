@@ -49,4 +49,13 @@ export const dialogs = {
   'dialogs.fields.add': 'Acrescentar campo',
   'dialogs.fields.confirmTitle': 'Remover “{name}”?',
   'dialogs.fields.confirmMessage': 'O valor desse campo some de todos os livros. Uma coleção inteligente que o usa deixa de achar livros.',
+  'dialogs.folders.title': 'Pastas acompanhadas',
+  'dialogs.folders.intro': 'O Musaeum apenas lê estas pastas; seus arquivos nunca são alterados ou apagados.',
+  'dialogs.folders.none': 'Nenhuma pasta acompanhada.',
+  'dialogs.folders.list': 'Pastas acompanhadas',
+  'dialogs.folders.add': 'Adicionar pastas…',
+  'dialogs.folders.remove': 'Remover',
+  'dialogs.folders.removeNamed': 'Remover {name}',
+  'dialogs.folders.confirmTitle': 'Parar de acompanhar “{name}”?',
+  'dialogs.folders.confirmMessage': 'Os arquivos continuam intactos no disco; apenas deixam de aparecer na biblioteca.',
 };

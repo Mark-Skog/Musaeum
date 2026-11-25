@@ -24,6 +24,7 @@ import { type AnchorState, type AnnotationKind, api } from '../../api';
 import { type ExchangeControls, ExchangeSection } from '../../ExchangeSection';
 import { getLocale, type MessageKey, t, useT } from '../../i18n';
 import { onEscape } from '../../focus';
+import { ScrollFrame } from '../../OverlayScrollbar';
 import { type LinkHandler, Markdown } from './markdown';
 import type { Entry } from './store';
 
@@ -341,88 +342,90 @@ export function Inspector({ documentId, entries, onJump, onEdit, onRemove, onClo
             : t('annot.none')}
         </p>
       ) : (
-        <ol className="annotation-list">
-          {shown.map((entry) => {
-            const { annotation } = entry;
-            const stateKey = STATE_LABEL[annotation.anchorState];
-            const state = stateKey === null ? null : t(stateKey);
-            const swatch = swatchOf(annotation.color);
-            const canJump = entry.marks.length > 0 || entry.ranges.length > 0;
-            return (
-              <li key={annotation.uuid} className={`annotation-item ${annotation.anchorState}`} data-annotation={annotation.uuid}>
-                <Button
-                  className="annotation-jump"
-                  isDisabled={!canJump}
-                  aria-label={t(canJump ? 'annot.jump' : 'annot.orphan', { quote: annotation.quote ?? '' })}
-                  onPress={() => onJump(entry)}
-                >
-                  <span className={`annotation-swatch ${annotation.kind}`} style={{ background: annotation.kind === 'underline' ? 'transparent' : swatch, borderColor: swatch }} />
-                  <span className="annotation-body">
-                    <span className="annotation-meta">
-                      {[t(KIND_LABEL[annotation.kind]), placeOf(entry), entry.pending ? t('annot.saving') : ''].filter((part) => part !== '').join(' · ')}
+        <ScrollFrame target=".annotation-list">
+          <ol className="annotation-list">
+            {shown.map((entry) => {
+              const { annotation } = entry;
+              const stateKey = STATE_LABEL[annotation.anchorState];
+              const state = stateKey === null ? null : t(stateKey);
+              const swatch = swatchOf(annotation.color);
+              const canJump = entry.marks.length > 0 || entry.ranges.length > 0;
+              return (
+                <li key={annotation.uuid} className={`annotation-item ${annotation.anchorState}`} data-annotation={annotation.uuid}>
+                  <Button
+                    className="annotation-jump"
+                    isDisabled={!canJump}
+                    aria-label={t(canJump ? 'annot.jump' : 'annot.orphan', { quote: annotation.quote ?? '' })}
+                    onPress={() => onJump(entry)}
+                  >
+                    <span className={`annotation-swatch ${annotation.kind}`} style={{ background: annotation.kind === 'underline' ? 'transparent' : swatch, borderColor: swatch }} />
+                    <span className="annotation-body">
+                      <span className="annotation-meta">
+                        {[t(KIND_LABEL[annotation.kind]), placeOf(entry), entry.pending ? t('annot.saving') : ''].filter((part) => part !== '').join(' · ')}
+                      </span>
+                      {annotation.quote !== null ? <span className="annotation-quote">{annotation.quote}</span> : null}
+                      {state !== null ? <span className="annotation-state">{state}</span> : null}
                     </span>
-                    {annotation.quote !== null ? <span className="annotation-quote">{annotation.quote}</span> : null}
-                    {state !== null ? <span className="annotation-state">{state}</span> : null}
-                  </span>
-                </Button>
-                {annotation.note.trim() !== '' ? (
-                  <div className="annotation-note">
-                    <Markdown source={annotation.note} onLink={onLink} />
+                  </Button>
+                  {annotation.note.trim() !== '' ? (
+                    <div className="annotation-note">
+                      <Markdown source={annotation.note} onLink={onLink} />
+                    </div>
+                  ) : null}
+                  <div className="annotation-actions">
+                    <Button className="button small" onPress={() => onEdit(entry)}>
+                      {t('annot.note')}
+                    </Button>
+                    <Button className="button small" onPress={() => onRemove(entry)}>
+                      {t('annot.remove')}
+                    </Button>
                   </div>
-                ) : null}
-                <div className="annotation-actions">
-                  <Button className="button small" onPress={() => onEdit(entry)}>
-                    {t('annot.note')}
-                  </Button>
-                  <Button className="button small" onPress={() => onRemove(entry)}>
-                    {t('annot.remove')}
-                  </Button>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
+                </li>
+              );
+            })}
+          </ol>
+        </ScrollFrame>
       )}
       <div className="panel-foot">
-      {exchange !== undefined ? (
-        <ExchangeSection
-          heading={t('annot.exchange.heading')}
-          controls={exchange}
-          id="exchange"
-          idle={t('annot.exchange.idle')}
-        />
-      ) : null}
-      {pdf !== undefined ? (
-        <section className="pdf-exchange" aria-label={t('annot.pdf.label')}>
-          <Heading level={3} className="pdf-exchange-heading">
-            {t('annot.pdf.heading')}
-          </Heading>
-          <div className="pdf-exchange-actions">
-            {PDF_ACTIONS.map((action) => (
-              <Button
-                key={action.id}
-                id={`pdf-${action.id}`}
-                className="button small"
-                isDisabled={pdf.busy !== null}
-                onPress={() => pdf.run(action.id)}
-              >
-                {t(action.label)}
-              </Button>
-            ))}
-          </div>
-          <p
-            className={`pdf-exchange-status${pdf.report?.failed === true ? ' failed' : ''}`}
-            role="status"
-            aria-live="polite"
-            aria-busy={pdf.busy !== null}
-            data-busy={pdf.busy ?? ''}
-          >
-            {pdf.busy !== null
-              ? t(PDF_ACTIONS.find((action) => action.id === pdf.busy)?.busy ?? 'common.loading')
-              : (pdf.report?.text ?? t('annot.pdf.idle'))}
-          </p>
-        </section>
-      ) : null}
+        {exchange !== undefined ? (
+          <ExchangeSection
+            heading={t('annot.exchange.heading')}
+            controls={exchange}
+            id="exchange"
+            idle={t('annot.exchange.idle')}
+          />
+        ) : null}
+        {pdf !== undefined ? (
+          <section className="pdf-exchange" aria-label={t('annot.pdf.label')}>
+            <Heading level={3} className="pdf-exchange-heading">
+              {t('annot.pdf.heading')}
+            </Heading>
+            <div className="pdf-exchange-actions">
+              {PDF_ACTIONS.map((action) => (
+                <Button
+                  key={action.id}
+                  id={`pdf-${action.id}`}
+                  className="button small"
+                  isDisabled={pdf.busy !== null}
+                  onPress={() => pdf.run(action.id)}
+                >
+                  {t(action.label)}
+                </Button>
+              ))}
+            </div>
+            <p
+              className={`pdf-exchange-status${pdf.report?.failed === true ? ' failed' : ''}`}
+              role="status"
+              aria-live="polite"
+              aria-busy={pdf.busy !== null}
+              data-busy={pdf.busy ?? ''}
+            >
+              {pdf.busy !== null
+                ? t(PDF_ACTIONS.find((action) => action.id === pdf.busy)?.busy ?? 'common.loading')
+                : (pdf.report?.text ?? t('annot.pdf.idle'))}
+            </p>
+          </section>
+        ) : null}
       </div>
     </aside>
   );

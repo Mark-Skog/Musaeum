@@ -51,4 +51,13 @@ export const dialogs: Record<keyof typeof pt, string> = {
   'dialogs.fields.add': 'Add a field',
   'dialogs.fields.confirmTitle': 'Remove “{name}”?',
   'dialogs.fields.confirmMessage': 'The field’s value goes from every book. A smart collection that uses it stops finding books.',
+  'dialogs.folders.title': 'Monitored folders',
+  'dialogs.folders.intro': 'Musaeum only reads these folders; your files are never changed or deleted.',
+  'dialogs.folders.none': 'No monitored folders.',
+  'dialogs.folders.list': 'Monitored folders',
+  'dialogs.folders.add': 'Add folders…',
+  'dialogs.folders.remove': 'Remove',
+  'dialogs.folders.removeNamed': 'Remove {name}',
+  'dialogs.folders.confirmTitle': 'Stop following “{name}”?',
+  'dialogs.folders.confirmMessage': 'Your files stay untouched on disk; they only leave the library.',
 };

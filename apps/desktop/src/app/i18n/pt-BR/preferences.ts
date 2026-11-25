@@ -23,6 +23,16 @@ export const preferences = {
   'prefs.motion.reduce': 'Sempre reduzido',
   'prefs.motion.hint': 'Reduzido: a página vira sem animação, e a biblioteca e o leitor mudam sem transições.',
 
+  'prefs.sidebar.heading': 'Barra lateral',
+  'prefs.sidebar.showEmpty': 'Mostrar seções vazias na barra lateral',
+  'prefs.sidebar.showEmptyHint': 'Quando desmarcado, Categorias, Etiquetas, Coleções e Coleções inteligentes só aparecem depois que você cria o primeiro item.',
+  'prefs.sidebar.showCounts': 'Mostrar contagem de livros na barra lateral',
+  'prefs.sidebar.showCountsHint': 'Exibe a quantidade de livros ao lado de pastas, categorias, etiquetas e coleções.',
+  'prefs.covers.label': 'Tamanho das capas',
+  'prefs.covers.value': '{width} px',
+  'prefs.covers.reset': 'Restaurar padrão',
+  'prefs.covers.hint': 'Também é possível ajustar segurando Ctrl e girando a roda do mouse sobre a grade de livros.',
+
   'prefs.annotations.heading': 'Anotações',
   'prefs.author.label': 'Nome do autor das anotações',
   'prefs.author.hint': 'Assina as anotações levadas a um PDF (/T) e a um XFDF, e aparece nos relatórios. Em branco, o PDF e o XFDF levam o nome do usuário do Windows ({user}) e os relatórios não levam nome.',

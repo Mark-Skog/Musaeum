@@ -24,7 +24,9 @@ import {
 import { api, type CacheReport, type MotionChoice, type OcrModels, type ThemeChoice } from '../api';
 import { formatBytes, LOCALES, languageName, type Locale, tn, useT } from '../i18n';
 import { focusIsLost, useFocusReturn } from '../focus';
+import { ScrollFrame } from '../OverlayScrollbar';
 import { reasonOf } from '../library/dialogs';
+import { clampCoverWidth, COVER_DEFAULT_WIDTH, COVER_MAX_WIDTH, COVER_MIN_WIDTH } from '../library/sidebar-model';
 import { systemReducesMotion, updatePreferences, usePreferences } from './store';
 
 /** Each language by its own name, the same in every language of the interface. */
@@ -110,7 +112,8 @@ export function PreferencesDialog({ onClose }: PreferencesDialogProps): React.JS
             </p>
           ) : null}
 
-          <div className="prefs-body">
+          <ScrollFrame target=".prefs-body">
+            <div className="prefs-body">
             <section className="prefs-section" aria-labelledby={`${titleId}-language`}>
               <h3 id={`${titleId}-language`} className="prefs-heading">
                 {t('prefs.language.heading')}
@@ -161,6 +164,60 @@ export function PreferencesDialog({ onClose }: PreferencesDialogProps): React.JS
                   {t('prefs.motion.hint')}
                 </Text>
               </RadioGroup>
+            </section>
+
+            <section className="prefs-section" aria-labelledby={`${titleId}-sidebar`}>
+              <h3 id={`${titleId}-sidebar`} className="prefs-heading">
+                {t('prefs.sidebar.heading')}
+              </h3>
+              <Checkbox
+                className="prefs-choice"
+                id="prefs-sidebar-empty"
+                isSelected={preferences?.showEmptySidebarSections ?? false}
+                onChange={(showEmptySidebarSections) => void save({ showEmptySidebarSections })}
+              >
+                <span className="check-box" aria-hidden="true" />
+                <span>{t('prefs.sidebar.showEmpty')}</span>
+              </Checkbox>
+              <p className="prefs-hint">{t('prefs.sidebar.showEmptyHint')}</p>
+              <Checkbox
+                className="prefs-choice"
+                id="prefs-sidebar-counts"
+                isSelected={preferences?.showSidebarCounts ?? false}
+                onChange={(showSidebarCounts) => void save({ showSidebarCounts })}
+              >
+                <span className="check-box" aria-hidden="true" />
+                <span>{t('prefs.sidebar.showCounts')}</span>
+              </Checkbox>
+              <p className="prefs-hint">{t('prefs.sidebar.showCountsHint')}</p>
+              <div className="prefs-range-block">
+                <label className="field-label" htmlFor="prefs-cover-width">
+                  {t('prefs.covers.label')}
+                </label>
+                <div className="prefs-range-row">
+                  <input
+                    id="prefs-cover-width"
+                    className="prefs-range"
+                    type="range"
+                    min={COVER_MIN_WIDTH}
+                    max={COVER_MAX_WIDTH}
+                    step={4}
+                    value={clampCoverWidth(preferences?.coverWidth ?? COVER_DEFAULT_WIDTH)}
+                    onChange={(event) => void save({ coverWidth: clampCoverWidth(Number(event.currentTarget.value)) })}
+                  />
+                  <span className="prefs-range-value">
+                    {t('prefs.covers.value', { width: clampCoverWidth(preferences?.coverWidth ?? COVER_DEFAULT_WIDTH) })}
+                  </span>
+                  <Button
+                    className="button small"
+                    isDisabled={clampCoverWidth(preferences?.coverWidth ?? COVER_DEFAULT_WIDTH) === COVER_DEFAULT_WIDTH}
+                    onPress={() => void save({ coverWidth: COVER_DEFAULT_WIDTH })}
+                  >
+                    {t('prefs.covers.reset')}
+                  </Button>
+                </div>
+                <p className="prefs-hint">{t('prefs.covers.hint')}</p>
+              </div>
             </section>
 
             <section className="prefs-section" aria-labelledby={`${titleId}-annotations`}>
@@ -325,7 +382,8 @@ export function PreferencesDialog({ onClose }: PreferencesDialogProps): React.JS
                 </>
               )}
             </section>
-          </div>
+            </div>
+          </ScrollFrame>
 
           <footer className="prefs-footer">
             <p className={`prefs-status${status?.failed === true ? ' failed' : ''}`} role="status" aria-live="polite" id="prefs-status">

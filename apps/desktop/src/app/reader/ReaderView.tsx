@@ -61,6 +61,7 @@ import { AnnotationStore, draft, type Entry } from './annotations/store';
 import { type ExchangeControls, useExchange } from '../ExchangeSection';
 import { getLocale, type MessageKey, t, tn, useLocale, useT } from '../i18n';
 import { onEscape, useFocusReturn } from '../focus';
+import { ScrollFrame } from '../OverlayScrollbar';
 import { onMotionChange } from '../preferences/store';
 import type { ExchangeAction, ExchangeOutcome } from '../exchange';
 
@@ -1113,7 +1114,8 @@ export function ReaderView({ book, options, onBack, probe, target = null, onPref
       </header>
       <div className="reader-body">
         {tocOpen ? (
-          <nav className="toc-panel" aria-label={t('reader.toc')} onKeyDown={onEscape(() => setTocOpen(false))}>
+          <ScrollFrame className="toc-wrap" target=".toc-panel">
+            <nav className="toc-panel" aria-label={t('reader.toc')} onKeyDown={onEscape(() => setTocOpen(false))}>
             <Heading level={2} className="toc-heading">
               {t('reader.toc')}
             </Heading>
@@ -1164,7 +1166,8 @@ export function ReaderView({ book, options, onBack, probe, target = null, onPref
                       : t('reader.toc.noneDocument')}
               </p>
             )}
-          </nav>
+            </nav>
+          </ScrollFrame>
         ) : null}
         <div ref={surface} className="reader-surface" />
         {panelOpen ? (

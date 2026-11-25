@@ -1,11 +1,11 @@
 /**
  * The side of the library: every book, its folders on the disk, the person's categories (a tree),
  * tags, collections and smart collections. One of them is chosen at a time, and the books shown
- * are those it holds. Each item has a menu of what can be done to it; each section, a button to
- * add one.
+ * are those it holds. Empty organization sections are hidden by default and can be started from
+ * a compact "+ Organize" menu at the bottom of the sidebar.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { memo, type ReactNode, type RefObject, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   GridList,
@@ -22,46 +22,18 @@ import {
 } from 'react-aria-components';
 
 import { api, type Category, type FolderEntry, type LibraryInfo, type SmartCollection, type Tag, type Taxonomy } from '../api';
-import { compareNames, useLocale, useT } from '../i18n';
-import { CollectionDialog, ConfirmDialog, FieldsDialog, MoveCategoryDialog, NameDialog, SmartDialog, TagDialog } from './dialogs';
+import { useLocale, useT } from '../i18n';
+import { OverlayScrollbar } from '../OverlayScrollbar';
+import { CollectionDialog, ConfirmDialog, MoveCategoryDialog, NameDialog, SmartDialog, TagDialog } from './dialogs';
+import {
+  type FolderNode,
+  resolveVisibleFolders,
+  shortName,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  visibleSidebarSections,
+} from './sidebar-model';
 import { type CategoryNode, categoryTree, type Filter, sameFilter, siblingsAround } from './taxonomy-model';
-
-interface FolderNode {
-  entry: FolderEntry;
-  children: FolderNode[];
-  total: number;
-}
-
-function buildTree(folders: FolderEntry[]): FolderNode[] {
-  const nodes = new Map<number, FolderNode>();
-  for (const entry of folders) {
-    nodes.set(entry.id, { entry, children: [], total: entry.books });
-  }
-  const roots: FolderNode[] = [];
-  for (const node of nodes.values()) {
-    const parent = node.entry.parentId === null ? undefined : nodes.get(node.entry.parentId);
-    if (parent === undefined) {
-      roots.push(node);
-    } else {
-      parent.children.push(node);
-    }
-  }
-  const sum = (node: FolderNode): number => {
-    node.children.sort((a, b) => compareNames(a.entry.name, b.entry.name));
-    node.total = node.entry.books + node.children.reduce((total, child) => total + sum(child), 0);
-    return node.total;
-  };
-  roots.forEach(sum);
-  // Folders with no books anywhere below them are only noise in a filter.
-  const prune = (list: FolderNode[]): FolderNode[] => list.filter((node) => node.total > 0).map((node) => ({ ...node, children: prune(node.children) }));
-  return prune(roots);
-}
-
-/** A root's last folder name, which is what tells roots apart; the whole path is its tooltip. */
-function shortName(path: string): string {
-  const parts = path.split(/[\\/]/).filter((part) => part.length > 0);
-  return parts.at(-1) ?? path;
-}
 
 function Chevron({ hasChildItems, isExpanded }: { hasChildItems: boolean; isExpanded: boolean }): React.JSX.Element {
   const t = useT();
@@ -74,7 +46,7 @@ function Chevron({ hasChildItems, isExpanded }: { hasChildItems: boolean; isExpa
   );
 }
 
-function FolderItems({ nodes }: { nodes: FolderNode[] }): React.JSX.Element {
+function FolderItems({ nodes, showCounts }: { nodes: FolderNode[]; showCounts: boolean }): React.JSX.Element {
   return (
     <>
       {nodes.map((node) => (
@@ -86,11 +58,11 @@ function FolderItems({ nodes }: { nodes: FolderNode[] }): React.JSX.Element {
                 <span className="folder-name" title={node.entry.name}>
                   {node.entry.parentId === null ? shortName(node.entry.name) : node.entry.name}
                 </span>
-                <span className="folder-count">{node.total}</span>
+                {showCounts ? <span className="folder-count">{node.total}</span> : null}
               </div>
             )}
           </TreeItemContent>
-          {node.children.length > 0 ? <FolderItems nodes={node.children} /> : null}
+          {node.children.length > 0 ? <FolderItems nodes={node.children} showCounts={showCounts} /> : null}
         </TreeItem>
       ))}
     </>
@@ -132,22 +104,85 @@ type Opened =
   | { kind: 'collection'; collection: { id: number; name: string; description: string } | null }
   | { kind: 'delete-collection'; id: number; name: string }
   | { kind: 'smart'; smart: SmartCollection | null }
-  | { kind: 'delete-smart'; smart: SmartCollection }
-  | { kind: 'fields' };
+  | { kind: 'delete-smart'; smart: SmartCollection };
 
-function Section({ title, onAdd, addLabel, children }: { title: string; onAdd?(): void; addLabel?: string; children: React.ReactNode }): React.JSX.Element {
+function Section({
+  title,
+  onAdd,
+  addLabel,
+  action,
+  children,
+}: {
+  title: string;
+  onAdd?(): void;
+  addLabel?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}): React.JSX.Element {
   return (
     <section className="side-section" aria-label={title}>
       <div className="side-heading">
         <h2>{title}</h2>
-        {onAdd !== undefined ? (
-          <Button className="row-menu" aria-label={addLabel} onPress={onAdd}>
-            +
-          </Button>
-        ) : null}
+        {action ??
+          (onAdd !== undefined ? (
+            <Button className="row-menu" aria-label={addLabel} onPress={onAdd}>
+              +
+            </Button>
+          ) : null)}
       </div>
       {children}
     </section>
+  );
+}
+
+export interface SidebarShellProps {
+  collapsed: boolean;
+  width: number;
+  resizeLabel: string;
+  scrollRef: RefObject<HTMLElement | null>;
+  resizerRef?: RefObject<HTMLDivElement | null>;
+  onPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onDoubleClick?: () => void;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+  children: ReactNode;
+}
+
+/**
+ * Animated sidebar container kept mounted in the DOM so open/close glides smoothly without
+ * unmounting or wrapping folder labels; uses `inert` + `aria-hidden` while collapsed.
+ */
+export function SidebarShell({
+  collapsed,
+  width,
+  resizeLabel,
+  scrollRef,
+  resizerRef,
+  onPointerDown,
+  onDoubleClick,
+  onKeyDown,
+  children,
+}: SidebarShellProps): React.JSX.Element {
+  return (
+    <div className="sidebar-shell" inert={collapsed || undefined} aria-hidden={collapsed || undefined}>
+      <div className="sidebar-inner">
+        {children}
+        <OverlayScrollbar targetRef={scrollRef} />
+      </div>
+      <div
+        ref={resizerRef}
+        className="sidebar-resizer"
+        role="separator"
+        tabIndex={collapsed ? -1 : 0}
+        aria-orientation="vertical"
+        aria-label={resizeLabel}
+        aria-valuenow={Math.round(width)}
+        aria-valuemin={SIDEBAR_MIN_WIDTH}
+        aria-valuemax={SIDEBAR_MAX_WIDTH}
+        onPointerDown={onPointerDown}
+        onDoubleClick={onDoubleClick}
+        onKeyDown={onKeyDown}
+      />
+    </div>
   );
 }
 
@@ -156,36 +191,60 @@ export interface SidebarProps {
   folders: FolderEntry[];
   taxonomy: Taxonomy;
   filter: Filter;
+  showEmptySections: boolean;
+  showCounts: boolean;
   onFilter(filter: Filter): void;
   /** Something changed in the taxonomy: read it and the books again. */
   onChanged(): void;
   notice(message: string): void;
   /** How many suggestions and possible duplicates wait for the person's word. */
   waiting: number;
+  onManageFolders(): void;
+  onOpenFields(): void;
+  scrollRef?: RefObject<HTMLElement | null>;
 }
 
-export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, notice, waiting }: SidebarProps): React.JSX.Element {
+export const Sidebar = memo(function Sidebar({
+  info,
+  folders,
+  taxonomy,
+  filter,
+  showEmptySections,
+  showCounts,
+  onFilter,
+  onChanged,
+  notice,
+  waiting,
+  onManageFolders,
+  onOpenFields,
+  scrollRef,
+}: SidebarProps): React.JSX.Element {
   const t = useT();
   const locale = useLocale();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const tree = useMemo(() => buildTree(folders), [folders, locale]);
+  const { nodes: tree, singleRootPromoted } = useMemo(() => resolveVisibleFolders(folders, info.roots.length), [folders, info.roots.length, locale]);
   const categories = useMemo(() => categoryTree(taxonomy.categories), [taxonomy.categories]);
+  const visibility = useMemo(() => visibleSidebarSections(taxonomy, showEmptySections), [taxonomy, showEmptySections]);
   const [opened, setOpened] = useState<Opened | null>(null);
   const close = (): void => setOpened(null);
   const fail = (reason: unknown): void => notice(String(reason).replace(/^Error:\s*/, ''));
 
-  // The folders a root holds show from the start; deeper ones open on demand. Categories too.
+  // When multiple roots (or a single root without subfolders) are shown, expand the root level
+  // automatically. When a single root's subfolders are promoted, keep them collapsed until opened.
   const [expanded, setExpanded] = useState<Set<Key>>(() => new Set());
   useEffect(() => {
     setExpanded((current) => {
-      const wanted = [...tree.map((node) => `folder:${node.entry.id}`), ...taxonomy.categories.filter((category) => category.depth === 0).map((category) => `category:${category.id}`)];
+      const wanted = [
+        ...(singleRootPromoted ? [] : tree.map((node) => `folder:${node.entry.id}`)),
+        ...taxonomy.categories.filter((category) => category.depth === 0).map((category) => `category:${category.id}`),
+      ];
       const missing = wanted.filter((key) => !current.has(key));
       if (missing.length === 0) {
         return current;
       }
       return new Set([...current, ...missing]);
     });
-  }, [tree, taxonomy.categories]);
+  }, [tree, singleRootPromoted, taxonomy.categories]);
 
   const selectedIn = (kind: Filter['kind']): Set<Key> => (filter.kind === kind && 'id' in filter ? new Set([`${kind}:${filter.id}`]) : new Set());
   const choose = (keys: 'all' | Set<Key>): void => {
@@ -224,7 +283,7 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
                   <span className="folder-name" title={category.name}>
                     {category.name}
                   </span>
-                  <span className="folder-count">{category.total}</span>
+                  {showCounts ? <span className="folder-count">{category.total}</span> : null}
                   <Actions
                     label={category.name}
                     actions={[
@@ -265,15 +324,35 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
     }
   };
 
+  const runOrganize = (action: Key): void => {
+    switch (String(action)) {
+      case 'category':
+        setOpened({ kind: 'new-category', parent: null });
+        break;
+      case 'tag':
+        setOpened({ kind: 'tag', tag: null });
+        break;
+      case 'collection':
+        setOpened({ kind: 'collection', collection: null });
+        break;
+      case 'smart':
+        setOpened({ kind: 'smart', smart: null });
+        break;
+      case 'fields':
+        onOpenFields();
+        break;
+    }
+  };
+
   return (
-    <nav className="sidebar" aria-label={t('sidebar.label')}>
+    <nav ref={scrollRef} className="sidebar" aria-label={t('sidebar.label')}>
       <Tree aria-label={t('sidebar.all')} className="folders" selectionMode="single" selectedKeys={filter.kind === 'all' || filter.kind === 'review' ? new Set([filter.kind]) : new Set()} onSelectionChange={choose}>
         <TreeItem id="all" textValue={t('sidebar.all')} className="folder-item">
           <TreeItemContent>
             <div className="folder-row">
               <span className="folder-chevron" />
               <span className="folder-name">{t('sidebar.all')}</span>
-              <span className="folder-count">{info.books}</span>
+              {showCounts ? <span className="folder-count">{info.books}</span> : null}
             </div>
           </TreeItemContent>
         </TreeItem>
@@ -288,109 +367,162 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
         </TreeItem>
       </Tree>
 
-      <Section title={t('sidebar.folders')}>
+      <Section
+        title={t('sidebar.folders')}
+        action={
+          <Button className="row-menu side-manage-folders" aria-label={t('sidebar.folders.manage')} onPress={onManageFolders}>
+            <span className="icon-box" title={t('sidebar.folders.manage')}>
+              <svg className="icon" viewBox="0 0 16 16" width={14} height={14} fill="none" stroke="currentColor" aria-hidden="true">
+                <path d="M2 4.5a1 1 0 0 1 1-1h3.2l1.3 1.5H13a1 1 0 0 1 1 1v5.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+              </svg>
+            </span>
+          </Button>
+        }
+      >
         <Tree aria-label={t('sidebar.folders.filter')} className="folders" selectionMode="single" selectedKeys={selectedIn('folder')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
-          <FolderItems nodes={tree} />
+          <FolderItems nodes={tree} showCounts={showCounts} />
         </Tree>
       </Section>
 
-      <Section title={t('sidebar.categories')} addLabel={t('sidebar.categories.new')} onAdd={() => setOpened({ kind: 'new-category', parent: null })}>
-        {categories.length === 0 ? <p className="side-empty">{t('sidebar.categories.none')}</p> : null}
-        <Tree aria-label={t('sidebar.categories.filter')} className="folders" selectionMode="single" selectedKeys={selectedIn('category')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
-          {categoryItems(categories)}
-        </Tree>
-      </Section>
+      {visibility.categories ? (
+        <Section title={t('sidebar.categories')} addLabel={t('sidebar.categories.new')} onAdd={() => setOpened({ kind: 'new-category', parent: null })}>
+          {categories.length === 0 ? <p className="side-empty">{t('sidebar.categories.none')}</p> : null}
+          <Tree aria-label={t('sidebar.categories.filter')} className="folders" selectionMode="single" selectedKeys={selectedIn('category')} expandedKeys={expanded} onExpandedChange={setExpanded} onSelectionChange={choose}>
+            {categoryItems(categories)}
+          </Tree>
+        </Section>
+      ) : null}
 
-      <Section title={t('sidebar.tags')} addLabel={t('sidebar.tags.new')} onAdd={() => setOpened({ kind: 'tag', tag: null })}>
-        {taxonomy.tags.length === 0 ? <p className="side-empty">{t('sidebar.tags.none')}</p> : null}
-        <GridList aria-label={t('sidebar.tags.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('tag')} onSelectionChange={choose} items={taxonomy.tags} dependencies={[locale]}>
-          {(tag) => (
-            <GridListItem id={`tag:${tag.id}`} textValue={tag.name} className="side-item" data-tag={tag.id}>
-              <span className={`tag-dot tag-${tag.color ?? 'none'}`} aria-hidden="true" />
-              <span className="folder-name">{tag.name}</span>
-              <span className="folder-count">{tag.works}</span>
-              <Actions
-                label={tag.name}
-                actions={[
-                  ['edit', t('sidebar.tags.edit')],
-                  ['---1', ''],
-                  ['delete', t('sidebar.delete')],
-                ]}
-                run={(action) => setOpened(action === 'edit' ? { kind: 'tag', tag } : { kind: 'delete-tag', tag })}
-              />
-            </GridListItem>
-          )}
-        </GridList>
-      </Section>
-
-      <Section title={t('sidebar.collections')} addLabel={t('sidebar.collections.new')} onAdd={() => setOpened({ kind: 'collection', collection: null })}>
-        {taxonomy.collections.length === 0 ? <p className="side-empty">{t('sidebar.collections.none')}</p> : null}
-        <GridList aria-label={t('sidebar.collections.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('collection')} onSelectionChange={choose} items={taxonomy.collections} dependencies={[locale]}>
-          {(collection) => {
-            const at = taxonomy.collections.indexOf(collection);
-            return (
-              <GridListItem id={`collection:${collection.id}`} textValue={collection.name} className="side-item" data-collection={collection.id}>
-                <span className="folder-name" title={collection.description || collection.name}>
-                  {collection.name}
-                </span>
-                <span className="folder-count">{collection.works}</span>
+      {visibility.tags ? (
+        <Section title={t('sidebar.tags')} addLabel={t('sidebar.tags.new')} onAdd={() => setOpened({ kind: 'tag', tag: null })}>
+          {taxonomy.tags.length === 0 ? <p className="side-empty">{t('sidebar.tags.none')}</p> : null}
+          <GridList aria-label={t('sidebar.tags.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('tag')} onSelectionChange={choose} items={taxonomy.tags} dependencies={[locale]}>
+            {(tag) => (
+              <GridListItem id={`tag:${tag.id}`} textValue={tag.name} className="side-item" data-tag={tag.id}>
+                <span className={`tag-dot tag-${tag.color ?? 'none'}`} aria-hidden="true" />
+                <span className="folder-name">{tag.name}</span>
+                {showCounts ? <span className="folder-count">{tag.works}</span> : null}
                 <Actions
-                  label={collection.name}
+                  label={tag.name}
                   actions={[
-                    ['edit', t('sidebar.collections.edit')],
-                    ['up', t('sidebar.up'), at === 0],
-                    ['down', t('sidebar.down'), at === taxonomy.collections.length - 1],
+                    ['edit', t('sidebar.tags.edit')],
                     ['---1', ''],
                     ['delete', t('sidebar.delete')],
                   ]}
-                  run={(action) => {
-                    if (action === 'edit') setOpened({ kind: 'collection', collection });
-                    else if (action === 'up' || action === 'down') moveCollection(collection.id, action);
-                    else setOpened({ kind: 'delete-collection', id: collection.id, name: collection.name });
-                  }}
+                  run={(action) => setOpened(action === 'edit' ? { kind: 'tag', tag } : { kind: 'delete-tag', tag })}
                 />
               </GridListItem>
-            );
-          }}
-        </GridList>
-      </Section>
+            )}
+          </GridList>
+        </Section>
+      ) : null}
 
-      <Section title={t('sidebar.smart')} addLabel={t('sidebar.smart.new')} onAdd={() => setOpened({ kind: 'smart', smart: null })}>
-        {taxonomy.smart.length === 0 ? <p className="side-empty">{t('sidebar.smart.none')}</p> : null}
-        <GridList aria-label={t('sidebar.smart.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('smart')} onSelectionChange={choose} items={taxonomy.smart} dependencies={[locale]}>
-          {(smart) => (
-            <GridListItem id={`smart:${smart.id}`} textValue={smart.name} className="side-item" data-smart={smart.id}>
-              <span className="smart-mark" aria-hidden="true">
-                ⚙
-              </span>
-              <span className="folder-name" title={smart.broken ?? smart.name}>
-                {smart.name}
-              </span>
-              {smart.broken !== null ? (
-                <span className="broken" title={smart.broken} aria-label={t('sidebar.smart.broken')}>
-                  !
+      {visibility.collections ? (
+        <Section title={t('sidebar.collections')} addLabel={t('sidebar.collections.new')} onAdd={() => setOpened({ kind: 'collection', collection: null })}>
+          {taxonomy.collections.length === 0 ? <p className="side-empty">{t('sidebar.collections.none')}</p> : null}
+          <GridList aria-label={t('sidebar.collections.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('collection')} onSelectionChange={choose} items={taxonomy.collections} dependencies={[locale]}>
+            {(collection) => {
+              const at = taxonomy.collections.indexOf(collection);
+              return (
+                <GridListItem id={`collection:${collection.id}`} textValue={collection.name} className="side-item" data-collection={collection.id}>
+                  <span className="folder-name" title={collection.description || collection.name}>
+                    {collection.name}
+                  </span>
+                  {showCounts ? <span className="folder-count">{collection.works}</span> : null}
+                  <Actions
+                    label={collection.name}
+                    actions={[
+                      ['edit', t('sidebar.collections.edit')],
+                      ['up', t('sidebar.up'), at === 0],
+                      ['down', t('sidebar.down'), at === taxonomy.collections.length - 1],
+                      ['---1', ''],
+                      ['delete', t('sidebar.delete')],
+                    ]}
+                    run={(action) => {
+                      if (action === 'edit') setOpened({ kind: 'collection', collection });
+                      else if (action === 'up' || action === 'down') moveCollection(collection.id, action);
+                      else setOpened({ kind: 'delete-collection', id: collection.id, name: collection.name });
+                    }}
+                  />
+                </GridListItem>
+              );
+            }}
+          </GridList>
+        </Section>
+      ) : null}
+
+      {visibility.smart ? (
+        <Section title={t('sidebar.smart')} addLabel={t('sidebar.smart.new')} onAdd={() => setOpened({ kind: 'smart', smart: null })}>
+          {taxonomy.smart.length === 0 ? <p className="side-empty">{t('sidebar.smart.none')}</p> : null}
+          <GridList aria-label={t('sidebar.smart.filter')} className="side-list" selectionMode="single" selectedKeys={selectedIn('smart')} onSelectionChange={choose} items={taxonomy.smart} dependencies={[locale]}>
+            {(smart) => (
+              <GridListItem id={`smart:${smart.id}`} textValue={smart.name} className="side-item" data-smart={smart.id}>
+                <span className="smart-mark" aria-hidden="true">
+                  ⚙
                 </span>
-              ) : (
-                <span className="folder-count">{smart.works}</span>
-              )}
-              <Actions
-                label={smart.name}
-                actions={[
-                  ['edit', t('sidebar.smart.edit')],
-                  ['---1', ''],
-                  ['delete', t('sidebar.delete')],
-                ]}
-                run={(action) => setOpened(action === 'edit' ? { kind: 'smart', smart } : { kind: 'delete-smart', smart })}
-              />
-            </GridListItem>
-          )}
-        </GridList>
-      </Section>
+                <span className="folder-name" title={smart.broken ?? smart.name}>
+                  {smart.name}
+                </span>
+                {smart.broken !== null ? (
+                  <span className="broken" title={smart.broken} aria-label={t('sidebar.smart.broken')}>
+                    !
+                  </span>
+                ) : showCounts ? (
+                  <span className="folder-count">{smart.works}</span>
+                ) : null}
+                <Actions
+                  label={smart.name}
+                  actions={[
+                    ['edit', t('sidebar.smart.edit')],
+                    ['---1', ''],
+                    ['delete', t('sidebar.delete')],
+                  ]}
+                  run={(action) => setOpened(action === 'edit' ? { kind: 'smart', smart } : { kind: 'delete-smart', smart })}
+                />
+              </GridListItem>
+            )}
+          </GridList>
+        </Section>
+      ) : null}
 
       <div className="side-footer">
-        <Button className="button small" onPress={() => setOpened({ kind: 'fields' })}>
-          {t('sidebar.fields')}
-        </Button>
+        {visibility.hasHidden ? (
+          <MenuTrigger>
+            <Button className="button small side-organize-button">{t('sidebar.organize')}</Button>
+            <Popover className="popover menu-popover" placement="top start">
+              <Menu className="menu" aria-label={t('sidebar.organize.label')} onAction={runOrganize}>
+                {!visibility.categories ? (
+                  <MenuItem id="category" className="menu-item">
+                    {t('sidebar.categories.new')}
+                  </MenuItem>
+                ) : null}
+                {!visibility.tags ? (
+                  <MenuItem id="tag" className="menu-item">
+                    {t('sidebar.tags.new')}
+                  </MenuItem>
+                ) : null}
+                {!visibility.collections ? (
+                  <MenuItem id="collection" className="menu-item">
+                    {t('sidebar.collections.new')}
+                  </MenuItem>
+                ) : null}
+                {!visibility.smart ? (
+                  <MenuItem id="smart" className="menu-item">
+                    {t('sidebar.smart.new')}
+                  </MenuItem>
+                ) : null}
+                <Separator className="menu-separator" />
+                <MenuItem id="fields" className="menu-item">
+                  {t('sidebar.fields')}
+                </MenuItem>
+              </Menu>
+            </Popover>
+          </MenuTrigger>
+        ) : (
+          <Button className="button small" onPress={onOpenFields}>
+            {t('sidebar.fields')}
+          </Button>
+        )}
       </div>
 
       {opened?.kind === 'new-category' ? (
@@ -474,7 +606,6 @@ export function Sidebar({ info, folders, taxonomy, filter, onFilter, onChanged, 
           onClose={close}
         />
       ) : null}
-      {opened?.kind === 'fields' ? <FieldsDialog fields={taxonomy.fields} onClose={close} onChanged={onChanged} /> : null}
     </nav>
   );
-}
+});

@@ -35,6 +35,31 @@ pub const MAX_AUTHOR_CHARS: usize = 128;
 pub const MAX_OCR_LANGUAGES: usize = 4;
 /// What the OCR reads unless the person chose otherwise: the models shipped.
 pub const DEFAULT_OCR_LANGUAGES: [&str; 2] = ["por", "eng"];
+/// The library sidebar's narrowest width, in CSS pixels.
+pub const SIDEBAR_MIN_WIDTH: u16 = 180;
+/// The library sidebar's widest width, in CSS pixels.
+pub const SIDEBAR_MAX_WIDTH: u16 = 420;
+/// The library sidebar's initial width, in CSS pixels.
+pub const SIDEBAR_DEFAULT_WIDTH: u16 = 240;
+
+/// Minimum book cover width in the library grid, in CSS pixels.
+pub const COVER_MIN_WIDTH: u16 = 120;
+
+/// Maximum book cover width in the library grid, in CSS pixels.
+pub const COVER_MAX_WIDTH: u16 = 260;
+
+/// Default book cover width in the library grid, in CSS pixels.
+pub const COVER_DEFAULT_WIDTH: u16 = 168;
+
+/// Keeps the sidebar width within [`SIDEBAR_MIN_WIDTH`]..=[`SIDEBAR_MAX_WIDTH`].
+pub fn clamp_sidebar_width(width: i64) -> u16 {
+    width.clamp(i64::from(SIDEBAR_MIN_WIDTH), i64::from(SIDEBAR_MAX_WIDTH)) as u16
+}
+
+/// Keeps the cover width within [`COVER_MIN_WIDTH`]..=[`COVER_MAX_WIDTH`].
+pub fn clamp_cover_width(width: i64) -> u16 {
+    width.clamp(i64::from(COVER_MIN_WIDTH), i64::from(COVER_MAX_WIDTH)) as u16
+}
 
 /// The interface's colors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +96,16 @@ pub struct Preferences {
     pub annotation_author: String,
     /// The OCR's languages, as Tesseract names them, in the order it tries them.
     pub ocr_languages: Vec<String>,
+    /// The width of the library's sidebar, in CSS pixels.
+    pub sidebar_width: u16,
+    /// Whether the library's sidebar is collapsed.
+    pub sidebar_collapsed: bool,
+    /// Whether empty Categories, Tags, Collections and Smart collections sections are shown.
+    pub show_empty_sidebar_sections: bool,
+    /// Book cover width in the library grid, in CSS pixels.
+    pub cover_width: u16,
+    /// Whether book counts appear next to sidebar items.
+    pub show_sidebar_counts: bool,
 }
 
 impl Default for Preferences {
@@ -81,6 +116,11 @@ impl Default for Preferences {
             motion: Motion::default(),
             annotation_author: String::new(),
             ocr_languages: DEFAULT_OCR_LANGUAGES.map(str::to_owned).to_vec(),
+            sidebar_width: SIDEBAR_DEFAULT_WIDTH,
+            sidebar_collapsed: false,
+            show_empty_sidebar_sections: false,
+            cover_width: COVER_DEFAULT_WIDTH,
+            show_sidebar_counts: false,
         }
     }
 }
@@ -101,6 +141,11 @@ pub struct PreferencesPatch {
     pub motion: Option<String>,
     pub annotation_author: Option<String>,
     pub ocr_languages: Option<Vec<String>>,
+    pub sidebar_width: Option<i64>,
+    pub sidebar_collapsed: Option<bool>,
+    pub show_empty_sidebar_sections: Option<bool>,
+    pub cover_width: Option<i64>,
+    pub show_sidebar_counts: Option<bool>,
 }
 
 /// A preference's value as it is kept, checked.
@@ -129,6 +174,21 @@ fn checked(patch: &PreferencesPatch) -> Result<Vec<(&'static str, Value)>> {
             "ocrLanguages",
             Value::from(checked_ocr_languages(languages)?),
         ));
+    }
+    if let Some(width) = patch.sidebar_width {
+        rows.push(("sidebarWidth", Value::from(clamp_sidebar_width(width))));
+    }
+    if let Some(collapsed) = patch.sidebar_collapsed {
+        rows.push(("sidebarCollapsed", Value::from(collapsed)));
+    }
+    if let Some(show) = patch.show_empty_sidebar_sections {
+        rows.push(("showEmptySidebarSections", Value::from(show)));
+    }
+    if let Some(width) = patch.cover_width {
+        rows.push(("coverWidth", Value::from(clamp_cover_width(width))));
+    }
+    if let Some(show) = patch.show_sidebar_counts {
+        rows.push(("showSidebarCounts", Value::from(show)));
     }
     Ok(rows)
 }
@@ -335,6 +395,33 @@ fn apply_kept(preferences: &mut Preferences, key: &str, value: Value) {
                 && let Ok(languages) = checked_ocr_languages(&languages)
             {
                 preferences.ocr_languages = languages;
+            }
+        }
+        "sidebarWidth" => {
+            if let Some(width) = value.as_i64() {
+                preferences.sidebar_width = clamp_sidebar_width(width);
+            } else if let Some(width) = value.as_f64().filter(|w| w.is_finite()) {
+                preferences.sidebar_width = clamp_sidebar_width(width.round() as i64);
+            }
+        }
+        "sidebarCollapsed" => {
+            if let Some(collapsed) = value.as_bool() {
+                preferences.sidebar_collapsed = collapsed;
+            }
+        }
+        "showEmptySidebarSections" => {
+            if let Some(show) = value.as_bool() {
+                preferences.show_empty_sidebar_sections = show;
+            }
+        }
+        "coverWidth" => {
+            if let Some(width) = value.as_i64() {
+                preferences.cover_width = clamp_cover_width(width);
+            }
+        }
+        "showSidebarCounts" => {
+            if let Some(show) = value.as_bool() {
+                preferences.show_sidebar_counts = show;
             }
         }
         // A newer version's: kept as it is, and not read.

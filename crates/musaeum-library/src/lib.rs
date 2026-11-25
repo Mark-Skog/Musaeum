@@ -89,7 +89,11 @@ pub use model::{
     RevisionOrigin, RootId, RootInfo, SuggestionId, SuggestionInfo, SuggestionKind, WorkId,
     WorkInfo,
 };
-pub use preferences::{Motion, Preferences, PreferencesPatch, PreferencesStore, Theme};
+pub use preferences::{
+    COVER_DEFAULT_WIDTH, COVER_MAX_WIDTH, COVER_MIN_WIDTH, Motion, Preferences, PreferencesPatch,
+    PreferencesStore, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, Theme,
+    clamp_cover_width, clamp_sidebar_width,
+};
 pub use probe::{FsProbe, RealFileSystem};
 pub use reading::{
     CONTENT_MAJORITY_PERCENT, CONTENT_RULES_VERSION, DocumentContent, DocumentGeometry,

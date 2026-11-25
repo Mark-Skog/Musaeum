@@ -123,6 +123,7 @@ fn main() {
             shelf::library_info,
             shelf::library_choose_root,
             shelf::library_add_root,
+            shelf::library_remove_root,
             shelf::library_choose_existing,
             shelf::library_browse,
             taxonomy::taxonomy,

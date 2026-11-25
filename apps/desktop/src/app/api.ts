@@ -11,6 +11,17 @@ export interface RootSummary {
   status: string;
 }
 
+export interface RejectedFolder {
+  path: string;
+  reason: string;
+}
+
+export interface AddRootsResult {
+  info: LibraryInfo;
+  added: string[];
+  rejected: RejectedFolder[];
+}
+
 export interface LibraryInfo {
   open: boolean;
   location: string | null;
@@ -457,6 +468,16 @@ export interface Preferences {
   annotationAuthor: string;
   /** The OCR's languages, as Tesseract names them, in order. */
   ocrLanguages: string[];
+  /** Width of the library sidebar in CSS pixels. */
+  sidebarWidth: number;
+  /** Whether the library sidebar is collapsed. */
+  sidebarCollapsed: boolean;
+  /** Whether empty taxonomy sections appear in the sidebar. */
+  showEmptySidebarSections: boolean;
+  /** Width of book covers in the library grid, in CSS pixels. */
+  coverWidth: number;
+  /** Whether book counts appear next to sidebar items. */
+  showSidebarCounts: boolean;
 }
 
 export interface PreferencesView {
@@ -499,8 +520,9 @@ export interface CacheReport {
 
 export const api = {
   libraryInfo: () => invoke<LibraryInfo>('library_info'),
-  chooseRoot: () => invoke<LibraryInfo | null>('library_choose_root'),
+  chooseRoot: () => invoke<AddRootsResult | null>('library_choose_root'),
   addRoot: (path: string) => invoke<LibraryInfo>('library_add_root', { path }),
+  removeRoot: (id: number) => invoke<LibraryInfo>('library_remove_root', { id }),
   chooseExisting: () => invoke<LibraryInfo | null>('library_choose_existing'),
   browse: (query: BrowseFilter & { text: string; offset: number; limit: number }) => invoke<BrowsePage>('library_browse', { query }),
   taxonomy: () => invoke<Taxonomy>('taxonomy'),

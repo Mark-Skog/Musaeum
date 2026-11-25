@@ -121,7 +121,7 @@ catalog! {
     PickExportXfdf { pt: "Exportar anotações em XFDF", en: "Export annotations as XFDF" }
     PickImportXfdf { pt: "Importar anotações de um XFDF", en: "Import annotations from an XFDF" }
     PickCalibreFolder { pt: "Biblioteca do Calibre", en: "Calibre library" }
-    PickBooksFolder { pt: "Pasta de livros", en: "Folder of books" }
+    PickBooksFolder { pt: "Pastas de livros", en: "Folders of books" }
     PickLibraryFolder { pt: "Pasta da biblioteca (com library.db)", en: "Library folder (with library.db)" }
 
     // --- The names a save dialog suggests ---
