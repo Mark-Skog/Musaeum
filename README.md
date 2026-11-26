@@ -4,11 +4,7 @@
 
 Free and open-source digital book reader and library manager (`GPL-3.0-or-later`).
 
-<p align="center">
-  <img src="images/library.png" alt="Musaeum Library Grid" width="800">
-  <br>
-  <em>The integrated digital book library showing covers and taxonomy</em>
-</p>
+<img width="1280" height="720" alt="Adobe Express - 2026-11-25 03-44-23_1" src="https://github.com/user-attachments/assets/87c06ce7-d1a3-4255-bfd3-6ddf5b535b53" />
 
 **Version 1.0.0**, for Windows 10 and 11 (x64). Version history is in
 [`CHANGELOG.md`](CHANGELOG.md), and build, verification, and code-signing instructions are in
