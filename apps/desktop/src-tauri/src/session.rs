@@ -64,6 +64,11 @@ pub struct Session {
 /// State shared by commands and the tile protocol.
 pub struct AppState {
     options: StartupOptions,
+    /// Serializes opening and closing sessions so concurrent IPC calls never overlap worker
+    /// startup, session replacement, or WebView2 shared-buffer release.
+    lifecycle: Mutex<()>,
+    /// Serializes delivery-probe buffer creation against concurrent probes.
+    probe_lock: Mutex<()>,
     current: RwLock<Option<Arc<Session>>>,
     next_id: AtomicU32,
     /// Only runs in the memory benchmark. With this on in the others, frames stalled for up to
@@ -78,6 +83,19 @@ pub struct AppState {
     pub ocr: Ocr,
     /// The person's preferences.
     pub preferences: PreferencesState,
+}
+
+/// Takes `current` out of `slot` only when `expected` is `None` or matches the active id.
+fn take_matching_session<T>(
+    slot: &mut Option<T>,
+    expected: Option<u32>,
+    id_of: impl FnOnce(&T) -> u32,
+) -> Option<T> {
+    match (slot.as_ref(), expected) {
+        (None, _) => None,
+        (Some(active), Some(wanted)) if id_of(active) != wanted => None,
+        (Some(_), _) => slot.take(),
+    }
 }
 
 impl AppState {
@@ -103,6 +121,8 @@ impl AppState {
             ocr,
             preferences,
             options,
+            lifecycle: Mutex::new(()),
+            probe_lock: Mutex::new(()),
             current: RwLock::new(None),
             next_id: AtomicU32::new(1),
         }
@@ -131,19 +151,42 @@ impl AppState {
             .clone()
     }
 
-    /// Stops the current session's pool, joining its thread. Once this returns, nothing
-    /// in this process uses the slab, so WebView2 buffers behind it may be closed.
-    pub fn stop_current_session(&self) {
-        let session = self
-            .current
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(session) = session {
+    /// Stops the open session if its id matches `expected` (`None` stops whichever is open),
+    /// returning the stopped session's id. Caller must hold [`Self::lifecycle`].
+    fn stop_session_matching(&self, expected: Option<u32>) -> Option<u32> {
+        let session = {
+            let mut guard = self.current.write().unwrap_or_else(PoisonError::into_inner);
+            take_matching_session(&mut guard, expected, |session| session.id)
+        };
+        let stopped = session.map(|session| {
+            let id = session.id;
             session.pool.shutdown();
+            id
+        });
+        if stopped.is_some() {
+            // Its worker holds the models in memory; the next document starts another if it needs one.
+            self.ocr.release();
         }
-        // Its worker holds the models in memory; the next document starts another if it needs one.
-        self.ocr.release();
+        stopped
+    }
+
+    /// Stops the current session's pool, joining its thread.
+    pub fn stop_current_session(&self) {
+        let _lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let _ = self.stop_session_matching(None);
+    }
+
+    /// Stops the current session and releases its WebView2 shared buffers.
+    pub fn stop_and_release(&self, window: &WebviewWindow) {
+        let _lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let _ = self.stop_session_matching(None);
+        webview2::release_buffers(window);
     }
 
     fn current_stats(&self) -> Option<PoolStats> {
@@ -255,6 +298,10 @@ pub fn open_delivery_probe(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _probe = state
+        .probe_lock
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     state.check_shared_buffers_allowed()?;
     webview2::create_probe_buffers(&window)
 }
@@ -265,8 +312,14 @@ pub fn open_delivery_probe(
 pub fn open_session(
     window: WebviewWindow,
     state: State<'_, AppState>,
+    books: State<'_, crate::book::BookState>,
     args: OpenSessionArgs,
 ) -> Result<SessionInfo, OpenSessionError> {
+    let _lifecycle = state
+        .lifecycle
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+
     // A page can name any path, so the host opens only what it shows anyway: a book of the
     // library, or the document named on the command line. A test or a benchmark opens what it
     // likes. Checked before anything is read, and before the open book is closed.
@@ -284,18 +337,35 @@ pub fn open_session(
             args.document.display()
         )));
     }
-    stop_and_release(&window, &state);
+
+    if let Some(previous_id) = state.stop_session_matching(None) {
+        webview2::release_session_buffers(&window, previous_id);
+    }
+    webview2::release_probe_buffers(&window);
     // A book open in the reader: the full-text indexer gives way.
     state.shelf.set_reading(true);
+
+    let reset_reading_on_err = |state: &AppState, books: &crate::book::BookState| {
+        if !crate::book::has_open(books) {
+            state.shelf.set_reading(false);
+        }
+    };
 
     // Only the first bytes are read here, to choose the worker; nothing in them is interpreted.
     let format = FixedFormat::of_file(&args.document)
         .map_err(|error| {
+            reset_reading_on_err(&state, &books);
             OpenSessionError::other(format!("reading {}: {error}", args.document.display()))
         })?
-        .ok_or_else(|| OpenSessionError::other("not a PDF, CBZ, CBR or DjVu file".to_owned()))?;
+        .ok_or_else(|| {
+            reset_reading_on_err(&state, &books);
+            OpenSessionError::other("not a PDF, CBZ, CBR or DjVu file".to_owned())
+        })?;
     let worker_exe = std::env::current_exe()
-        .map_err(|error| OpenSessionError::other(format!("locating the app: {error}")))?
+        .map_err(|error| {
+            reset_reading_on_err(&state, &books);
+            OpenSessionError::other(format!("locating the app: {error}"))
+        })?
         .with_file_name(format.worker_exe());
     let config = PoolConfig {
         worker_exe,
@@ -311,13 +381,17 @@ pub fn open_session(
         known_geometry: known.geometry.as_ref().map(reading::known_geometry),
     };
 
+    let session_id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let (slab, delivery) = match args.delivery {
         DeliveryPath::A => {
             let region = ShmRegion::create(slab_len(SLOT_COUNT)).map_err(|error| {
+                reset_reading_on_err(&state, &books);
                 OpenSessionError::other(format!("allocating the slab: {error}"))
             })?;
-            let slab = PixelSlab::init(region, SLOT_COUNT)
-                .map_err(|error| OpenSessionError::other(error.to_string()))?;
+            let slab = PixelSlab::init(region, SLOT_COUNT).map_err(|error| {
+                reset_reading_on_err(&state, &books);
+                OpenSessionError::other(error.to_string())
+            })?;
             (
                 slab,
                 DeliveryMode::Pull {
@@ -328,14 +402,17 @@ pub fn open_session(
         // To the host, Paths B and C are the same: tiles are announced through the ring.
         // They only differ in which thread of the WebView reads them.
         DeliveryPath::B | DeliveryPath::C => {
-            state
-                .check_shared_buffers_allowed()
-                .map_err(OpenSessionError::delivery)?;
-            let buffers = webview2::create_ring_buffers(&window, SLOT_COUNT, RING_CAPACITY)
-                .map_err(|message| {
-                    webview2::release_buffers(&window);
-                    OpenSessionError::delivery(message)
-                })?;
+            state.check_shared_buffers_allowed().map_err(|message| {
+                reset_reading_on_err(&state, &books);
+                OpenSessionError::delivery(message)
+            })?;
+            let buffers =
+                webview2::create_ring_buffers(&window, session_id, SLOT_COUNT, RING_CAPACITY)
+                    .map_err(|message| {
+                        webview2::release_session_buffers(&window, session_id);
+                        reset_reading_on_err(&state, &books);
+                        OpenSessionError::delivery(message)
+                    })?;
             (
                 buffers.slab,
                 DeliveryMode::Ring {
@@ -347,7 +424,8 @@ pub fn open_session(
     };
 
     let pool = RenderPool::start(config, Arc::new(slab), delivery).map_err(|error| {
-        webview2::release_buffers(&window);
+        webview2::release_session_buffers(&window, session_id);
+        reset_reading_on_err(&state, &books);
         OpenSessionError::other(error.to_string())
     })?;
 
@@ -377,7 +455,7 @@ pub fn open_session(
 
     let stats = pool.stats().unwrap_or_default();
     let session = Arc::new(Session {
-        id: state.next_id.fetch_add(1, Ordering::Relaxed),
+        id: session_id,
         geometry: geometry_bytes(pool.pages()),
         document: known.file.map(|file| (file.document, file.revision)),
         blake3: known.file.and_then(|file| file.blake3),
@@ -407,11 +485,6 @@ pub fn open_session(
         .write()
         .unwrap_or_else(PoisonError::into_inner) = Some(session);
     Ok(info)
-}
-
-fn stop_and_release(window: &WebviewWindow, state: &AppState) {
-    state.stop_current_session();
-    webview2::release_buffers(window);
 }
 
 /// Remembers where the reader is in the open document. The page can only save for the document it
@@ -474,11 +547,32 @@ pub fn document_outline(
         .collect())
 }
 
-/// Closes the current document, if any.
+/// Closes the matching document session (or whichever is open when `session` is `None`).
 #[tauri::command(async)]
-pub fn close_session(window: WebviewWindow, state: State<'_, AppState>) {
-    stop_and_release(&window, &state);
-    state.shelf.set_reading(false);
+pub fn close_session(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    books: State<'_, crate::book::BookState>,
+    session: Option<u32>,
+) {
+    let _lifecycle = state
+        .lifecycle
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(stopped_id) = state.stop_session_matching(session) {
+        webview2::release_session_buffers(&window, stopped_id);
+        if !crate::book::has_open(&books) {
+            state.shelf.set_reading(false);
+        }
+    } else if let Some(id) = session {
+        // Stale close for an earlier session: clean up any lingering buffers of `id` only.
+        webview2::release_session_buffers(&window, id);
+    } else {
+        webview2::release_buffers(&window);
+        if !crate::book::has_open(&books) {
+            state.shelf.set_reading(false);
+        }
+    }
 }
 
 /// Writes `value` into every probe buffer, and returns what scripts wrote back into them.
@@ -589,4 +683,32 @@ fn write_report(path: &PathBuf, text: &str) -> Result<(), String> {
 /// Used by `Manager::state` callers that only have an app handle.
 pub fn app_state(app: &AppHandle) -> State<'_, AppState> {
     app.state::<AppState>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_matching_session;
+
+    #[test]
+    fn stale_session_close_does_not_evict_a_newer_session() {
+        let mut active = Some((2_u32, "second"));
+        assert_eq!(
+            take_matching_session(&mut active, Some(1), |(id, _)| *id),
+            None
+        );
+        assert_eq!(active, Some((2, "second")));
+
+        assert_eq!(
+            take_matching_session(&mut active, Some(2), |(id, _)| *id),
+            Some((2, "second"))
+        );
+        assert_eq!(active, None);
+
+        let mut unkeyed = Some((5_u32, "fifth"));
+        assert_eq!(
+            take_matching_session(&mut unkeyed, None, |(id, _)| *id),
+            Some((5, "fifth"))
+        );
+        assert_eq!(unkeyed, None);
+    }
 }

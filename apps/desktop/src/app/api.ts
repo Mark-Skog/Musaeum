@@ -578,7 +578,7 @@ export const api = {
     document: number,
     position: { readerCfi: string; mode: FlowMode; pageTurnAnimation: boolean },
   ) => invoke<FlowPosition>('save_flow_position', { document, position }),
-  closeBook: () => invoke<void>('close_book'),
+  closeBook: (origin?: string) => invoke<void>('close_book', { origin: origin ?? null }),
   fixedAnnotations: (session: number) => invoke<FixedAnnotationView[]>('fixed_annotations', { session }),
   createFixedAnnotation: (session: number, spans: { page: number; start: number; end: number }[], mark: MarkArgs) =>
     invoke<FixedAnnotationView>('create_fixed_annotation', { session, spans, mark }),

@@ -559,7 +559,7 @@ pub fn library_choose_existing(
     let Some(folder) = pick_folder(owner_of(&window), &tr!(PickLibraryFolder))? else {
         return Ok(None);
     };
-    state.stop_current_session();
+    state.stop_and_release(&window);
     state.shelf.switch_to(&folder)?;
     Ok(Some(state.shelf.info()))
 }

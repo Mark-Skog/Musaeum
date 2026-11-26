@@ -95,6 +95,8 @@ export interface FixedReaderConfig {
   onMarkClick?(id: string, rect: CssRect): void;
   /** A region drawn on the picture of a page, or none any more. */
   onRegion?(region: RegionSelection | null, rect: CssRect | null): void;
+  /** Optional cancellation signal so an aborted mount skips or tears down cleanly. */
+  signal?: AbortSignal;
 }
 
 /** A box in CSS pixels, relative to the canvas. */
@@ -137,6 +139,28 @@ function inbox(): SharedBufferInbox | null {
 
 /** The delivery plan, found once per run of the app: the runtime does not change in between. */
 let knownPlan: { evidence: DeliveryEvidence; plan: DeliveryPlan } | null = null;
+
+/**
+ * Serializes host shared-buffer probing and session opening so concurrent `FixedReader.open`
+ * calls (such as React `StrictMode` double-mounts or rapid book switches) never interleave
+ * buffers in `sharedInbox` or spawn overlapping worker pools.
+ */
+let hostOpenQueue: Promise<void> = Promise.resolve();
+
+function withHostOpenLock<T>(work: () => Promise<T>): Promise<T> {
+  const run = hostOpenQueue.then(work, work);
+  hostOpenQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function abortError(): Error {
+  const error = new Error('The document open was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
 
 /** Tries everything the choice of path depends on, on this runtime, right now. */
 async function gatherDeliveryEvidence(
@@ -346,6 +370,7 @@ export class FixedReader {
   private flushWaiters: (() => void)[] = [];
   /** Saves of the position still on their way to the library. */
   private readonly saving = new Set<Promise<unknown>>();
+  private closePromise: Promise<void> | null = null;
   readonly copySamples = new Samples(1 << 16);
   readonly mainFrameIntervals = new Samples(1 << 16);
   /** What the benchmark report carries about how the document opened. */
@@ -359,6 +384,9 @@ export class FixedReader {
 
   /** Opens a document. Rejects if no delivery path can carry its tiles or the file is not one. */
   static async open(config: FixedReaderConfig): Promise<FixedReader> {
+    if (config.signal?.aborted) {
+      throw abortError();
+    }
     const worker = new Worker(new URL('../compositor/worker.ts', import.meta.url), {
       type: 'module',
     });
@@ -490,22 +518,43 @@ export class FixedReader {
     // Listening starts before the host is asked to post anything.
     const received = inbox();
     const selectionStarted = performance.now();
-    let evidence: DeliveryEvidence;
-    let plan: DeliveryPlan;
-    if (knownPlan !== null && bench === null) {
-      evidence = knownPlan.evidence;
-      plan = { ...knownPlan.plan, rejected: [] };
-    } else {
-      evidence = await gatherDeliveryEvidence(worker, received, options);
-      plan = planDelivery(options.delivery, evidence);
-      knownPlan = { evidence, plan: { ...plan, rejected: [...plan.rejected] } };
-    }
-    const { session, buffers } = await openFirstWorkingPath(
-      config.document,
-      plan,
-      options.workers,
-      received,
-    );
+    const { evidence, plan, session, buffers } = await withHostOpenLock(async () => {
+      if (config.signal?.aborted) {
+        throw abortError();
+      }
+      let nextEvidence: DeliveryEvidence;
+      let nextPlan: DeliveryPlan;
+      if (knownPlan !== null && bench === null) {
+        nextEvidence = knownPlan.evidence;
+        nextPlan = { ...knownPlan.plan, rejected: [] };
+      } else {
+        nextEvidence = await gatherDeliveryEvidence(worker, received, options);
+        nextPlan = planDelivery(options.delivery, nextEvidence);
+        knownPlan = {
+          evidence: nextEvidence,
+          plan: { ...nextPlan, rejected: [...nextPlan.rejected] },
+        };
+      }
+      if (config.signal?.aborted) {
+        throw abortError();
+      }
+      const opened = await openFirstWorkingPath(
+        config.document,
+        nextPlan,
+        options.workers,
+        received,
+      );
+      if (config.signal?.aborted) {
+        await invoke('close_session', { session: opened.session.id }).catch(() => {});
+        throw abortError();
+      }
+      return {
+        evidence: nextEvidence,
+        plan: nextPlan,
+        session: opened.session,
+        buffers: opened.buffers,
+      };
+    });
     for (const { path, reason } of plan.rejected) {
       console.warn(`delivery path ${path} is not available: ${reason}`);
     }
@@ -681,19 +730,27 @@ export class FixedReader {
    * the WebView2 buffers, which nothing on this side uses any more.
    */
   async close(): Promise<void> {
-    if (this.compositorReady && !this.finished) {
-      // The last move may still be waiting out its pause before being sent: it is sent now, and
-      // kept, before anything stops.
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          this.flushWaiters.push(resolve);
-          this.send({ type: 'flush' });
-        }),
-        new Promise<void>((resolve) => setTimeout(resolve, 1000)),
-      ]);
-      await Promise.all([...this.saving]);
+    if (this.closePromise !== null) {
+      return this.closePromise;
     }
-    this.dispose();
-    await invoke('close_session');
+    this.closePromise = (async () => {
+      const sessionId = this.session?.id ?? null;
+      this.session = null;
+      if (this.compositorReady && !this.finished) {
+        // The last move may still be waiting out its pause before being sent: it is sent now, and
+        // kept, before anything stops.
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            this.flushWaiters.push(resolve);
+            this.send({ type: 'flush' });
+          }),
+          new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+        ]);
+        await Promise.all([...this.saving]);
+      }
+      this.dispose();
+      await invoke('close_session', { session: sessionId });
+    })();
+    return this.closePromise;
   }
 }
