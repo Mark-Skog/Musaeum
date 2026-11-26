@@ -4,11 +4,7 @@
 
 Leitor e gerenciador de livros digitais, livre e de código aberto (GPL-3.0-or-later).
 
-<p align="center">
-  <img src="images/library.png" alt="Grade da Biblioteca Musaeum" width="800">
-  <br>
-  <em>A biblioteca integrada de livros digitais exibindo capas e taxonomia</em>
-</p>
+<img width="1280" height="720" alt="Adobe Express - 2026-11-25 03-44-23_1" src="https://github.com/user-attachments/assets/51e9ba21-8738-4e35-b78f-9175824e6b70" />
 
 **Versão 1.0.0**, para Windows 10 e 11 (x64). O histórico das versões está no
 [`CHANGELOG.md`](CHANGELOG.md), e como uma versão é construída, conferida e assinada, em
