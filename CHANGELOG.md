@@ -5,6 +5,50 @@ estão em [`docs/adr/`](docs/adr/); o procedimento de uma versão, em [`docs/rel
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/), e as versões, o
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## 1.1.0 — 2026-11-25
+
+Polimento visual e ergonômico da biblioteca, barra de título nativa customizada para Windows 10/11 e
+correção crítica de estabilidade na abertura concorrente de PDFs grandes.
+
+### Adicionado
+
+- **Barra de título customizada nativa (Windows 10/11):** integrada aos temas claro, escuro e sistema
+  via subclassing Win32 (`WM_NCCALCSIZE`, `DwmExtendFrameIntoClientArea` com compensação por DPI ao
+  maximizar), preservando Aero Snap, redimensionamento pelas bordas, `Win + Setas`, `Win + Z`,
+  ocultação em tela cheia (`F11` inclusive dentro de EPUBs) e controles localizados em `pt-BR` e `en`.
+- **Scrollbar de overlay com amortecimento exponencial:** sem setas, sem deslocamento lateral (*zero
+  layout shift*), fade-in/fade-out exponencial por proximidade de borda ou rolagem e suavização
+  exponencial tanto no arrasto do polegar quanto na rodinha do mouse (`wheel`), respeitando o modo de
+  movimento reduzido.
+- **Barra lateral redimensionável e persistente (`180–420 px`):** alça divisória com movimento
+  exponencial sem queda de FPS em bibliotecas grandes, duplo clique para restaurar `240 px`, atalho
+  `Ctrl+B` com animação suave, ocultação automática de seções vazias (com botão `+ Organizar`) e
+  omissão visual de pasta raiz única quando possui subpastas.
+- **Seleção múltipla de pastas** no diálogo nativo do Windows (`FOS_ALLOWMULTISELECT`) e diálogo
+  dedicado para gerenciar pastas acompanhadas.
+- **Tamanho fixo das capas e zoom na biblioteca:** as capas mantêm dimensão constante durante o
+  redimensionamento da janela ou dos painéis; novo ajuste de tamanho via `Ctrl + Scroll` sobre a
+  grade e em Preferências (`120–260 px`, padrão `168 px`).
+- **Preferências adicionais na barra lateral:** opções para exibir/ocultar contagens de livros
+  (desligada por padrão) e seções vazias.
+
+### Melhorado
+
+- **Barra superior da biblioteca enxuta:** ações secundárias consolidadas em um menu compacto (`⚙`),
+  alternador vetorial `Capas`/`Lista` e destaque visual persistente nos livros selecionados ou abertos
+  em Detalhes.
+- **Transições exponenciais de layout:** abertura e fechamento suaves do painel lateral direito
+  (`Detalhes` / edição em lote) e reposicionamento fluido dos cards da grade durante mudanças de
+  painel, sem interferir na virtualização durante a rolagem.
+
+### Corrigido
+
+- **Encerramento abrupto (`STATUS_ACCESS_VIOLATION` / `0xc0000005`) ao abrir PDFs grandes:** eliminado
+  *use-after-unmap* de `ICoreWebView2SharedBuffer` durante aberturas ou fechamentos concorrentes de
+  sessão, substituindo mapeamento externo emprestado por duplicação de `HANDLE` de seção NT com view
+  própria no `ShmRegion`, escopo de buffers por sessão e serialização do ciclo de vida tanto no leitor
+  de páginas fixas quanto no leitor fluido.
+
 ## 1.0.0 — 2026-11-24
 
 A primeira versão estável, para Windows 10 e 11 (x64), com instalador.
@@ -108,4 +152,3 @@ O marco Alpha: uma biblioteca de uso diário com o leitor integrado.
   e `watch`.
 - Por baixo: SQLite com identidade de arquivo, indexador e watcher que avisa quando perde eventos, diário
   de operações com desfazer, e os processos isolados que leem bytes hostis.
-

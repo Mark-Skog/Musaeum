@@ -1,6 +1,6 @@
 # Third-party notices
 
-Musaeum 1.0.0 is free software under the GNU General Public License, version 3 or later (`LICENSE.txt`). It contains the works listed here, each under its own license, compatible with the GPL; their notices and license texts follow, as their authors ask.
+Musaeum 1.1.0 is free software under the GNU General Public License, version 3 or later (`LICENSE.txt`). It contains the works listed here, each under its own license, compatible with the GPL; their notices and license texts follow, as their authors ask.
 
 O Musaeum é software livre, sob a GPL versão 3 ou posterior. Ele contém as obras listadas aqui, cada uma sob a sua licença, compatível com a GPL; os avisos e os textos dessas licenças vêm a seguir, como os seus autores pedem.
 
