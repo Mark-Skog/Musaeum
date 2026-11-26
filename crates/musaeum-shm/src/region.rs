@@ -20,21 +20,12 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 /// Access rights a render worker needs on a shared-memory section.
 pub const SECTION_RW_ACCESS: u32 = FILE_MAP_READ | FILE_MAP_WRITE;
 
-/// Who is responsible for unmapping the view and closing the section handle.
-#[derive(Debug)]
-enum Ownership {
-    Owned,
-    /// Memory that belongs to someone else, such as an `ICoreWebView2SharedBuffer`.
-    External,
-}
-
-/// A mapped view of a shared-memory section.
+/// A mapped view of a shared-memory section owned by this instance.
 #[derive(Debug)]
 pub struct ShmRegion {
     ptr: NonNull<u8>,
     len: usize,
     section: HANDLE,
-    ownership: Ownership,
 }
 
 // SAFETY: the region only stores a pointer to process-wide mapped memory and a
@@ -69,23 +60,13 @@ impl ShmRegion {
         if section.is_null() {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: `section` was just created with read/write access and is `len` bytes.
-        match unsafe { map_view(section, len) } {
-            Ok(ptr) => Ok(Self {
-                ptr,
-                len,
-                section,
-                ownership: Ownership::Owned,
-            }),
-            Err(error) => {
-                // SAFETY: `section` is a valid handle owned here and not used again.
-                unsafe { CloseHandle(section) };
-                Err(error)
-            }
-        }
+        // SAFETY: `section` was just created with read/write access and is `len` bytes;
+        // `from_raw_handle` takes sole ownership and closes it if mapping fails.
+        unsafe { Self::from_raw_handle(section as usize as u64, len) }
     }
 
     /// Takes ownership of a section handle received from the host and maps it.
+    /// If mapping fails, `raw_handle` is closed before returning the error.
     ///
     /// # Safety
     ///
@@ -93,29 +74,50 @@ impl ShmRegion {
     /// anything else, and the section must be at least `len` bytes long.
     pub unsafe fn from_raw_handle(raw_handle: u64, len: usize) -> io::Result<Self> {
         let section = raw_handle as usize as HANDLE;
-        // SAFETY: the caller guarantees the handle and the length.
-        let ptr = unsafe { map_view(section, len) }?;
-        Ok(Self {
-            ptr,
-            len,
-            section,
-            ownership: Ownership::Owned,
-        })
+        if len == 0 {
+            // SAFETY: the caller transferred ownership of `section` to this function.
+            unsafe { CloseHandle(section) };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a shared-memory region cannot be empty",
+            ));
+        }
+        // SAFETY: the caller guarantees `section` is a valid section handle.
+        match unsafe { map_view(section, len) } {
+            Ok(ptr) => Ok(Self { ptr, len, section }),
+            Err(error) => {
+                // SAFETY: `section` is owned here and is not used after this error path.
+                unsafe { CloseHandle(section) };
+                Err(error)
+            }
+        }
     }
 
-    /// Wraps memory mapped by someone else. Dropping the region leaves it mapped.
+    /// Duplicates `section` into this process and maps an independent view of `len` bytes.
     ///
-    /// # Safety
-    ///
-    /// `ptr` must stay valid for reads and writes of `len` bytes and `section` must
-    /// stay open for as long as the region, or anything duplicated from it, is used.
-    pub unsafe fn from_external(ptr: NonNull<u8>, len: usize, section: HANDLE) -> Self {
-        Self {
-            ptr,
-            len,
-            section,
-            ownership: Ownership::External,
+    /// Because both the kernel handle and the virtual-address mapping belong to the new
+    /// [`ShmRegion`], closing the caller's original handle or unmapping any view the caller
+    /// holds (such as `ICoreWebView2SharedBuffer::Close`) cannot invalidate this region
+    /// while it or any `Arc` holding it remains alive.
+    pub fn from_borrowed_section(section: BorrowedHandle<'_>, len: usize) -> io::Result<Self> {
+        if len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a shared-memory region cannot be empty",
+            ));
         }
+        // SAFETY: `GetCurrentProcess` returns a valid pseudo-handle for this process, and
+        // `section` stays open for the duration of the borrow.
+        let raw = unsafe {
+            let current = BorrowedHandle::borrow_raw(GetCurrentProcess());
+            duplicate_handle_into(
+                section.as_raw_handle() as HANDLE,
+                current,
+                SECTION_RW_ACCESS,
+            )?
+        };
+        // SAFETY: `raw` is a fresh handle duplicated into this process and owned solely here.
+        unsafe { Self::from_raw_handle(raw, len) }
     }
 
     /// Duplicates the section handle into `target_process`, returning the value of
@@ -144,16 +146,14 @@ impl ShmRegion {
 
 impl Drop for ShmRegion {
     fn drop(&mut self) {
-        if matches!(self.ownership, Ownership::Owned) {
-            let view = MEMORY_MAPPED_VIEW_ADDRESS {
-                Value: self.ptr.as_ptr().cast(),
-            };
-            // SAFETY: the view and the handle are owned by this region and are never
-            // used after this point. Failures here cannot be acted upon.
-            unsafe {
-                UnmapViewOfFile(view);
-                CloseHandle(self.section);
-            }
+        let view = MEMORY_MAPPED_VIEW_ADDRESS {
+            Value: self.ptr.as_ptr().cast(),
+        };
+        // SAFETY: the view and the handle are owned by this region and are never
+        // used after this point. Failures here cannot be acted upon.
+        unsafe {
+            UnmapViewOfFile(view);
+            CloseHandle(self.section);
         }
     }
 }
@@ -251,9 +251,108 @@ mod tests {
     fn mapping_more_than_the_section_fails_cleanly() {
         let original = ShmRegion::create(4096).unwrap();
         let raw = original.duplicate_into(current_process()).unwrap();
-        // SAFETY: deliberately asks for too much; the call must fail, not map it.
-        // The handle leaks on this error path, which is acceptable in a test.
+        // SAFETY: deliberately asks for too much; `from_raw_handle` closes `raw` and fails.
         let result = unsafe { ShmRegion::from_raw_handle(raw, 1 << 30) };
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn borrowed_section_survives_caller_unmap_and_close() {
+        use crate::ring::{DeliveryRing, TileAnnouncement, ring_len};
+        use crate::slab::{PixelSlab, slab_len};
+
+        let ring_bytes = ring_len(64);
+        // SAFETY: anonymous page-file-backed section with valid size and null attributes/name.
+        let external_ring_section = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                ptr::null(),
+                PAGE_READWRITE,
+                0,
+                ring_bytes as u32,
+                ptr::null(),
+            )
+        };
+        assert!(!external_ring_section.is_null());
+        // SAFETY: `external_ring_section` is valid and `ring_bytes` matches its size.
+        let external_ring_view = unsafe { map_view(external_ring_section, ring_bytes) }.unwrap();
+
+        let slab_bytes = slab_len(4);
+        // SAFETY: anonymous page-file-backed section with valid size and null attributes/name.
+        let external_slab_section = unsafe {
+            CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                ptr::null(),
+                PAGE_READWRITE,
+                0,
+                slab_bytes as u32,
+                ptr::null(),
+            )
+        };
+        assert!(!external_slab_section.is_null());
+        // SAFETY: `external_slab_section` is valid and `slab_bytes` matches its size.
+        let external_slab_view = unsafe { map_view(external_slab_section, slab_bytes) }.unwrap();
+
+        // SAFETY: both external handles remain open throughout `from_borrowed_section`.
+        let ring_region = unsafe {
+            ShmRegion::from_borrowed_section(
+                BorrowedHandle::borrow_raw(external_ring_section),
+                ring_bytes,
+            )
+        }
+        .unwrap();
+        // SAFETY: as above.
+        let slab_region = unsafe {
+            ShmRegion::from_borrowed_section(
+                BorrowedHandle::borrow_raw(external_slab_section),
+                slab_bytes,
+            )
+        }
+        .unwrap();
+
+        let mut ring = DeliveryRing::init(ring_region, 64).unwrap();
+        let slab = PixelSlab::init(slab_region, 4).unwrap();
+
+        // Verify shared underlying physical pages before closing the external WebView2-like side.
+        // SAFETY: `external_ring_view` maps `ring_bytes` bytes; word 0 holds `RING_MAGIC`.
+        let magic = unsafe { external_ring_view.as_ptr().cast::<u32>().read_volatile() };
+        assert_eq!(magic, crate::ring::RING_MAGIC);
+
+        // Simulate `ICoreWebView2SharedBuffer::Close()` tearing down the external view and handle
+        // while `RenderPool::start` / `DeliveryRing::consumed` and `PixelSlab` are still active.
+        // SAFETY: unmapping and closing the caller-owned views/handles once, never touching them again.
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: external_ring_view.as_ptr().cast(),
+            });
+            CloseHandle(external_ring_section);
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: external_slab_view.as_ptr().cast(),
+            });
+            CloseHandle(external_slab_section);
+        }
+
+        // Previously this atomic load faulted with `0xc0000005` (`STATUS_ACCESS_VIOLATION`).
+        assert_eq!(ring.consumed(), 0);
+        let mut consumer = ring.consumer();
+        let announced = TileAnnouncement {
+            slot: 0,
+            page: 2,
+            scale: 65_536,
+            x: 0,
+            y: 0,
+            epoch: 1,
+            render_us: 100,
+            done_us: 200,
+        };
+        ring.publish(announced).unwrap();
+        assert_eq!(consumer.peek(), Some(announced));
+        consumer.advance();
+        assert_eq!(ring.consumed(), 1);
+
+        let dup_raw = slab.region().duplicate_into(current_process()).unwrap();
+        // SAFETY: `dup_raw` is a fresh handle to `slab_bytes` bytes owned by `worker_view`.
+        let worker_view = unsafe { ShmRegion::from_raw_handle(dup_raw, slab_bytes) }.unwrap();
+        assert_eq!(worker_view.len(), slab_bytes);
     }
 }

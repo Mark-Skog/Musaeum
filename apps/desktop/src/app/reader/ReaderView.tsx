@@ -529,6 +529,7 @@ export function ReaderView({
       return;
     }
     let cancelled = false;
+    const abort = new AbortController();
     closing.current = false;
     if (kind === 'fixed') {
       const canvas = document.createElement('canvas');
@@ -540,6 +541,7 @@ export function ReaderView({
         document: book.path,
         shortcuts: false,
         bench: null,
+        signal: abort.signal,
         onStatus: setStatus,
         onFatal: (message) => setError(message),
         onSelection: (chosen) => {
@@ -598,9 +600,14 @@ export function ReaderView({
           }
           setReady(true);
         })
-        .catch((reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason)));
+        .catch((reason: unknown) => {
+          if (!cancelled) {
+            setError(String(reason instanceof Error ? reason.message : reason));
+          }
+        });
       return () => {
         cancelled = true;
+        abort.abort();
         const reader = fixed.current;
         fixed.current = null;
         canvas.remove();
@@ -647,9 +654,14 @@ export function ReaderView({
           })
           .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
       })
-      .catch((reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason)));
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setError(String(reason instanceof Error ? reason.message : reason));
+        }
+      });
     return () => {
       cancelled = true;
+      abort.abort();
       const reader = flow.current;
       flow.current = null;
       void reader?.close();

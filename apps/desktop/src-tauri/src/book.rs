@@ -251,13 +251,39 @@ pub fn open_flow_book(books: &BookState, document: i64) -> Option<Arc<FlowBook>>
     }
 }
 
-/// Closes the book in the reader. Its origin answers nothing from now on.
-pub fn close(books: &BookState) {
+/// Whether any flowing book is currently open in the reader.
+pub fn has_open(books: &BookState) -> bool {
     books
         .current
-        .write()
+        .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .take();
+        .is_some()
+}
+
+/// Closes the book in the reader unconditionally. Its origin answers nothing from now on.
+pub fn close(books: &BookState) {
+    let _ = close_matching(books, None);
+}
+
+/// Closes the book in the reader if its origin matches `origin` (`None` closes whichever is open).
+/// Returns `true` when an open book was closed.
+pub fn close_matching(books: &BookState, origin: Option<&str>) -> bool {
+    let mut current = books
+        .current
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    match (current.as_ref(), origin) {
+        (None, _) => false,
+        (Some(session), Some(wanted))
+            if format!("http://book.{}.localhost", session.id) != wanted =>
+        {
+            false
+        }
+        (Some(_), _) => {
+            current.take();
+            true
+        }
+    }
 }
 
 /// What the frontend needs to create the reader's iframe.
@@ -578,6 +604,32 @@ mod tests {
     #[test]
     fn a_page_without_scripts_is_left_alone() {
         assert_eq!(with_script_nonce("<p>hi</p>", "n"), "<p>hi</p>");
+    }
+
+    #[test]
+    fn stale_origin_close_leaves_newer_book_open() {
+        let books = BookState::default();
+        assert!(!has_open(&books));
+
+        *books.current.write().unwrap() = Some(Arc::new(BookSession {
+            id: "1111".to_owned(),
+            content: BookContent::Epub(PathBuf::from("first.epub")),
+            protection: BookProtection::Full,
+        }));
+        assert!(has_open(&books));
+
+        // Replace with a second book before the first reader's async close arrives.
+        *books.current.write().unwrap() = Some(Arc::new(BookSession {
+            id: "2222".to_owned(),
+            content: BookContent::Epub(PathBuf::from("second.epub")),
+            protection: BookProtection::Full,
+        }));
+
+        assert!(!close_matching(&books, Some("http://book.1111.localhost")));
+        assert!(has_open(&books));
+
+        assert!(close_matching(&books, Some("http://book.2222.localhost")));
+        assert!(!has_open(&books));
     }
 
     #[test]

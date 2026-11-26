@@ -292,6 +292,6 @@ export class FlowReader {
     this.closed = true;
     window.removeEventListener('message', this.listener);
     this.frame.remove();
-    await api.closeBook().catch(() => {});
+    await api.closeBook(this.info.origin).catch(() => {});
   }
 }

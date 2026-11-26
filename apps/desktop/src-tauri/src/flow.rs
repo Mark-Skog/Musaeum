@@ -471,11 +471,12 @@ pub fn locate_flow(
     serde_json::to_value(&located).map_err(|error| error.to_string())
 }
 
-/// Closes the book in the reader, whichever kind it is.
+/// Closes the book in the reader when `origin` matches the open book (or unconditionally if omitted).
 #[tauri::command(async)]
-pub fn close_book(state: State<'_, AppState>, books: State<'_, BookState>) {
-    book::close(&books);
-    state.shelf.set_reading(false);
+pub fn close_book(state: State<'_, AppState>, books: State<'_, BookState>, origin: Option<String>) {
+    if book::close_matching(&books, origin.as_deref()) && state.current_session().is_none() {
+        state.shelf.set_reading(false);
+    }
 }
 
 #[cfg(test)]
