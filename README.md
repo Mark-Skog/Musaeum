@@ -6,7 +6,7 @@ Free and open-source digital book reader and library manager (`GPL-3.0-or-later`
 
 <img width="1280" height="720" alt="Adobe Express - 2026-11-25 03-44-23_1" src="https://github.com/user-attachments/assets/87c06ce7-d1a3-4255-bfd3-6ddf5b535b53" />
 
-**Version 1.0.0**, for Windows 10 and 11 (x64). Version history is in
+**Version 1.2.0**, for Windows 10 and 11 (x64). Version history is in
 [`CHANGELOG.md`](CHANGELOG.md), and build, verification, and code-signing instructions are in
 [`docs/release.md`](docs/release.md).
 
@@ -19,12 +19,13 @@ Free and open-source digital book reader and library manager (`GPL-3.0-or-later`
 
 ## Install
 
-Download `Musaeum_1.0.0_x64-setup.exe` and run it: it installs per-user without requiring administrator
+Download `Musaeum_1.2.0_x64-setup.exe` and run it: it installs per-user without requiring administrator
 privileges, in Brazilian Portuguese or English. For multi-user deployments, machine-wide MSIs are also
-available (`Musaeum_1.0.0_x64_pt-BR.msi` or `..._en-US.msi`). Nothing else is required: WebView2 is
+available (`Musaeum_1.2.0_x64_pt-BR.msi` or `..._en-US.msi`). Nothing else is required: WebView2 is
 already bundled with Windows 11 (on machines without it, the installer downloads it from Microsoft), and
-the Visual C++ runtime is statically linked into every executable. Uninstalling removes only the
-program, never your library, annotations, or preferences.
+the Visual C++ runtime is statically linked into every executable. Upgrading in place over the same
+package format preserves all user data, and uninstalling removes only the program—never your library,
+annotations, or preferences.
 
 Installers in this release are not code-signed, so Windows SmartScreen may display an unknown publisher
 warning. Always verify the SHA-256 checksum of the downloaded file against the published hash
@@ -52,16 +53,30 @@ warning. Always verify the SHA-256 checksum of the downloaded file against the p
 
 ## What Exists Today
 
-The project completed its Master Plan through Phase 8: the **Alpha milestone** (a daily-driver library
-with an integrated reader), Phase 4 text annotations, Phase 5 scanned-book support, the **Beta
-milestone** (full library organization in Phase 6), Phase 7 annotation portability, and Phase 8
-preferences, localization, accessibility, and release hardening. Features include:
+The project completed its Master Plan through Phase 8 (`v1.0.0`)—covering the **Alpha milestone** (a
+daily-driver library with an integrated reader), Phase 4 text annotations, Phase 5 scanned-book support,
+the **Beta milestone** (full library organization in Phase 6), Phase 7 annotation portability, and Phase 8
+preferences, localization, accessibility, and release hardening—followed by post-1.0 releases adding
+library UI/UX refinement, a native Win32 custom titlebar (`v1.1.0`), and Acrobat-style multi-book tabs
+with deterministic WebGL2/session suspension (`v1.2.0`). Features include:
 
-- **Library & Organization:** Watches chosen folders and displays books as a cover grid or list, with
-  instant title search and background full-text search (showing highlighted snippets, page/section, and
-  jumping directly to the match). Filter by disk folder, up to 16-level category trees, tags, manually
-  ordered collections, and smart collections (rules such as *"author contains Sagan and year between 1980
-  and 1999"*).
+- **Library & Organization:** Watches chosen folders (with native Windows multi-folder selection via
+  `FOS_ALLOWMULTISELECT`) and displays books as a fixed-size cover grid (adjustable via `Ctrl + Scroll`
+  or Preferences from `120` to `260 px`, default `168 px`) or list, with exponential overlay scrollbars
+  (zero layout shift), instant title search, and background full-text search (showing highlighted
+  snippets, page/section, and jumping directly to the match). Includes a resizable, persistent sidebar
+  (`180–420 px`, toggleable with `Ctrl+B`) that hides empty taxonomy sections automatically and filters
+  by disk folder, up to 16-level category trees, tags, manually ordered collections, and smart
+  collections (rules such as *"author contains Sagan and year between 1980 and 1999"*).
+- **Multi-Book Tabs & Native Win32 Chrome:** Acrobat-style `40 px` unified tab strip integrated into a
+  Win32-subclassed custom titlebar (`WM_NCCALCSIZE`, `DwmExtendFrameIntoClientArea` with DPI-aware
+  maximize inset), preserving Aero Snap, edge resizing, `Win + Arrows`, `Win + Z`, Fitts's Law on the
+  maximized close button, and `F11` fullscreen hiding. Includes a quick Preferences button (`⚙`), a
+  pinned Home (`🏠`) tab preserving the virtualized library state in `0 ms`, deduplicated book tabs with
+  middle-click close and a guaranteed drag spacer, global tab shortcuts (`Ctrl+Tab`, `Ctrl+Shift+Tab`,
+  `Ctrl+W`/`Ctrl+F4`, `Ctrl+1`–`9` including inside reflowable iframes), full per-tab state snapshots
+  (`ReaderTabSnapshot`), and deterministic GPU/SHM/worker suspension enforcing a hard cap of at most `1`
+  active render session (`0` on the Home tab).
 - **Metadata, Batch Editing, Deduplication & Calibre:** A details panel edits title, people and roles,
   series, year, language, identifiers, rating, reading status, synopsis, and custom fields for a single
   book or multiple selected books at once, using field-level provenance so re-reading files never
@@ -72,7 +87,7 @@ preferences, localization, accessibility, and release hardening. Features includ
   Markdown (normalized in an isolated worker) supporting paginated view with page-turn animations or
   custom continuous scrolling, typography controls, and themes; fixed-layout reader for PDF, comics
   (CBZ/CBR), and DjVu; unified toolbar, table of contents, shortcuts, and exact reading position
-  persistence across sessions.
+  persistence across sessions and tabs.
 - **Annotations & Scanned Books (OCR):** Highlights, underlines, and Markdown notes across fixed and
   reflowable books with triple-anchor re-anchoring across renames, moves, and new editions, backed by
   the searchable Annotations Inspector. On scanned pages, background line detection locates straight,
@@ -83,14 +98,14 @@ preferences, localization, accessibility, and release hardening. Features includ
   selection, or entire library), and deterministic Markdown and A4 PDF study reports ordered by reading
   position and chapters.
 - **Preferences, Localization & Accessibility:** Full Brazilian Portuguese (`pt-BR`) and English (`en`)
-  interface and backend localization, system/light/dark themes, `prefers-reduced-motion` support,
-  configurable annotation author name, verified OCR language selection, safe cache cleanup, keyboard
-  navigation, focus management, and verified WCAG AA contrast.
+  interface and backend localization, system/light/dark themes (including the native custom titlebar),
+  `prefers-reduced-motion` support, configurable annotation author name, verified OCR language
+  selection, safe cache cleanup, keyboard navigation, focus management, and verified WCAG AA contrast.
 
-Architectural decisions and measurements for every phase are documented in
+Architectural decisions and measurements for Phases 0–8 are documented in
 [`docs/adr/0001-fase-0.md`](docs/adr/0001-fase-0.md) through
 [`docs/adr/0015-fase-8-parte-2-release-1-0.md`](docs/adr/0015-fase-8-parte-2-release-1-0.md)
-*(in Portuguese)*.
+*(in Portuguese)*, and post-1.0 changes are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 Currently, Musaeum builds and runs only on **Windows**.
 
@@ -104,9 +119,9 @@ Currently, Musaeum builds and runs only on **Windows**.
  │ and each reflowable book in its own      │◄──────►│ musaeum-render-raster   libarchive   │
  │ origin, without IPC                      │  shm   │ musaeum-render-djvu     DjVuLibre    │
  ├──────────────────────────────────────────┤ + pipe │ musaeum-ocr             Tesseract    │
- │ Rust host: commands validating every     │        │ musaeum-ingest          metadata,    │
- │ page request, library (SQLite, Tantivy), │        │                         normalizer   │
- │ tiles, and cache                         │        └──────────────────────────────────────┘
+ │ Rust host: Win32 titlebar, commands      │        │ musaeum-ingest          metadata,    │
+ │ validating every page request, library   │        │                         normalizer   │
+ │ (SQLite, Tantivy), tiles, and cache      │        └──────────────────────────────────────┘
  └──────────────────────────────────────────┘          restricted token, low integrity,
                                                        job object, mitigations, no network
 ```
@@ -114,7 +129,10 @@ Currently, Musaeum builds and runs only on **Windows**.
 Only the Rust host opens files: it passes each worker a read-only handle to the book (or raw bytes over
 a pipe) and treats every worker response as untrusted. The frontend talks to the host exclusively
 through validated IPC commands; it cannot supply arbitrary file paths to read or write (paths come from
-system dialogs), and its Tauri permissions are restricted strictly to event listeners. The core crates
+system dialogs), and its Tauri permissions are restricted strictly to event listeners. Multi-book tabs
+enforce a strict single-active-session invariant: switching tabs or returning to Home deterministically
+disposes the active WebGL2 compositor, releases session-scoped `ICoreWebView2SharedBuffer` mappings, and
+tears down idle workers while retaining a lightweight `ReaderTabSnapshot` in memory. The core crates
 (`crates/`) have no Tauri dependency and are shared directly with the CLI.
 
 ## Repository Structure
@@ -122,7 +140,7 @@ system dialogs), and its Tauri permissions are restricted strictly to event list
 ```text
 crates/
   musaeum-shm/         Shared-memory protocol: pixel slab, delivery ring, control messages,
-                       and tile arithmetic
+                       borrowed NT section views, and tile arithmetic
   musaeum-core/        Pure state-machine scheduler and worker supervisor (no Tauri dependency)
   musaeum-sandbox/     Restricted token, process mitigations, job object, isolated window station
   musaeum-worker/      Shared render worker runtime: handshake, handles, control loop,
@@ -154,14 +172,16 @@ crates/
   musaeum-ocr/         Host-side OCR worker protocol and baseline line rectification
 apps/cli/              `musaeum` binary: full library access from the command line
 apps/desktop/
-  src-tauri/           Tauri bridge: `tile://`, `book://`, and `thumb://` protocols, library/index
+  src-tauri/           Tauri bridge: Win32 custom titlebar (`titlebar.rs`), `tile://`, `book://`,
+                       and `thumb://` protocols, session lifecycle & `CloseGuard`, library/index
                        host, cover thumbnails, normalized books, WebView2 buffers, test harness
-  src/app/             Library and reader UI (React + React Aria)
-  src/fixed/           Main-thread fixed-layout reader controller
+  src/app/             Library, multi-book tabs (`tabs-model.ts`, `TitleBar.tsx`), exponential
+                       overlay scrollbar, and reader UI (React + React Aria)
+  src/fixed/           Main-thread fixed-layout reader controller & serialized session lock
   src/                 WebGL2 compositor in a Web Worker: reading modes, spreads, page-turn
-                       physics, and tile cache
+                       physics, deterministic GPU disposal, and tile cache
   src/reader/          Reflowable reader in an isolated origin: paginated view (adapted foliate-js),
-                       custom continuous scrolling, anchoring, and typography
+                       custom continuous scrolling, anchoring, shortcut forwarding, and typography
 vendor/
   foliate-js/          Pinned commit of foliate-js with a documented patch
   libarchive/          libarchive 3.8.11 (read side), documented origin and config.h
@@ -238,12 +258,15 @@ Launching the app:
 .\target\release\musaeum-desktop.exe --library D:\MyLibrary
 ```
 
-When no library exists yet, the app prompts for a book folder or an existing library directory. It stores
-its database in `%LOCALAPPDATA%\Musaeum` (or the `--library` path) and never writes inside your book
-folders. Single-click selects a book and opens its details; double-click or `Enter` opens the reader;
-`← Library` (or `Alt+←`) returns. In the reader, `C` toggles paginated/continuous mode, `A` toggles
-page-turn animations, `Aa` opens reflowable typography controls, and `Contents` opens the table of
-contents.
+When no library exists yet, the app prompts for one or more book folders or an existing library
+directory. It stores its database in `%LOCALAPPDATA%\Musaeum` (or the `--library` path) and never writes
+inside your book folders. Single-click selects a book and opens its details; double-click or `Enter`
+opens it in a tab (or focuses its existing tab); `← Library` (or `Alt+←`) switches back to the pinned
+Home (`🏠`) tab while keeping the book tab open. Use `Ctrl+Tab` / `Ctrl+Shift+Tab` to cycle tabs,
+`Ctrl+W` / `Ctrl+F4` or middle-click to close the active book tab, `Ctrl+1`–`9` to jump by tab index
+(`Ctrl+1` = Home), `Ctrl+B` to toggle the sidebar, `Ctrl+Scroll` over the cover grid to resize covers,
+and `F11` for fullscreen. In the reader, `C` toggles paginated/continuous mode, `A` toggles page-turn
+animations, `Aa` opens reflowable typography controls, and `Contents` opens the table of contents.
 
 To annotate, select text by dragging, double-clicking a word, triple-clicking a line, or
 quadruple-clicking a paragraph (fixed layout); selections span page breaks and long-chapter chunk seams.
@@ -311,22 +334,27 @@ Three invariants govern the library core:
 
 ## Library Organization
 
-- **Sidebar navigation:** *All books*, disk *Folders*, *Categories* (up to 16 nested levels), *Tags*,
-  *Collections*, and *Smart collections*. Selecting a category includes its subcategories; collections
+- **Sidebar navigation:** Resizable (`180–420 px`, double-click divider to reset to `240 px`, `Ctrl+B`
+  to collapse) with *All books*, disk *Folders* (with multi-folder management and single-root
+  flattening when subfolders exist), *Categories* (up to 16 nested levels), *Tags*, *Collections*, and
+  *Smart collections*. Empty taxonomy sections hide automatically (expandable via `+ Organize`), book
+  counts are optional (off by default), selecting a category includes its subcategories, and collections
   preserve manual ordering. Each item has a `⋯` menu (rename, move, reorder, delete) and each section
   has a `+` action.
 - **Smart collections:** Rule builder over 16 standard fields plus custom fields with "all" / "any"
   matching, case- and accent-insensitive, showing live match counts while editing.
-- **Details panel:** Single-click selects a book and opens its details; double-click or `Enter` opens
-  it. Every field shows its provenance (*"from file"*, *"from Calibre"*, *"edited"*). User edits are
-  never overwritten by subsequent file rescans or imports. ISBNs validate their check digit.
+- **Details panel:** Single-click selects a book and opens its details with smooth lateral transitions;
+  double-click or `Enter` opens it. Every field shows its provenance (*"from file"*, *"from Calibre"*,
+  *"edited"*). User edits are never overwritten by subsequent file rescans or imports. ISBNs validate
+  their check digit.
 - **Custom fields:** Defined once (*Custom fields…*) as text, number, date, boolean, enum, or URL.
 - **Multi-select & batch editing:** `Ctrl+click`, `Shift+click`, and `Ctrl+A` (fetching all matching
   IDs from the host, even beyond the virtualized viewport) switch the panel to atomic batch editing for
   people, series, year, language, rating, status, categories, tags, and collections.
 - **Review & merge:** Lists reconciliation suggestions and potential duplicate works (shared identifier
   or matching title + primary author). Rejected pairs do not reappear; merging moves all documents,
-  annotations, reading positions, and taxonomy onto the chosen target work.
+  annotations, reading positions, and taxonomy onto the chosen target work (and automatically syncs or
+  closes any affected open tabs).
 - **Full-text search:** Toggle *Titles / In text* (powered by Tantivy 0.27) for all-word and quoted
   phrase queries across PDF/DjVu text layers, OCR-read scanned lines, and reflowable books, indexed in
   the background under a strict CPU duty-cycle budget. Clicking a match opens the book at the exact page
@@ -409,14 +437,17 @@ node tools\e2e-exchange.mjs
 
 ## Preferences & Localization
 
-Open **Preferences** via the library toolbar, the reader ⚙ button, or **`Ctrl+,`** from anywhere. All
-changes take effect immediately without restarting:
+Open **Preferences** via the top titlebar `⚙` button, the reader `⚙` button, or **`Ctrl+,`** from
+anywhere. All changes take effect immediately without restarting:
 
-- **Interface language:** Brazilian Portuguese (`pt-BR`) or English (`en`), covering 577 UI catalog keys
-  (`apps/desktop/src/app/i18n/`) and 298 Rust host/report messages (`crates/musaeum-i18n/`), including
-  system dialogs, refusals, PDF `/Subj`, XFDF subjects, and study reports.
-- **Theme & reduced motion:** System, light, or dark themes (including title bar) built on CSS tokens
-  with test-verified WCAG AA contrast, plus `prefers-reduced-motion` and manual reduced-motion controls.
+- **Interface language:** Brazilian Portuguese (`pt-BR`) or English (`en`), covering the full UI
+  (`apps/desktop/src/app/i18n/`) and Rust host/report catalogs (`crates/musaeum-i18n/`), including
+  system dialogs, native window controls, refusals, PDF `/Subj`, XFDF subjects, and study reports.
+- **Theme & reduced motion:** System, light, or dark themes (including the native custom titlebar and
+  tab strip) built on CSS tokens with test-verified WCAG AA contrast, plus `prefers-reduced-motion` and
+  manual reduced-motion controls.
+- **Library layout:** Cover card width (`120–260 px`, also adjustable via `Ctrl + Scroll` over the grid)
+  and optional sidebar book counts (off by default).
 - **Annotation author:** Written to PDF `/T`, XFDF `title`, and study report headers (falling back to
   the Windows username for PDF/XFDF when left blank).
 - **OCR languages:** Choose 1–4 verified `tessdata_fast` models (`por` and `eng` bundled; `spa`, `fra`,
@@ -506,8 +537,8 @@ node tools\check-licenses.mjs
 cargo deny check advisories
 ```
 
-Real-window E2E suites (run on an idle machine after `npm run build:app` and building `musaeum-cli` and
-`visual-check`):
+Real-window E2E suites (run on an idle machine—or pass `--require-idle 0`—after `npm run build:app` and
+building `musaeum-cli` and `visual-check`):
 
 ```powershell
 node tools\e2e-preferences.mjs
@@ -524,13 +555,13 @@ node tools\smoke-bundle.mjs
 Additional stress and security harnesses: `.\target\release\library-bench.exe` (100,000 real files in
 `%TEMP%`), `node tools\test-cascade.mjs`, and `node tools\test-epub-security.mjs`.
 
-## Known Limitations in 1.0
+## Known Limitations
 
 - **Windows only (10/11, x64).** macOS, Linux, integrated GPUs, and 120 Hz displays have not been
   measured yet. No mobile versions or DRM-protected book support.
 - **PDFium workers still allow `win32k` and non-Microsoft DLLs.** Prebuilt `pdfium.dll` imports
-  `user32`. A custom static PDFium build to move both workers onto `LockdownParser` is scheduled as the
-  next post-1.0 security milestone.
+  `user32`. A custom static PDFium build to move both workers onto `LockdownParser` is scheduled as a
+  post-1.0 security milestone.
 - **Fastest pixel delivery path** relies on undocumented WebView2 transfer behavior; startup probes it
   and falls back automatically.
 - **Encrypted PDFs** support annotation import but not incremental export. Truncated PDFs open only as
@@ -545,36 +576,40 @@ Additional stress and security harnesses: `.\target\release\library-bench.exe` (
   confirmation).
 - **Two locales (`pt-BR` / `en`), two plural forms;** internal invariant diagnostics remain in English
   behind a localized user-facing message.
-- **Unsigned installers** in `1.0.0` (signing workflow is documented in
-  [`docs/release.md`](docs/release.md)). The CLI (`musaeum.exe`) is built from source and not bundled in
-  the GUI installer.
+- **Unsigned installers** (the signing workflow is documented in [`docs/release.md`](docs/release.md)).
+  The CLI (`musaeum.exe`) is built from source and not bundled in the GUI installer.
 
 ## Development Methodology & AI Disclosure
 
-Musaeum `v1.0.0` was built through a **human-directed, multi-agent AI engineering workflow**. Production
-code, worker sandboxing, and automated test suites were generated by AI models under human architectural
+Musaeum is built through a **human-directed, multi-agent AI engineering workflow**. Production code,
+worker sandboxing, and automated test suites are generated by AI models under human architectural
 governance, phase-by-phase auditing, and manual QA against a real personal library.
 
 ### Division of Responsibilities
 
 | Role | Contributor | Responsibilities |
 | :--- | :--- | :--- |
-| **Creator, Product Owner & QA Lead** | **Mark Skog** (`@Mark-Skog`) | Product vision, functional requirements, and read-only library guarantee; final architectural, UX, and security decisions across all 15 ADRs; manual testing on a 191-book personal library (catching real-world edge cases such as 90° rotated scanned pages, pencil underlines, and UI regressions); phase sign-off. |
-| **Architecture, Specification & Audit** | **Gemini** | Phased master roadmap (Phases 0–8), scope definition, technical specifications, prompt engineering, and independent auditing of build reports, test coverage, and ADR trade-offs. |
-| **Implementation, Testing & Hardening** | **Claude (Opus 5.5 via Claude Code)** | End-to-end Rust, TypeScript/React, WebGL2, and Tauri 2 implementation; sandboxed worker isolation; unit, integration, IPC, and real-window E2E automation; Windows NSIS/MSI packaging; ADR and changelog authoring. |
+| **Creator, Product Owner & QA Lead** | **Mark Skog** (`@Mark-Skog`) | Product vision, functional requirements, and read-only library guarantee; final architectural, UX, and security decisions across all 15 ADRs and post-1.0 releases; manual QA on a personal library (catching real-world edge cases such as 90° rotated scanned pages, pencil underlines, `0xc0000005` concurrent PDF open races, and UI regressions); release sign-off. |
+| **Architecture, Specification & Audit** | **Gemini** | Phased master roadmap (Phases 0–8 and post-1.0 blocks), scope definition, technical specifications, prompt engineering, and independent auditing of build reports, E2E failures, test coverage, and architectural trade-offs. |
+| **Core Implementation (`v1.0.0`)** | **Claude (Opus 5.5 via Claude Code)** | End-to-end Rust, TypeScript/React, WebGL2, and Tauri 2 implementation through Phase 8; sandboxed worker isolation; unit, integration, IPC, and real-window E2E automation; Windows NSIS/MSI packaging; ADR authoring. |
+| **Post-1.0 Implementation (`v1.1.0` – `v1.2.0`)** | **Gemini 4 Carbon (via Antigravity)** | Library UI/UX polish (`v1.1.0`), native Win32 custom titlebar subclassing, `ICoreWebView2SharedBuffer` use-after-unmap fix (`ShmRegion::from_borrowed_section`), Acrobat-style multi-book tabs with deterministic WebGL2/SHM/worker suspension and `ReaderTabSnapshot` hydration (`v1.2.0`), and `ScrollFrame`/`VisuallyHidden` layout fix. |
 
-### Measured Effort & Verification (`v1.0.0`)
+### Measured Effort & Verification
 
-- **Logged Development Window:** `2026-10-31` – `2026-11-24`
-- **Measured Active Coding Agent Execution (Claude Code local `.jsonl` logs):** **35.2 h – 37.0 h**
+- **Logged Development Window:** `2026-10-31` – `2026-11-28` (`46` commits across `16` active days)
+- **Measured Active Coding Agent Execution (`v1.0.0`, Claude Code local `.jsonl` logs):** **35.2 h – 37.0 h**
   (using 10-min and 30-min per-step caps, respectively) across **3 main sessions**, **334 user turns**,
-  and **14,286 assistant/tool events** *(excludes human idle time, rate-limit pauses, manual QA, and
-  Gemini architecture/audit sessions, which were not instrumentally timed)*
-- **Verified Quality Gates at `v1.0.0`:**
-  - **851** Rust tests and **232** Vitest tests passing (`cargo fmt`, `clippy -D warnings`,
-    `tsc --noEmit`, `cargo deny`, and `npm audit` clean)
-  - **9/9** real-window E2E suites passing (including 36 hostile IPC ACL checks and a 52-step
-    clean-install/sandbox-audit/uninstall bundle smoke test)
+  and **14,286 assistant/tool events** (`2026-10-31` – `2026-11-24`)
+- **Post-1.0 Coding Agent Execution (`v1.1.0` – `v1.2.0`, Antigravity / Gemini 4 Carbon):** Executed
+  across `2026-11-25` – `2026-11-28` *(step-level duration from local Antigravity logs is not aggregated
+  in this summary; excludes human idle time, rate-limit pauses, manual QA, and Gemini architecture/audit
+  sessions, which were not instrumentally timed)*
+- **Verified Quality Gates at `v1.2.0`:**
+  - **866** Rust tests and **279** Vitest tests passing (`cargo fmt`, `clippy -D warnings`,
+    `tsc --noEmit`, `cargo deny`, and `npm audit` clean; green GitHub Actions CI)
+  - Real-window E2E suites verified (`9/9` suites including a 52-step clean-install/sandbox-audit/uninstall
+    bundle smoke test at `v1.0.0`; `e2e-preferences`, `e2e-exchange`, and `e2e-ipc` — 36 hostile IPC ACL
+    checks — re-verified against `v1.2.0` release binaries)
   - **15** Architecture Decision Records (`docs/adr/0001` – `docs/adr/0015`) documenting design choices,
     defects caught, and known limitations
 
