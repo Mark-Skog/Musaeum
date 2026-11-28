@@ -123,9 +123,11 @@ class Compositor {
 
   private frameNumber = 0;
   private frameScheduled = false;
+  private rafId = 0;
   private lastFrameTime = 0;
   private lastActivityTime = 0;
   private contextLost = false;
+  private destroyed = false;
 
   private epoch = 0;
   private lastDemandTime = 0;
@@ -217,12 +219,18 @@ class Compositor {
   }
 
   resize(width: number, height: number): void {
+    if (this.destroyed) {
+      return;
+    }
     this.applySize(width, height);
     this.wake();
   }
 
   /** Applies something the reader did, then makes sure a frame follows. */
   input(message: ToWorker): void {
+    if (this.destroyed && message.type !== 'flush' && message.type !== 'destroy') {
+      return;
+    }
     const now = performance.now();
     const { reader } = this;
     switch (message.type) {
@@ -304,19 +312,47 @@ class Compositor {
       case 'inspect':
         post(this.inspect());
         return;
-      case 'flush':
-        // The document is about to close: the position waiting out its pause is sent now.
-        if (this.player === null && this.pendingSnapshot !== null) {
-          this.saved = this.pendingSnapshot;
-          this.pendingSnapshot = null;
-          post({ type: 'reading-state', state: this.saved });
+      case 'flush': {
+        // The document is about to close: any move not yet persisted (including sub-frame input)
+        // is sent now, before tearing down WebGL2 resources.
+        if (this.player === null && !this.destroyed) {
+          const latest = this.pendingSnapshot ?? this.reader.snapshot();
+          if (snapshotsDiffer(this.saved, latest)) {
+            this.saved = latest;
+            this.pendingSnapshot = null;
+            post({ type: 'reading-state', state: this.saved });
+          }
+        }
+        if (message.destroy) {
+          this.destroy();
         }
         post({ type: 'flushed' });
+        return;
+      }
+      case 'destroy':
+        this.destroy();
         return;
       default:
         return;
     }
     this.wake();
+  }
+
+  /** Deterministically tears down frame scheduling, delivery polling, tile caches and WebGL2 GPU objects. */
+  destroy(): void {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    this.frameScheduled = false;
+    if (this.rafId !== 0) {
+      scope.cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+    this.delivery.stop();
+    this.cache.clear();
+    this.annotator.dispose();
+    this.renderer.destroy();
   }
 
   /** The reader as the last frame drew it, for a test driving the real window. */
@@ -358,10 +394,13 @@ class Compositor {
   }
 
   wake(): void {
+    if (this.destroyed) {
+      return;
+    }
     this.lastActivityTime = performance.now();
     if (!this.frameScheduled) {
       this.frameScheduled = true;
-      scope.requestAnimationFrame(this.onFrame);
+      this.rafId = scope.requestAnimationFrame(this.onFrame);
     }
   }
 
@@ -406,8 +445,9 @@ class Compositor {
   }
 
   private readonly onFrame = (now: number): void => {
+    this.rafId = 0;
     this.frameScheduled = false;
-    if (this.contextLost) {
+    if (this.destroyed || this.contextLost) {
       return;
     }
     const workStarted = performance.now();
@@ -455,7 +495,7 @@ class Compositor {
     const savePending = this.pendingSnapshot !== null;
     if (this.player !== null || savePending || now - this.lastActivityTime < IDLE_AFTER_MS) {
       this.frameScheduled = true;
-      scope.requestAnimationFrame(this.onFrame);
+      this.rafId = scope.requestAnimationFrame(this.onFrame);
     } else {
       this.delivery.notifyOnArrival(() => this.wake());
     }
@@ -540,6 +580,9 @@ class Compositor {
       zoom: reader.zoomFactor,
       page: snapshot.page,
       pageCount: reader.pageCount,
+      u: snapshot.u,
+      v: snapshot.v,
+      progress: snapshot.progress,
     };
     const statusText = JSON.stringify(status);
     if (statusText !== this.lastStatus) {
@@ -680,14 +723,24 @@ class Compositor {
 }
 
 let compositor: Compositor | null = null;
+let shuttingDown = false;
 
 async function start(message: InitMessage): Promise<void> {
+  if (shuttingDown) {
+    return;
+  }
   const base = tileBaseUrl(message.session.id);
   const response = await fetch(`${base}/geometry`, { cache: 'no-store', credentials: 'omit' });
+  if (shuttingDown) {
+    return;
+  }
   if (!response.ok) {
     throw new Error(`the host answered ${response.status} for the page geometry`);
   }
   const sizes = parseGeometry(await response.arrayBuffer());
+  if (shuttingDown) {
+    return;
+  }
   const pageCount = sizes.length / 2;
   const widths = new Float32Array(pageCount);
   const heights = new Float32Array(pageCount);
@@ -696,6 +749,10 @@ async function start(message: InitMessage): Promise<void> {
     heights[page] = sizes[page * 2 + 1];
   }
   const { session } = message;
+  const initialReading =
+    message.initialState !== undefined && message.initialState !== null
+      ? message.initialState
+      : session.readingState;
   const reader = new Reader(
     {
       widths,
@@ -709,9 +766,12 @@ async function start(message: InitMessage): Promise<void> {
       comfortableScale: message.comfortableScale,
       prefersReducedMotion: message.prefersReducedMotion,
     },
-    session.readingState,
+    initialReading,
   );
   const clock = await calibrateClock(base);
+  if (shuttingDown) {
+    return;
+  }
   let delivery: Delivery | null = null;
   if (message.ring !== null) {
     delivery = new RingDelivery(new SabRingConsumer(message.ring));
@@ -731,6 +791,11 @@ async function start(message: InitMessage): Promise<void> {
     message.bench,
     message.tileBudgetBytes ?? defaultBudgetBytes(message.screenWidth, message.screenHeight),
   );
+  if (shuttingDown) {
+    compositor.destroy();
+    compositor = null;
+    return;
+  }
   post({
     type: 'ready',
     gpu: compositor.gpuName,
@@ -741,6 +806,9 @@ async function start(message: InitMessage): Promise<void> {
 }
 
 function fail(error: unknown): void {
+  if (shuttingDown) {
+    return;
+  }
   post({ type: 'fatal', message: error instanceof Error ? (error.stack ?? error.message) : String(error) });
 }
 
@@ -758,6 +826,26 @@ scope.addEventListener('message', (event: MessageEvent<ToWorker>) => {
       break;
     case 'probe':
       answerProbe(message);
+      break;
+    case 'destroy':
+      shuttingDown = true;
+      compositor?.destroy();
+      compositor = null;
+      probeBuffers.clear();
+      break;
+    case 'flush':
+      if (message.destroy) {
+        shuttingDown = true;
+      }
+      if (compositor !== null) {
+        compositor.input(message);
+        if (message.destroy) {
+          compositor = null;
+          probeBuffers.clear();
+        }
+      } else {
+        post({ type: 'flushed' });
+      }
       break;
     default:
       compositor?.input(message);

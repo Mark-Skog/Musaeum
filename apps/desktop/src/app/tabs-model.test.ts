@@ -7,11 +7,14 @@ import {
   bookTabId,
   clearTabTarget,
   closeActiveBookTab,
+  closeAllBookTabs,
   closeTab,
   closeTabForDocument,
   closeTabsForFolders,
   closeTabsForWork,
+  closeTabsForWorks,
   createInitialTabsState,
+  deriveFixedFitMode,
   HOME_TAB_ID,
   mergeWorksInTabs,
   nextTab,
@@ -19,6 +22,7 @@ import {
   orderedTabIds,
   prevTab,
   type ReaderTabSnapshot,
+  resolveFixedSnapshotZoom,
   selectTabByIndex,
   setTabSnapshot,
   updateWorkTitleInTabs,
@@ -192,9 +196,40 @@ describe('tabs-model pure state machine', () => {
     expect(state.bookTabs[2].title).toBe('El Aleph');
 
     // Snapshot field reserved for Etapa 2B
-    const snap: ReaderTabSnapshot = { layout: 'fixed', page: 12, zoom: 1.25 };
+    const snap: ReaderTabSnapshot = {
+      layout: 'fixed',
+      mode: 'continuous',
+      page: 12,
+      pageCount: 240,
+      u: 0.25,
+      v: 0.6,
+      scrollOffset: 0.6,
+      zoom: 1.25,
+      fitMode: deriveFixedFitMode('continuous', 1.25),
+      spreads: 'double',
+      progress: 0.05,
+      tocOpen: true,
+      annotationsOpen: true,
+      annotationSearch: 'labirinto',
+    };
+    expect(snap.fitMode).toBe('manual');
+    expect(deriveFixedFitMode('paginated', 1)).toBe('page');
+    expect(deriveFixedFitMode('continuous', 1)).toBe('width');
+    expect(resolveFixedSnapshotZoom(snap)).toBe(1.25);
+    expect(resolveFixedSnapshotZoom({ layout: 'fixed', fitMode: 'width' })).toBe(1);
+
     state = setTabSnapshot(state, bookTabId(1), snap);
     expect(state.bookTabs[0].snapshot).toEqual(snap);
+    expect(state.bookTabs[0].book?.progress).toBe(0.05);
+
+    // Multi-work batch deletion closes matching background/active tabs cleanly
+    const afterBatchDelete = closeTabsForWorks(state, new Set([500]));
+    expect(afterBatchDelete.bookTabs.map((t) => t.documentId)).toEqual([3]);
+
+    // Switching library databases closes all open book tabs and returns to Home
+    const resetAll = closeAllBookTabs(state);
+    expect(resetAll.bookTabs).toEqual([]);
+    expect(resetAll.activeTabId).toBe(HOME_TAB_ID);
 
     // Activate `doc:2` (middle tab, work 500) and delete work 500 -> both `doc:1` and `doc:2` close, active moves right to `doc:3`
     state = activateTab(state, bookTabId(2));

@@ -23,8 +23,9 @@ use musaeum_library::{
     FlowReadingState, Hash, IngestClient, IngestConfig, Library, NormalizeOutcome, ReadingMode,
 };
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
+use crate::annotations::CharCache;
 use crate::book::{self, BookState};
 use crate::session::AppState;
 
@@ -286,111 +287,143 @@ fn found_name(found: Found) -> &'static str {
 /// Opens a flowing book of the library in the reader.
 #[tauri::command(async)]
 pub fn open_flow(
+    window: WebviewWindow,
     state: State<'_, AppState>,
     books: State<'_, BookState>,
+    cache: State<'_, CharCache>,
     host_origin: String,
     args: OpenFlowArgs,
 ) -> Result<FlowInfo, String> {
     let started = Instant::now();
+    state.stop_fixed_for_flow(&window, &cache);
+    // A book opens with only the reader's own book shown; ticket guards against stale concurrent opens.
+    book::close(&books);
+    let ticket = book::next_open_ticket(&books);
     // A book open in the reader: the full-text indexer gives way.
     state.shelf.set_reading(true);
-    let library = state.shelf.library().ok_or("there is no library open")?;
-    let file = library
-        .book_file(args.document)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| tr!(BookFileGone))?;
-    let format = Format::from_extension(&file.format)
-        .filter(|format| format.flow().is_some())
-        .ok_or_else(|| format!("{} is not a flowing format", file.format))?;
-    let hash = match file.blake3 {
-        Some(hash) => hash,
-        None => hash_of(&file.path)?,
-    };
-    // A book opens with only the reader's own book shown.
-    book::close(&books);
-    let (dir, manifest, cached) =
-        normalized(&library, &state.flow_client, &file.path, format, &hash)?;
 
-    let saved_state = library
-        .flow_reading_state(args.document)
-        .map_err(|error| error.to_string())?;
-    let flow = Arc::new(FlowBook {
-        document_id: args.document,
-        revision_id: Some(file.revision_id),
-        dir,
-        manifest,
-        documents: Mutex::new(Vec::new()),
-    });
-    let saved = match saved_state {
-        Some(state) => {
-            let flow = Arc::clone(&flow);
-            on_large_stack(move || {
-                let locator: Locator =
-                    serde_json::from_str(&state.locator).map_err(|error| error.to_string())?;
-                let (reader_cfi, found) = flow.resolve(&locator)?;
-                Ok(Some(SavedFlow {
-                    reader_cfi,
-                    found: found_name(found),
-                    locator: serde_json::to_value(&locator).map_err(|error| error.to_string())?,
-                    mode: state.mode,
-                    page_turn_animation: state.page_turn_animation,
-                }))
-            })
-            .unwrap_or_else(|error| {
-                eprintln!("the saved position could not be found again: {error}");
-                None
-            })
+    let reset_reading_on_err = |state: &AppState, books: &BookState| {
+        if state.current_session().is_none() && !book::has_open(books) {
+            state.shelf.set_reading(false);
         }
-        None => None,
     };
 
-    let manifest = &flow.manifest;
-    let mut sections = Vec::new();
-    for (document, part) in manifest.spine() {
-        let info = &manifest.documents[document];
-        let piece = &info.parts[part];
-        sections.push(SectionInfo {
-            href: piece.href.clone(),
-            document,
-            part,
-            parts: info.parts.len(),
-            bytes: piece.bytes,
-            text_start: piece.text_start,
-            text_length: piece.text_length,
-            book_text_start: manifest.text_before(document) + piece.text_start,
-            linear: info.linear,
-            start: piece.start.clone(),
+    let result = (|| -> Result<FlowInfo, String> {
+        let library = state.shelf.library().ok_or("there is no library open")?;
+        let file = library
+            .book_file(args.document)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| tr!(BookFileGone))?;
+        if std::fs::metadata(&file.path).is_err() {
+            return Err(tr!(BookFileGone));
+        }
+        let format = Format::from_extension(&file.format)
+            .filter(|format| format.flow().is_some())
+            .ok_or_else(|| format!("{} is not a flowing format", file.format))?;
+        let hash = match file.blake3 {
+            Some(hash) => hash,
+            None => hash_of(&file.path)?,
+        };
+        let (dir, manifest, cached) = {
+            let outcome = normalized(&library, &state.flow_client, &file.path, format, &hash);
+            // Release any spawned ingest worker once normalization finishes so 0 idle worker
+            // processes accumulate across open book tabs.
+            state.release_flow_client();
+            outcome?
+        };
+
+        let saved_state = library
+            .flow_reading_state(args.document)
+            .map_err(|error| error.to_string())?;
+        let flow = Arc::new(FlowBook {
+            document_id: args.document,
+            revision_id: Some(file.revision_id),
+            dir,
+            manifest,
+            documents: Mutex::new(Vec::new()),
         });
+        let saved = match saved_state {
+            Some(state) => {
+                let flow = Arc::clone(&flow);
+                on_large_stack(move || {
+                    let locator: Locator =
+                        serde_json::from_str(&state.locator).map_err(|error| error.to_string())?;
+                    let (reader_cfi, found) = flow.resolve(&locator)?;
+                    Ok(Some(SavedFlow {
+                        reader_cfi,
+                        found: found_name(found),
+                        locator: serde_json::to_value(&locator)
+                            .map_err(|error| error.to_string())?,
+                        mode: state.mode,
+                        page_turn_animation: state.page_turn_animation,
+                    }))
+                })
+                .unwrap_or_else(|error| {
+                    eprintln!("the saved position could not be found again: {error}");
+                    None
+                })
+            }
+            None => None,
+        };
+
+        let manifest = &flow.manifest;
+        let mut sections = Vec::new();
+        for (document, part) in manifest.spine() {
+            let info = &manifest.documents[document];
+            let piece = &info.parts[part];
+            sections.push(SectionInfo {
+                href: piece.href.clone(),
+                document,
+                part,
+                parts: info.parts.len(),
+                bytes: piece.bytes,
+                text_start: piece.text_start,
+                text_length: piece.text_length,
+                book_text_start: manifest.text_before(document) + piece.text_start,
+                linear: info.linear,
+                start: piece.start.clone(),
+            });
+        }
+        let metadata = &manifest.metadata;
+        let info = FlowInfo {
+            origin: String::new(),
+            reader_url: String::new(),
+            document_id: args.document,
+            title: metadata
+                .title()
+                .map_or_else(|| file.title.clone(), str::to_owned),
+            creators: metadata
+                .creators
+                .iter()
+                .map(|creator| creator.name.clone())
+                .collect(),
+            language: metadata.languages.first().cloned(),
+            toc: manifest.toc.clone(),
+            sections,
+            total_text: manifest.total_text(),
+            saved,
+            cached,
+            open_ms: 0.0,
+        };
+        let (origin, reader_url) = book::open_package_for_ticket(
+            &books,
+            Some(ticket),
+            &host_origin,
+            Arc::clone(&flow),
+            state.options().e2e,
+        )?;
+        Ok(FlowInfo {
+            origin,
+            reader_url,
+            open_ms: started.elapsed().as_secs_f64() * 1000.0,
+            ..info
+        })
+    })();
+
+    if result.is_err() {
+        reset_reading_on_err(&state, &books);
     }
-    let metadata = &manifest.metadata;
-    let info = FlowInfo {
-        origin: String::new(),
-        reader_url: String::new(),
-        document_id: args.document,
-        title: metadata
-            .title()
-            .map_or_else(|| file.title.clone(), str::to_owned),
-        creators: metadata
-            .creators
-            .iter()
-            .map(|creator| creator.name.clone())
-            .collect(),
-        language: metadata.languages.first().cloned(),
-        toc: manifest.toc.clone(),
-        sections,
-        total_text: manifest.total_text(),
-        saved,
-        cached,
-        open_ms: 0.0,
-    };
-    let (origin, reader_url) =
-        book::open_package(&books, &host_origin, Arc::clone(&flow), state.options().e2e)?;
-    Ok(FlowInfo {
-        origin,
-        reader_url,
-        open_ms: started.elapsed().as_secs_f64() * 1000.0,
-        ..info
-    })
+    result
 }
 
 /// Where the reader is, as it reports it.
@@ -474,8 +507,11 @@ pub fn locate_flow(
 /// Closes the book in the reader when `origin` matches the open book (or unconditionally if omitted).
 #[tauri::command(async)]
 pub fn close_book(state: State<'_, AppState>, books: State<'_, BookState>, origin: Option<String>) {
-    if book::close_matching(&books, origin.as_deref()) && state.current_session().is_none() {
-        state.shelf.set_reading(false);
+    if book::close_matching(&books, origin.as_deref()) {
+        state.release_flow_client();
+        if state.current_session().is_none() {
+            state.shelf.set_reading(false);
+        }
     }
 }
 

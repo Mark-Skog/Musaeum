@@ -14,7 +14,9 @@
 
 use std::cell::RefCell;
 use std::os::windows::io::BorrowedHandle;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError, mpsc};
+use std::time::Duration;
 
 use musaeum_shm::ring::ring_len;
 use musaeum_shm::slab::slab_len;
@@ -26,6 +28,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2SharedBuffer,
 };
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::core::{Interface, PCWSTR};
 
 /// `"MPRB"`, marking the small buffers that test what JavaScript may do with these
@@ -52,6 +55,36 @@ thread_local! {
 
 /// The host's own view of the probe buffers.
 static PROBES: Mutex<Vec<ShmRegion>> = Mutex::new(Vec::new());
+
+/// Win32 thread ID of the WebView UI thread once observed (`0` until first UI-thread call).
+static UI_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+fn current_thread_id() -> u32 {
+    // SAFETY: `GetCurrentThreadId` has no preconditions and always returns a nonzero thread ID.
+    unsafe { GetCurrentThreadId() }
+}
+
+/// Records the calling thread as the WebView's UI thread (called during window setup and `with_webview`).
+pub fn record_ui_thread() {
+    UI_THREAD_ID.store(current_thread_id(), Ordering::Relaxed);
+}
+
+fn is_ui_thread() -> bool {
+    let known = UI_THREAD_ID.load(Ordering::Relaxed);
+    known != 0 && known == current_thread_id()
+}
+
+/// Replaces any prior buffers of `scope` (such as stale probes or a retried session) and appends `incoming`.
+#[cfg(test)]
+fn replace_scope_buffers<T>(
+    items: &mut Vec<(BufferScope, T)>,
+    scope: BufferScope,
+    incoming: impl IntoIterator<Item = T>,
+) -> Vec<T> {
+    let evicted = drain_matching_scope(items, Some(scope));
+    items.extend(incoming.into_iter().map(|buffer| (scope, buffer)));
+    evicted
+}
 
 /// Partitions `items` in place, returning the elements matching `wanted` (`None` matches all).
 fn drain_matching_scope<T>(
@@ -108,6 +141,7 @@ fn on_ui_thread<T: Send + 'static>(
     let (sender, receiver) = mpsc::channel();
     window
         .with_webview(move |webview| {
+            record_ui_thread();
             let environment = webview.environment();
             let controller = webview.controller();
             // SAFETY: this closure runs on the UI thread, where these interfaces live.
@@ -321,12 +355,34 @@ unsafe fn close_live_buffers(wanted: Option<BufferScope>) {
     }
 }
 
+/// Runs `close_live_buffers(wanted)` on the UI thread, waiting synchronously when called from a
+/// background command thread so `LIVE_BUFFERS` is guaranteed drained before IPC returns.
+fn close_buffers_on_ui_thread(window: &WebviewWindow, wanted: Option<BufferScope>) {
+    if is_ui_thread() {
+        let _ = window.with_webview(move |_| {
+            record_ui_thread();
+            // SAFETY: `with_webview` runs this closure on the WebView's UI thread.
+            unsafe { close_live_buffers(wanted) };
+        });
+        return;
+    }
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    if window
+        .with_webview(move |_| {
+            record_ui_thread();
+            // SAFETY: `with_webview` runs this closure on the WebView's UI thread.
+            unsafe { close_live_buffers(wanted) };
+            let _ = done_tx.send(());
+        })
+        .is_ok()
+    {
+        let _ = done_rx.recv_timeout(Duration::from_secs(5));
+    }
+}
+
 /// Closes the WebView2 buffers posted for `session_id`, leaving probes and any other session untouched.
 pub fn release_session_buffers(window: &WebviewWindow, session_id: u32) {
-    let _ = window.with_webview(move |_| {
-        // SAFETY: `with_webview` runs this closure on the WebView's UI thread.
-        unsafe { close_live_buffers(Some(BufferScope::Session(session_id))) };
-    });
+    close_buffers_on_ui_thread(window, Some(BufferScope::Session(session_id)));
 }
 
 /// Closes the small delivery-probe buffers on the UI thread.
@@ -335,10 +391,7 @@ pub fn release_probe_buffers(window: &WebviewWindow) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clear();
-    let _ = window.with_webview(|_| {
-        // SAFETY: `with_webview` runs this closure on the WebView's UI thread.
-        unsafe { close_live_buffers(Some(BufferScope::Probe)) };
-    });
+    close_buffers_on_ui_thread(window, Some(BufferScope::Probe));
 }
 
 /// Closes every tracked WebView2 buffer on the UI thread.
@@ -348,10 +401,7 @@ pub fn release_buffers(window: &WebviewWindow) {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clear();
-    let _ = window.with_webview(|_| {
-        // SAFETY: `with_webview` runs this closure on the WebView's UI thread.
-        unsafe { close_live_buffers(None) };
-    });
+    close_buffers_on_ui_thread(window, None);
 }
 
 #[cfg(test)]
@@ -383,5 +433,51 @@ mod tests {
         let closed_all = drain_matching_scope(&mut tracked, None);
         assert_eq!(closed_all, vec![21]);
         assert!(tracked.is_empty());
+    }
+
+    #[test]
+    fn rapid_tab_switches_cap_live_session_buffers_to_one_session_and_zero_on_home() {
+        let mut live: Vec<(BufferScope, &'static str)> = Vec::new();
+
+        // Initial delivery probe on first fixed book open.
+        assert!(
+            replace_scope_buffers(&mut live, BufferScope::Probe, ["probe-ro", "probe-rw"])
+                .is_empty()
+        );
+        assert_eq!(live.len(), 2);
+
+        // Consecutive switches across 20 fixed tabs: each session releases the prior session's
+        // buffers and any probe buffers before posting its own ring + slab.
+        for session_id in 1..=20_u32 {
+            if session_id > 1 {
+                let released =
+                    drain_matching_scope(&mut live, Some(BufferScope::Session(session_id - 1)));
+                assert_eq!(released.len(), 2);
+            }
+            let _ = drain_matching_scope(&mut live, Some(BufferScope::Probe));
+            let evicted = replace_scope_buffers(
+                &mut live,
+                BufferScope::Session(session_id),
+                ["ring", "slab"],
+            );
+            assert!(evicted.is_empty());
+
+            // Hard invariant: at most 1 active session (2 buffers: ring + slab) and 0 probes.
+            assert_eq!(live.len(), 2);
+            assert!(
+                live.iter()
+                    .all(|(scope, _)| *scope == BufferScope::Session(session_id))
+            );
+        }
+
+        // Stale close for an already-closed tab (session 5) never evicts active session 20.
+        assert!(drain_matching_scope(&mut live, Some(BufferScope::Session(5))).is_empty());
+        assert_eq!(live.len(), 2);
+
+        // Suspending to Home (`🏠`) closes session 20 and leaves 0 live buffers.
+        let closed_active = drain_matching_scope(&mut live, Some(BufferScope::Session(20)));
+        assert_eq!(closed_active.len(), 2);
+        let _ = drain_matching_scope(&mut live, Some(BufferScope::Probe));
+        assert!(live.is_empty());
     }
 }

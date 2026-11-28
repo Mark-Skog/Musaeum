@@ -20,6 +20,7 @@
 use std::borrow::Cow;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::thread;
 
@@ -61,6 +62,9 @@ pub struct BookSession {
 #[derive(Default)]
 pub struct BookState {
     current: RwLock<Option<Arc<BookSession>>>,
+    /// Monotonic ticket bumped whenever a new book open begins or `close` runs without an origin,
+    /// preventing a slow `open_flow` from overwriting a newer tab or reopening after returning Home.
+    generation: AtomicU64,
 }
 
 /// 128 unpredictable bits, in hex. `RandomState` is keyed from the operating system's random
@@ -209,10 +213,17 @@ fn content_type_of(path: &str) -> &'static str {
     }
 }
 
-/// Shows a book of the library in the reader, at a new origin. `host_origin` is the page asking,
-/// the only one the reader will talk to.
-pub fn open_package(
+/// Reserves a monotonic ticket before preparing a flowing book so stale concurrent opens can
+/// detect that a newer open or unconditional close superseded them.
+pub fn next_open_ticket(books: &BookState) -> u64 {
+    books.generation.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+/// Shows a book of the library in the reader, at a new origin, unless superseded since `ticket`.
+/// `host_origin` is the page asking, the only one the reader will talk to.
+pub fn open_package_for_ticket(
     books: &BookState,
+    ticket: Option<u64>,
     host_origin: &str,
     flow: Arc<FlowBook>,
     e2e: bool,
@@ -231,11 +242,29 @@ pub fn open_package(
         SECTION_SANDBOX.replace(' ', "%20"),
         if e2e { "&e2e=1" } else { "" }
     );
-    *books
+    let mut guard = books
         .current
         .write()
-        .unwrap_or_else(PoisonError::into_inner) = Some(session);
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(expected) = ticket
+        && books.generation.load(Ordering::Acquire) != expected
+    {
+        return Err("the book open was superseded".to_owned());
+    }
+    *guard = Some(session);
     Ok((origin, reader_url))
+}
+
+/// Shows a book of the library in the reader, at a new origin. `host_origin` is the page asking,
+/// the only one the reader will talk to.
+#[allow(dead_code)]
+pub fn open_package(
+    books: &BookState,
+    host_origin: &str,
+    flow: Arc<FlowBook>,
+    e2e: bool,
+) -> Result<(String, String), String> {
+    open_package_for_ticket(books, None, host_origin, flow, e2e)
 }
 
 /// The normalized book open in the reader, if it is this document.
@@ -262,7 +291,12 @@ pub fn has_open(books: &BookState) -> bool {
 
 /// Closes the book in the reader unconditionally. Its origin answers nothing from now on.
 pub fn close(books: &BookState) {
-    let _ = close_matching(books, None);
+    let mut current = books
+        .current
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    books.generation.fetch_add(1, Ordering::AcqRel);
+    current.take();
 }
 
 /// Closes the book in the reader if its origin matches `origin` (`None` closes whichever is open).
@@ -272,6 +306,9 @@ pub fn close_matching(books: &BookState, origin: Option<&str>) -> bool {
         .current
         .write()
         .unwrap_or_else(PoisonError::into_inner);
+    if origin.is_none() {
+        books.generation.fetch_add(1, Ordering::AcqRel);
+    }
     match (current.as_ref(), origin) {
         (None, _) => false,
         (Some(session), Some(wanted))
@@ -630,6 +667,69 @@ mod tests {
 
         assert!(close_matching(&books, Some("http://book.2222.localhost")));
         assert!(!has_open(&books));
+    }
+
+    #[test]
+    fn superseded_ticket_or_unconditional_close_prevents_stale_book_install() {
+        let books = BookState::default();
+        let ticket_a = next_open_ticket(&books);
+        let ticket_b = next_open_ticket(&books);
+
+        let sample_flow = || {
+            let normalized = musaeum_flow::normalize::normalize(
+                musaeum_flow::package::SourceFormat::Markdown,
+                b"# Test\n\nBody.\n",
+                &musaeum_flow::normalize::Options::default(),
+            )
+            .unwrap();
+            Arc::new(FlowBook::new(
+                1,
+                None,
+                PathBuf::from("cache"),
+                normalized.manifest,
+            ))
+        };
+
+        // Newer ticket B installs cleanly.
+        let (origin_b, _) = open_package_for_ticket(
+            &books,
+            Some(ticket_b),
+            "http://tauri.localhost",
+            sample_flow(),
+            false,
+        )
+        .unwrap();
+        assert!(has_open(&books));
+
+        // Stale ticket A arrives late and is rejected without evicting B.
+        assert!(
+            open_package_for_ticket(
+                &books,
+                Some(ticket_a),
+                "http://tauri.localhost",
+                sample_flow(),
+                false,
+            )
+            .is_err()
+        );
+        assert!(has_open(&books));
+
+        // Unconditional close (e.g. suspending to Home or switching to Fixed) invalidates in-flight tickets.
+        let ticket_c = next_open_ticket(&books);
+        close(&books);
+        assert!(!has_open(&books));
+        assert!(
+            open_package_for_ticket(
+                &books,
+                Some(ticket_c),
+                "http://tauri.localhost",
+                sample_flow(),
+                false,
+            )
+            .is_err()
+        );
+        assert!(!has_open(&books));
+        assert!(!close_matching(&books, Some(&origin_b)));
     }
 
     #[test]

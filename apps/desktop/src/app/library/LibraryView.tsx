@@ -394,6 +394,8 @@ export interface LibraryViewProps {
   onRootRemoved?(removedFolderIds: ReadonlySet<number>): void;
   /** Synchronizes open book tabs when duplicate works are merged. */
   onWorksMerged?(keepWorkId: number, mergedWorkIds: readonly number[]): void;
+  /** Synchronizes open book tabs when a duplicate suggestion is accepted. */
+  onSuggestionAccepted?(keepWorkId: number, candidateWorkId: number, candidateDocumentId: number): void;
 }
 
 export function LibraryView({
@@ -413,6 +415,7 @@ export function LibraryView({
   onWorkSaved,
   onRootRemoved,
   onWorksMerged,
+  onSuggestionAccepted,
 }: LibraryViewProps): React.JSX.Element {
   const t = useT();
   const locale = useLocale();
@@ -1193,7 +1196,12 @@ export function LibraryView({
         {/* Caught on the way down: the items of a grid stop some keys before they reach the shelf. */}
         <main ref={shelf} className="shelf" onKeyDownCapture={putAway}>
           {reviewing ? (
-            <ReviewView generation={generation + version} onChanged={changed} />
+            <ReviewView
+              generation={generation + version}
+              onChanged={changed}
+              onWorksMerged={onWorksMerged}
+              onSuggestionAccepted={onSuggestionAccepted}
+            />
           ) : inText ? (
             <TextResults query={query} filter={filterArgs(filter)} generation={generation + version} onOpenAt={(row, target) => onOpen(row, target)} />
           ) : books.rows.length === 0 && !books.loading ? (

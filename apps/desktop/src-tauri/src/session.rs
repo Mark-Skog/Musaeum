@@ -4,7 +4,7 @@
 //! geometry never pass through here; they use [`crate::protocol`] or shared memory.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,7 @@ use musaeum_core::{
     DeliveryMode, DocumentOrientation, FixedFormat, PoolConfig, PoolStats, RenderPool,
     geometry_bytes, summarize_orientation,
 };
+use musaeum_i18n::tr;
 use musaeum_library::{Hash, IngestClient, Library};
 use musaeum_sandbox::Policy;
 use musaeum_shm::slab::slab_len;
@@ -189,6 +190,35 @@ impl AppState {
         webview2::release_buffers(window);
     }
 
+    /// Drops any idle flowing-book ingest worker so 0 helper processes linger when on Home or in
+    /// a fixed-layout tab.
+    pub fn release_flow_client(&self) {
+        let client = self
+            .flow_client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(client);
+    }
+
+    /// Tears down any active fixed-layout session and its WebView2 buffers before a flowing book
+    /// opens, preserving the hard ceiling of at most 1 active session on the backend.
+    pub fn stop_fixed_for_flow(
+        &self,
+        window: &WebviewWindow,
+        cache: &crate::annotations::CharCache,
+    ) {
+        let _lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(previous_id) = self.stop_session_matching(None) {
+            cache.remove_session(previous_id);
+            webview2::release_session_buffers(window, previous_id);
+        }
+        webview2::release_probe_buffers(window);
+    }
+
     fn current_stats(&self) -> Option<PoolStats> {
         self.current
             .read()
@@ -224,11 +254,40 @@ impl AppState {
     }
 }
 
+/// Coordinates graceful window shutdown so the active tab can flush its reading position and close
+/// its session before the WebView is torn down.
+#[derive(Default)]
+pub struct CloseGuard {
+    intercepted: AtomicBool,
+    confirmed: AtomicBool,
+}
+
+impl CloseGuard {
+    /// Marks the first `CloseRequested` event as intercepted so the frontend can flush; returns
+    /// `false` if already intercepted or confirmed.
+    pub fn intercept_once(&self) -> bool {
+        !self.confirmed.load(Ordering::Acquire) && !self.intercepted.swap(true, Ordering::AcqRel)
+    }
+
+    /// Marks window close as confirmed so the subsequent `window.close()` proceeds immediately.
+    pub fn confirm(&self) -> bool {
+        !self.confirmed.swap(true, Ordering::AcqRel)
+    }
+
+    /// Whether shutdown has been confirmed.
+    #[cfg(test)]
+    pub fn is_confirmed(&self) -> bool {
+        self.confirmed.load(Ordering::Acquire)
+    }
+}
+
 /// Arguments of [`open_session`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenSessionArgs {
     document: PathBuf,
+    #[serde(default)]
+    document_id: Option<i64>,
     delivery: DeliveryPath,
     workers: usize,
 }
@@ -313,6 +372,7 @@ pub fn open_session(
     window: WebviewWindow,
     state: State<'_, AppState>,
     books: State<'_, crate::book::BookState>,
+    cache: State<'_, crate::annotations::CharCache>,
     args: OpenSessionArgs,
 ) -> Result<SessionInfo, OpenSessionError> {
     let _lifecycle = state
@@ -332,6 +392,15 @@ pub fn open_session(
     };
     let named = state.options.document.as_deref() == Some(args.document.as_path());
     if known.file.is_none() && !named && !state.is_e2e() && state.options.bench.is_none() {
+        if let (Some(doc_id), Some(library)) = (args.document_id, state.library()) {
+            match library.book_file(doc_id) {
+                Ok(None) => return Err(OpenSessionError::other(tr!(BookFileGone))),
+                Ok(Some(_)) if !args.document.exists() => {
+                    return Err(OpenSessionError::other(tr!(BookFileGone)));
+                }
+                _ => {}
+            }
+        }
         return Err(OpenSessionError::other(format!(
             "{} is neither a book of the library nor the document the app was started with",
             args.document.display()
@@ -339,9 +408,12 @@ pub fn open_session(
     }
 
     if let Some(previous_id) = state.stop_session_matching(None) {
+        cache.remove_session(previous_id);
         webview2::release_session_buffers(&window, previous_id);
     }
     webview2::release_probe_buffers(&window);
+    crate::book::close(&books);
+    state.release_flow_client();
     // A book open in the reader: the full-text indexer gives way.
     state.shelf.set_reading(true);
 
@@ -355,7 +427,11 @@ pub fn open_session(
     let format = FixedFormat::of_file(&args.document)
         .map_err(|error| {
             reset_reading_on_err(&state, &books);
-            OpenSessionError::other(format!("reading {}: {error}", args.document.display()))
+            if error.kind() == std::io::ErrorKind::NotFound {
+                OpenSessionError::other(tr!(BookFileGone))
+            } else {
+                OpenSessionError::other(tr!(BookNotRead, error = error))
+            }
         })?
         .ok_or_else(|| {
             reset_reading_on_err(&state, &books);
@@ -553,6 +629,7 @@ pub fn close_session(
     window: WebviewWindow,
     state: State<'_, AppState>,
     books: State<'_, crate::book::BookState>,
+    cache: State<'_, crate::annotations::CharCache>,
     session: Option<u32>,
 ) {
     let _lifecycle = state
@@ -560,19 +637,45 @@ pub fn close_session(
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     if let Some(stopped_id) = state.stop_session_matching(session) {
+        cache.remove_session(stopped_id);
         webview2::release_session_buffers(&window, stopped_id);
+        webview2::release_probe_buffers(&window);
         if !crate::book::has_open(&books) {
             state.shelf.set_reading(false);
         }
     } else if let Some(id) = session {
-        // Stale close for an earlier session: clean up any lingering buffers of `id` only.
+        // Stale close for an earlier session: clean up any lingering buffers or chars of `id` only.
+        cache.remove_session(id);
         webview2::release_session_buffers(&window, id);
+        if state.current_session().is_none() {
+            webview2::release_probe_buffers(&window);
+        }
     } else {
+        cache.clear();
         webview2::release_buffers(&window);
         if !crate::book::has_open(&books) {
             state.shelf.set_reading(false);
         }
     }
+}
+
+/// Flushes and tears down any open session/buffers/workers after the frontend finishes persisting
+/// the active tab's reading progress, then closes the main window cleanly.
+#[tauri::command(async)]
+pub fn confirm_window_close(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    books: State<'_, crate::book::BookState>,
+    cache: State<'_, crate::annotations::CharCache>,
+    guard: State<'_, CloseGuard>,
+) {
+    let _ = guard.confirm();
+    state.stop_and_release(&window);
+    cache.clear();
+    crate::book::close(&books);
+    state.release_flow_client();
+    state.shelf.set_reading(false);
+    let _ = window.close();
 }
 
 /// Writes `value` into every probe buffer, and returns what scripts wrote back into them.
@@ -712,7 +815,7 @@ pub fn set_window_title(window: WebviewWindow, title: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_window_title, take_matching_session};
+    use super::{CloseGuard, sanitize_window_title, take_matching_session};
 
     #[test]
     fn sanitizes_window_titles_for_taskbar_and_alt_tab() {
@@ -748,5 +851,110 @@ mod tests {
             Some((5, "fifth"))
         );
         assert_eq!(unkeyed, None);
+    }
+
+    #[test]
+    fn close_guard_intercepts_once_and_allows_confirmed_close() {
+        let guard = CloseGuard::default();
+        assert!(!guard.is_confirmed());
+        assert!(guard.intercept_once());
+        assert!(!guard.intercept_once());
+        assert!(guard.confirm());
+        assert!(guard.is_confirmed());
+        assert!(!guard.intercept_once());
+    }
+
+    #[test]
+    fn mixed_fixed_and_flow_tab_transitions_keep_single_active_session_and_clean_home_state() {
+        use crate::book::{self, BookState};
+        use crate::flow::FlowBook;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+
+        let mut active_fixed: Option<u32> = None;
+        let books = BookState::default();
+
+        let make_flow = |doc_id: i64| {
+            let normalized = musaeum_flow::normalize::normalize(
+                musaeum_flow::package::SourceFormat::Markdown,
+                b"# Chapter\n\nText.\n",
+                &musaeum_flow::normalize::Options::default(),
+            )
+            .unwrap();
+            Arc::new(FlowBook::new(
+                doc_id,
+                None,
+                PathBuf::from("cache"),
+                normalized.manifest,
+            ))
+        };
+
+        let active_total = |fixed: &Option<u32>, books: &BookState| -> usize {
+            usize::from(fixed.is_some()) + usize::from(book::has_open(books))
+        };
+
+        // 1. Open Fixed #1 -> Open Fixed #2 -> stale close for #1
+        let _ = take_matching_session(&mut active_fixed, None, |id| *id);
+        book::close(&books);
+        active_fixed = Some(1);
+        assert_eq!(active_total(&active_fixed, &books), 1);
+
+        let evicted = take_matching_session(&mut active_fixed, None, |id| *id);
+        assert_eq!(evicted, Some(1));
+        book::close(&books);
+        active_fixed = Some(2);
+        assert_eq!(active_total(&active_fixed, &books), 1);
+
+        assert_eq!(
+            take_matching_session(&mut active_fixed, Some(1), |id| *id),
+            None
+        );
+        assert_eq!(active_fixed, Some(2));
+
+        // 2. Switch Fixed #2 -> Flow A: fixed session stops before flow book installs
+        assert_eq!(
+            take_matching_session(&mut active_fixed, None, |id| *id),
+            Some(2)
+        );
+        book::close(&books);
+        let ticket_a = book::next_open_ticket(&books);
+        let (origin_a, _) = book::open_package_for_ticket(
+            &books,
+            Some(ticket_a),
+            "http://tauri.localhost",
+            make_flow(10),
+            false,
+        )
+        .unwrap();
+        assert_eq!(active_total(&active_fixed, &books), 1);
+
+        // 3. Switch Flow A -> Flow B, then stale close for Flow A arrives late
+        book::close(&books);
+        let ticket_b = book::next_open_ticket(&books);
+        let (origin_b, _) = book::open_package_for_ticket(
+            &books,
+            Some(ticket_b),
+            "http://tauri.localhost",
+            make_flow(20),
+            false,
+        )
+        .unwrap();
+        assert!(!book::close_matching(&books, Some(&origin_a)));
+        assert_eq!(active_total(&active_fixed, &books), 1);
+
+        // 4. Switch Flow B -> Fixed #3: flow origin is invalidated immediately
+        let _ = take_matching_session(&mut active_fixed, None, |id| *id);
+        book::close(&books);
+        active_fixed = Some(3);
+        assert!(!book::has_open(&books));
+        assert!(!book::close_matching(&books, Some(&origin_b)));
+        assert_eq!(active_total(&active_fixed, &books), 1);
+
+        // 5. Suspend to Home (`🏠`): 0 active sessions of either kind
+        assert_eq!(
+            take_matching_session(&mut active_fixed, Some(3), |id| *id),
+            Some(3)
+        );
+        assert_eq!(active_total(&active_fixed, &books), 0);
     }
 }

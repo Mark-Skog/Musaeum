@@ -1298,15 +1298,58 @@ body.app-mode {
   border: 0;
 }
 
+.reader-surface .reader-canvas,
+.reader-surface .reader-frame {
+  opacity: 0;
+  transition: opacity 110ms ease-out;
+}
+
+.reader-surface.is-ready .reader-canvas,
+.reader-surface.is-ready .reader-frame {
+  opacity: 1;
+}
+
+:root[data-motion='reduce'] .reader-surface .reader-canvas,
+:root[data-motion='reduce'] .reader-surface .reader-frame {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-surface .reader-canvas,
+  .reader-surface .reader-frame {
+    transition: none;
+  }
+}
+
 .reader-loading,
 .reader-error {
   position: absolute;
   inset: 0;
   display: grid;
   place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
   text-align: center;
   color: var(--muted);
   background: var(--bg);
+}
+
+.reader-fixed .reader-loading {
+  background: #2a2a2c;
+  color: #c6c6cc;
+}
+
+.reader-loading {
+  pointer-events: none;
+}
+
+.reader-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
 }
 
 .error-detail {

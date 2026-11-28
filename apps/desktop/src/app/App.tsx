@@ -5,6 +5,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { StartupOptions } from '../protocol';
@@ -23,20 +24,34 @@ import {
   activateTab,
   activeBookTab,
   closeActiveBookTab,
+  closeAllBookTabs,
   closeTab,
+  closeTabForDocument,
   closeTabsForFolders,
+  closeTabsForWork,
+  closeTabsForWorks,
   createInitialTabsState,
   HOME_TAB_ID,
   mergeWorksInTabs,
   nextTab,
   openBookTab,
   prevTab,
+  type ReaderTabSnapshot,
   selectTabByIndex,
+  setTabSnapshot,
   type TabId,
   type TabsState,
   updateWorkTitleInTabs,
 } from './tabs-model';
 import { TitleBar, type TitleBarMenuAction, useWindowChrome } from './TitleBar';
+
+const WINDOW_CLOSE_FLUSH_MS = 750;
+const WORK_GONE_RE = /(?:a obra \d+ não existe|there is no work \d+)/i;
+
+function isWorkGoneError(reason: unknown): boolean {
+  const message = String(reason instanceof Error ? reason.message : reason);
+  return WORK_GONE_RE.test(message);
+}
 
 function shortcutDigitOf(event: KeyboardEvent): number | null {
   if (/^[1-9]$/.test(event.key)) {
@@ -61,6 +76,10 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     folder: null,
   });
   const probe = useRef<ReaderProbe | null>(null);
+  const snapshotGetterRef = useRef<(() => ReaderTabSnapshot | undefined) | null>(null);
+  const readerFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const windowClosingRef = useRef(false);
+  const lastLibraryLocationRef = useRef<string | null>(null);
   const opened = useRef(0);
   const libraryActionsRef = useRef<((action: LibraryMenuAction) => void) | null>(null);
   const [exchangeBusy, setExchangeBusy] = useState(false);
@@ -77,8 +96,13 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
 
   const transitionTabs = useCallback(
     (updater: (prev: TabsState) => TabsState) => {
+      const capturedOutgoing = snapshotGetterRef.current?.();
       setTabs((prev) => {
-        const next = updater(prev);
+        const base =
+          prev.activeTabId !== HOME_TAB_ID && capturedOutgoing !== undefined
+            ? setTabSnapshot(prev, prev.activeTabId, capturedOutgoing)
+            : prev;
+        const next = updater(base);
         if (next === prev) {
           return prev;
         }
@@ -132,11 +156,13 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     [transitionTabs],
   );
 
-  const open = useCallback((next: BookRow, at?: ReaderTarget) => {
-    opened.current++;
-    probe.current = null;
-    setTabs((prev) => openBookTab(prev, next, at ?? null));
-  }, []);
+  const open = useCallback(
+    (next: BookRow, at?: ReaderTarget) => {
+      opened.current++;
+      transitionTabs((prev) => openBookTab(prev, next, at ?? null));
+    },
+    [transitionTabs],
+  );
 
   const handleWorkSaved = useCallback((workId: number, nextTitle: string) => {
     setTabs((prev) => updateWorkTitleInTabs(prev, workId, nextTitle));
@@ -149,6 +175,13 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     [transitionTabs],
   );
 
+  const handleWorkRemoved = useCallback(
+    (workId: number) => {
+      transitionTabs((prev) => closeTabsForWork(prev, workId));
+    },
+    [transitionTabs],
+  );
+
   const handleWorksMerged = useCallback((keepWorkId: number, mergedWorkIds: readonly number[]) => {
     setTabs((prev) => mergeWorksInTabs(prev, keepWorkId, mergedWorkIds));
     void api
@@ -156,6 +189,101 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       .then((work) => setTabs((prev) => updateWorkTitleInTabs(prev, keepWorkId, work.title)))
       .catch(() => {});
   }, []);
+
+  const handleSuggestionAccepted = useCallback(
+    (keepWorkId: number, candidateWorkId: number, candidateDocumentId: number) => {
+      transitionTabs((prev) => {
+        const afterDoc = closeTabForDocument(prev, candidateDocumentId);
+        return candidateWorkId !== keepWorkId
+          ? mergeWorksInTabs(afterDoc, keepWorkId, [candidateWorkId])
+          : afterDoc;
+      });
+    },
+    [transitionTabs],
+  );
+
+  // Close open tabs from a previous library when switching library databases.
+  useEffect(() => {
+    const location = library.info?.location ?? null;
+    if (
+      lastLibraryLocationRef.current !== null &&
+      location !== null &&
+      location !== lastLibraryLocationRef.current
+    ) {
+      transitionTabs(closeAllBookTabs);
+    }
+    if (location !== null) {
+      lastLibraryLocationRef.current = location;
+    }
+  }, [library.info?.location, transitionTabs]);
+
+  // If any open tab's work was deleted in the library database while open in the background,
+  // close its tab cleanly (note: files moved/deleted on disk keep their `work` row and instead
+  // display the localized missing-file error inside the tab when reactivated).
+  const openWorkIdsKey = [...new Set(tabs.bookTabs.map((tab) => tab.workId))].sort((a, b) => a - b).join(',');
+  useEffect(() => {
+    if (library.info?.open !== true || openWorkIdsKey === '') {
+      return;
+    }
+    let active = true;
+    const workIds = openWorkIdsKey.split(',').map(Number);
+    void Promise.all(
+      workIds.map((workId) =>
+        api.workMetadata(workId).then(
+          () => null,
+          (reason: unknown) => (isWorkGoneError(reason) ? workId : null),
+        ),
+      ),
+    ).then((results) => {
+      if (!active) {
+        return;
+      }
+      const deleted = new Set(results.filter((id): id is number => id !== null));
+      if (deleted.size > 0) {
+        transitionTabs((prev) => closeTabsForWorks(prev, deleted));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [library.generation, library.info?.open, openWorkIdsKey, transitionTabs]);
+
+  const handleWindowClose = useCallback(async () => {
+    if (windowClosingRef.current) {
+      return;
+    }
+    windowClosingRef.current = true;
+    try {
+      const flush = readerFlushRef.current?.();
+      if (flush !== undefined) {
+        await Promise.race([
+          flush,
+          new Promise<void>((resolve) => setTimeout(resolve, WINDOW_CLOSE_FLUSH_MS)),
+        ]);
+      }
+    } catch {
+      // Proceed with shutdown even if saving failed.
+    }
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in (window as unknown as Record<string, unknown>)) {
+      await invoke('confirm_window_close').catch(() => {
+        chromeRef.current.close();
+      });
+    } else {
+      chromeRef.current.close();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in (window as unknown as Record<string, unknown>))) {
+      return;
+    }
+    const stop = listen('app-close-requested', () => {
+      void handleWindowClose();
+    });
+    return () => {
+      void stop.then((unlisten) => unlisten());
+    };
+  }, [handleWindowClose]);
 
   const handleReaderShortcut = useCallback(
     (key: Shortcut) => {
@@ -371,13 +499,25 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       openPreferences: () => setPreferencesOpen(true),
       /** What the open library's cache holds. */
       cacheReport: () => api.cacheReport(),
+      /** Open tabs and active tab id, for end-to-end verification of tab lifecycle. */
+      tabs: () => ({
+        activeTabId: tabs.activeTabId,
+        bookTabs: tabs.bookTabs.map((tab) => ({
+          id: tab.id,
+          documentId: tab.documentId,
+          workId: tab.workId,
+          title: tab.title,
+          snapshot: tab.snapshot ?? null,
+        })),
+      }),
+      removeWorkTabs: (workId: number) => handleWorkRemoved(workId),
       rects: () => ({
         canvas: document.querySelector('.reader-canvas')?.getBoundingClientRect().toJSON() ?? null,
         frame: document.querySelector('.reader-frame')?.getBoundingClientRect().toJSON() ?? null,
         dpr: devicePixelRatio,
       }),
     };
-  }, [options.e2e, activeBook, library, currentTarget]);
+  }, [options.e2e, activeBook, library, currentTarget, tabs, handleWorkRemoved]);
 
   const unconsumedTarget =
     activeTab !== null &&
@@ -401,7 +541,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         onOpenPreferences={openPreferences}
         onMinimize={chrome.minimize}
         onToggleMaximize={chrome.toggleMaximize}
-        onClose={chrome.close}
+        onClose={() => void handleWindowClose()}
       />
       <div className="app-stage">
         <div
@@ -427,6 +567,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
             onWorkSaved={handleWorkSaved}
             onRootRemoved={handleRootRemoved}
             onWorksMerged={handleWorksMerged}
+            onSuggestionAccepted={handleSuggestionAccepted}
           />
         </div>
         {activeTab !== null && activeBook !== null ? (
@@ -435,7 +576,15 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
             book={activeBook}
             options={options}
             onBack={goHome}
+            onCloseTab={() => closeTabById(activeTab.id)}
             onSessionClosed={library.refresh}
+            snapshot={activeTab.snapshot}
+            snapshotGetterRef={snapshotGetterRef}
+            onSnapshotCapture={(captured) => {
+              const tabId = activeTab.id;
+              setTabs((prev) => setTabSnapshot(prev, tabId, captured));
+            }}
+            flushRef={readerFlushRef}
             probe={probe}
             target={unconsumedTarget}
             targetSeq={activeTab.targetSeq}

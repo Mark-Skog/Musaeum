@@ -1,6 +1,6 @@
 /** Messages between the main thread and the compositor worker. Control only, never pixels. */
 
-import type { BenchOptions, SessionInfo } from '../protocol';
+import type { BenchOptions, SavedReadingState, SessionInfo } from '../protocol';
 import type { AnnotatorMessage, FixedMark, PageSpan, RegionSelection, Tool } from './annotator';
 import type { SabRingBuffers } from '../sab-ring';
 import type { ModeKind, ReadingSnapshot } from './reader';
@@ -26,6 +26,8 @@ export interface InitMessage {
   screenHeight: number;
   /** The GPU tile cache's budget, in bytes. Null for one sized to the screen. */
   tileBudgetBytes: number | null;
+  /** Optional in-memory tab snapshot overriding `session.readingState` when rehydrating a tab. */
+  initialState?: SavedReadingState | null;
 }
 
 export type ProbeRequest =
@@ -67,8 +69,10 @@ export type ToWorker =
   | { type: 'zoom'; factor: number }
   /** Asks for an `Inspection`, for a test driving the real window. */
   | { type: 'inspect' }
-  /** Sends the position now if it changed since the last one sent, then `flushed`. */
-  | { type: 'flush' }
+  /** Sends the position now if it changed since the last one sent, optionally destroys GPU resources, then `flushed`. */
+  | { type: 'flush'; destroy?: boolean }
+  /** Explicitly releases WebGL2 resources, stops tile delivery, and cancels pending frames. */
+  | { type: 'destroy' }
   /** A page's characters, as the host sent them, or null for a page without any. */
   | { type: 'chars'; page: number; buffer: ArrayBuffer | null }
   /** Every mark to draw, replacing the ones before. */
@@ -106,6 +110,9 @@ export interface ReaderStatus {
   zoom: number;
   page: number;
   pageCount: number;
+  u: number;
+  v: number;
+  progress: number;
 }
 
 /** A page as it is on the screen this frame. */

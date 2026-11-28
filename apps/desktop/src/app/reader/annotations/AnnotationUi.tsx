@@ -218,6 +218,13 @@ export function swatchOf(color: string): string {
   return COLORS.find((known) => known.id === color)?.swatch ?? '#ffe36b';
 }
 
+export interface InspectorFilterState {
+  query: string;
+  colors: string[];
+  kind: 'all' | AnnotationKind;
+  orphans: boolean;
+}
+
 export interface InspectorProps {
   documentId: number;
   entries: Entry[];
@@ -232,16 +239,43 @@ export interface InspectorProps {
   pdf?: PdfActions;
   /** The book's annotations as JSON-LD, both ways, and its study reports. */
   exchange?: ExchangeControls;
+  /** Restored search & filter state from the tab's snapshot. */
+  initialState?: Partial<InspectorFilterState>;
+  /** Reports search & filter changes so the tab snapshot keeps them across switches. */
+  onStateChange?(state: InspectorFilterState): void;
 }
 
 /** The book's annotations, by where they are: filtered, searched, and each a way back to its place. */
-export function Inspector({ documentId, entries, onJump, onEdit, onRemove, onClose, onLink, pdf, exchange }: InspectorProps): React.JSX.Element {
+export function Inspector({
+  documentId,
+  entries,
+  onJump,
+  onEdit,
+  onRemove,
+  onClose,
+  onLink,
+  pdf,
+  exchange,
+  initialState,
+  onStateChange,
+}: InspectorProps): React.JSX.Element {
   const t = useT();
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(() => initialState?.query ?? '');
   const [found, setFound] = useState<Set<string> | null>(null);
-  const [colors, setColors] = useState<Set<string>>(new Set());
-  const [kind, setKind] = useState<'all' | AnnotationKind>('all');
-  const [orphans, setOrphans] = useState(false);
+  const [colors, setColors] = useState<Set<string>>(() => new Set(initialState?.colors ?? []));
+  const [kind, setKind] = useState<'all' | AnnotationKind>(() => initialState?.kind ?? 'all');
+  const [orphans, setOrphans] = useState(() => initialState?.orphans ?? false);
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+
+  useEffect(() => {
+    onStateChangeRef.current?.({
+      query,
+      colors: [...colors],
+      kind,
+      orphans,
+    });
+  }, [query, colors, kind, orphans]);
 
   // The search is the library's, through FTS5: quotes and notes, any accent, inside words.
   useEffect(() => {

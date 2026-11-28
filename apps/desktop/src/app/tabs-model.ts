@@ -4,8 +4,10 @@
  * direct index selection (`Ctrl+1..Ctrl+9`), and synchronization with library metadata edits/removals.
  */
 
+import type { Tool } from '../compositor/annotator';
 import type { FlowMode } from '../reader/messages';
-import type { BookRow, ReaderTarget } from './api';
+import type { ReadingStyle } from '../reader/typography';
+import type { AnnotationKind, BookRow, ReaderTarget } from './api';
 
 export const HOME_TAB_ID = 'home' as const;
 export type HomeTabId = typeof HOME_TAB_ID;
@@ -23,21 +25,65 @@ export const HOME_TAB: HomeTab = Object.freeze({
   closable: false,
 });
 
+/** Fit mode of a fixed-layout document (`zoom === 1` fits page in paginated or width in continuous). */
+export type FixedFitMode = 'page' | 'width' | 'manual';
+
 /**
- * Extensible reader state snapshot reserved for Etapa 2B (WebGL2/compositor & flow suspension
- * and instant rehydration when switching between open book tabs).
+ * Complete per-tab reader state snapshot captured synchronously when suspending a book tab (to
+ * `'home'` or another book tab) and restored without visual jumps or default overwrites on return.
  */
 export interface ReaderTabSnapshot {
   readonly layout: 'fixed' | 'flow';
   readonly mode?: FlowMode;
+  readonly pageTurnAnimation?: boolean;
+  // Fixed-layout state (PDF / DjVu / CBZ / CBR / images)
   readonly page?: number;
-  readonly zoom?: number;
-  readonly spreads?: 'auto' | 'single' | 'double';
+  readonly pageCount?: number;
+  readonly u?: number;
+  readonly v?: number;
   readonly scrollOffset?: number;
+  readonly zoom?: number;
+  readonly fitMode?: FixedFitMode;
+  readonly spreads?: 'auto' | 'single' | 'double';
+  readonly tool?: Tool;
+  readonly snap?: boolean;
+  // Flowing-layout state (EPUB / MOBI / AZW3 / FB2)
   readonly readerCfi?: string | null;
+  readonly section?: number;
   readonly progress?: number | null;
+  readonly locator?: Readonly<Record<string, unknown>> | null;
+  readonly style?: ReadingStyle;
+  // Auxiliary reader panels & search/filter state
+  readonly tocOpen?: boolean;
+  readonly annotationsOpen?: boolean;
+  readonly annotationSearch?: string;
+  readonly annotationFilterColors?: readonly string[];
+  readonly annotationFilterKind?: 'all' | AnnotationKind;
+  readonly annotationFilterOrphans?: boolean;
   readonly capturedAt?: number;
   readonly extra?: Readonly<Record<string, unknown>>;
+}
+
+/** Derives the semantic fit mode for a fixed-layout reader from its reading mode and zoom factor. */
+export function deriveFixedFitMode(mode: FlowMode, zoom: number): FixedFitMode {
+  if (Math.abs(zoom - 1) < 1e-4) {
+    return mode === 'continuous' ? 'width' : 'page';
+  }
+  return 'manual';
+}
+
+/** Resolves the numeric zoom factor to restore for a fixed-layout tab snapshot. */
+export function resolveFixedSnapshotZoom(snapshot: ReaderTabSnapshot | undefined): number {
+  if (snapshot === undefined) {
+    return 1;
+  }
+  if (snapshot.fitMode === 'page' || snapshot.fitMode === 'width') {
+    return typeof snapshot.zoom === 'number' && Math.abs(snapshot.zoom - 1) < 1e-4 ? snapshot.zoom : 1;
+  }
+  if (typeof snapshot.zoom === 'number' && Number.isFinite(snapshot.zoom) && snapshot.zoom > 0) {
+    return snapshot.zoom;
+  }
+  return 1;
 }
 
 export interface BookTab {
@@ -320,9 +366,29 @@ export function closeTabsForWork(state: TabsState, workId: number): TabsState {
   return closeTabsWhere(state, (tab) => tab.workId === workId);
 }
 
+/** Closes any open tabs belonging to any `workId` in `workIds`. */
+export function closeTabsForWorks(state: TabsState, workIds: ReadonlySet<number>): TabsState {
+  if (workIds.size === 0) {
+    return state;
+  }
+  return closeTabsWhere(state, (tab) => workIds.has(tab.workId));
+}
+
 /** Closes an open tab for a specific `documentId`. */
 export function closeTabForDocument(state: TabsState, documentId: number): TabsState {
   return closeTabsWhere(state, (tab) => tab.documentId === documentId);
+}
+
+/** Closes all open book tabs and returns focus to the permanent Home tab (e.g. when switching libraries). */
+export function closeAllBookTabs(state: TabsState): TabsState {
+  if (state.bookTabs.length === 0 && state.activeTabId === HOME_TAB_ID) {
+    return state;
+  }
+  return {
+    ...state,
+    bookTabs: [],
+    activeTabId: HOME_TAB_ID,
+  };
 }
 
 /** Closes any open tabs whose `book.folderId` belongs to a removed root folder tree. */
@@ -414,11 +480,21 @@ export function setTabSnapshot(
   snapshot: ReaderTabSnapshot | undefined,
 ): TabsState {
   const idx = state.bookTabs.findIndex((tab) => tab.id === tabId);
-  if (idx < 0 || state.bookTabs[idx].snapshot === snapshot) {
+  if (idx < 0) {
+    return state;
+  }
+  const current = state.bookTabs[idx];
+  const nextProgress =
+    snapshot?.progress !== undefined && snapshot.progress !== null ? snapshot.progress : undefined;
+  const nextBook =
+    current.book !== undefined && nextProgress !== undefined && current.book.progress !== nextProgress
+      ? { ...current.book, progress: nextProgress }
+      : current.book;
+  if (current.snapshot === snapshot && nextBook === current.book) {
     return state;
   }
   return {
     ...state,
-    bookTabs: state.bookTabs.map((tab, i) => (i === idx ? { ...tab, snapshot } : tab)),
+    bookTabs: state.bookTabs.map((tab, i) => (i === idx ? { ...tab, snapshot, book: nextBook } : tab)),
   };
 }
