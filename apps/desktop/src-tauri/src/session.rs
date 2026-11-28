@@ -395,7 +395,7 @@ pub fn open_session(
         if let (Some(doc_id), Some(library)) = (args.document_id, state.library()) {
             match library.book_file(doc_id) {
                 Ok(None) => return Err(OpenSessionError::other(tr!(BookFileGone))),
-                Ok(Some(_)) if !args.document.exists() => {
+                Ok(Some(file)) if file.path == args.document && !file.path.exists() => {
                     return Err(OpenSessionError::other(tr!(BookFileGone)));
                 }
                 _ => {}

@@ -146,8 +146,17 @@ export async function press(cdp, key, modifiers = 0) {
  */
 export async function click(cdp, selector, modifiers = 0) {
   const box = await cdp.evaluate(`(async () => {
-    const element = document.querySelector(${JSON.stringify(selector)});
-    if (!element) return null;
+    const raw = document.querySelector(${JSON.stringify(selector)});
+    if (!raw) return null;
+    const element =
+      raw instanceof HTMLInputElement &&
+      (raw.type === 'radio' || raw.type === 'checkbox') &&
+      raw.labels &&
+      raw.labels.length > 0 &&
+      raw.parentElement &&
+      getComputedStyle(raw.parentElement).position === 'absolute'
+        ? raw.labels[0]
+        : raw;
     const scrollers = [];
     for (let node = element.parentElement; node !== null; node = node.parentElement) {
       if (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth) {

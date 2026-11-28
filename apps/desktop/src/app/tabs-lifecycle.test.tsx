@@ -669,7 +669,30 @@ class MiniNode {
   }
   set textContent(val: string) {
     this.childNodes = [];
-    this.textValue = val;
+    const str = String(val ?? '');
+    if (this.nodeType === 3) {
+      this.textValue = str;
+    } else {
+      this.textValue = '';
+      if (str !== '') {
+        const tn = new MiniNode();
+        tn.nodeType = 3;
+        tn.textValue = str;
+        tn.parentNode = this;
+        tn.ownerDocument = this.ownerDocument;
+        this.childNodes.push(tn);
+      }
+    }
+  }
+  contains(other: MiniNode | null): boolean {
+    let cur: MiniNode | null = other;
+    while (cur !== null) {
+      if (cur === this) {
+        return true;
+      }
+      cur = cur.parentNode;
+    }
+    return false;
   }
   addEventListener(type: string, cb: (ev: MiniEvent) => void): void {
     let set = this.listeners.get(type);
@@ -703,7 +726,21 @@ class MiniNode {
 
 class MiniEl extends MiniNode {
   tagName: string;
-  style: Record<string, unknown> = {};
+  style: Record<string, unknown> & {
+    setProperty: (k: string, v: string) => void;
+    removeProperty: (k: string) => void;
+    getPropertyValue: (k: string) => string;
+  } = {
+    setProperty(k: string, v: string) {
+      (this as Record<string, unknown>)[k] = v;
+    },
+    removeProperty(k: string) {
+      delete (this as Record<string, unknown>)[k];
+    },
+    getPropertyValue(k: string) {
+      return String((this as Record<string, unknown>)[k] ?? '');
+    },
+  };
   attrs = new Map<string, string>();
   disabled = false;
   width = 800;
@@ -713,11 +750,49 @@ class MiniEl extends MiniNode {
   scrollTop = 0;
   scrollHeight = 600;
   focus = vi.fn();
+  readonly classList = {
+    add: (...tokens: string[]) => {
+      const set = new Set(this.className.split(/\s+/).filter(Boolean));
+      for (const token of tokens) {
+        if (token) {
+          set.add(token);
+        }
+      }
+      this.className = [...set].join(' ');
+    },
+    remove: (...tokens: string[]) => {
+      const set = new Set(this.className.split(/\s+/).filter(Boolean));
+      for (const token of tokens) {
+        set.delete(token);
+      }
+      this.className = [...set].join(' ');
+    },
+    toggle: (token: string, force?: boolean) => {
+      const set = new Set(this.className.split(/\s+/).filter(Boolean));
+      const next = force !== undefined ? force : !set.has(token);
+      if (next) {
+        set.add(token);
+      } else {
+        set.delete(token);
+      }
+      this.className = [...set].join(' ');
+      return next;
+    },
+    contains: (token: string) => this.className.split(/\s+/).filter(Boolean).includes(token),
+  };
 
   constructor(tag = 'DIV') {
     super();
     this.tagName = tag.toUpperCase();
     this.nodeName = this.tagName;
+  }
+  get firstElementChild(): MiniEl | null {
+    for (const ch of this.childNodes) {
+      if (ch instanceof MiniEl) {
+        return ch;
+      }
+    }
+    return null;
   }
   get id(): string {
     return this.attrs.get('id') ?? '';
@@ -779,6 +854,7 @@ function setupMiniDom(): { doc: { createElement: (tag?: string) => MiniEl; getEl
   const rootHost = new MiniEl('div');
   const doc = {
     title: '',
+    documentElement: { lang: 'pt-BR' },
     activeElement: null,
     defaultView: null as unknown,
     createElement: (tag = 'div') => {
@@ -807,6 +883,7 @@ function setupMiniDom(): { doc: { createElement: (tag?: string) => MiniEl; getEl
 
   class FakeResizeObserver {
     observe(): void {}
+    unobserve(): void {}
     disconnect(): void {}
   }
   class FakeMutationObserver {

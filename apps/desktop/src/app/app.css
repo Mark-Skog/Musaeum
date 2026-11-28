@@ -187,6 +187,27 @@
   flex: 0 1 auto;
 }
 
+/* Scrollable containers inside `.scroll-frame` establish their own positioned containing block so
+   React Aria's visually-hidden `<input>` elements scroll with their `<label>` instead of anchoring
+   to `.scroll-frame` outside the scroller. */
+.scroll-frame > .prefs-body,
+.scroll-frame > .inspector-body,
+.scroll-frame > .roots-list,
+.scroll-frame > .annotation-list,
+.scroll-frame > .toc-panel,
+.merge-choices {
+  position: relative;
+}
+
+.prefs-choice,
+.choice,
+.color-choice,
+.merge-choice,
+.tick,
+.switch {
+  position: relative;
+}
+
 .sidebar,
 .book-grid,
 .book-table,
