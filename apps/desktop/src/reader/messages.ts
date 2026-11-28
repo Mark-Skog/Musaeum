@@ -82,7 +82,30 @@ export const NAVIGATION_KEYS = new Set([
 ]);
 
 /** Keys the reader passes up, because what they do belongs to the app. */
-export type Shortcut = 'mode' | 'animation' | 'escape' | 'contents' | 'fullscreen';
+export const SHORTCUT_KEYS = [
+  'mode',
+  'animation',
+  'escape',
+  'contents',
+  'fullscreen',
+  'preferences',
+  'next-tab',
+  'prev-tab',
+  'close-tab',
+  'tab-1',
+  'tab-2',
+  'tab-3',
+  'tab-4',
+  'tab-5',
+  'tab-6',
+  'tab-7',
+  'tab-8',
+  'tab-9',
+] as const;
+
+export type Shortcut = (typeof SHORTCUT_KEYS)[number];
+
+const ALLOWED_SHORTCUTS: ReadonlySet<string> = new Set<string>(SHORTCUT_KEYS);
 
 export type FromReader =
   | { type: 'ready'; sections: number; openMs: number }
@@ -183,7 +206,7 @@ export function isFromReader(data: unknown): data is FromReader {
         message.change.length <= 32
       );
     case 'shortcut':
-      return ['mode', 'animation', 'escape', 'contents', 'fullscreen'].includes(message.key as string);
+      return typeof message.key === 'string' && ALLOWED_SHORTCUTS.has(message.key);
     case 'link':
       return (
         typeof message.href === 'string' &&

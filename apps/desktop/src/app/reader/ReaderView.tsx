@@ -87,6 +87,25 @@ const flowEntry = (view: FlowAnnotationView): Entry => ({ annotation: view.annot
 const NAVIGATION = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 const STYLE_SETTING = 'typography';
 
+/**
+ * Serializes reader session teardown before the next tab's reader opens so pending reading
+ * positions (`save_reading_state` / `save_flow_position`) always commit before the host session
+ * slot is replaced.
+ */
+let readerLifecycle: Promise<void> = Promise.resolve();
+
+function enqueueReaderClose(closeTask: () => Promise<void> | undefined): Promise<void> {
+  const next = readerLifecycle.then(
+    () => closeTask(),
+    () => closeTask(),
+  );
+  readerLifecycle = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return readerLifecycle;
+}
+
 /** An entry of a fixed-layout document's table of contents, as the host sends it. */
 export interface OutlineItem {
   label: string;
@@ -292,27 +311,40 @@ function TypographyPanel({
 export interface ReaderViewProps {
   book: BookRow;
   options: StartupOptions;
+  /** Switches focus to the Library (`'home'`) tab while keeping this book's tab open. */
   onBack(): void;
+  /** Called once an unmounted reader finishes flushing its reading position and closing its session. */
+  onSessionClosed?(): void;
   probe?: React.MutableRefObject<ReaderProbe | null>;
   /** Where to show the book once it is open, instead of where the reading stopped: a match found in its text. */
   target?: ReaderTarget | null;
+  /** Monotonic sequence for `target`, allowing repeated search hits on an already-open tab. */
+  targetSeq?: number;
+  /** Marks the current `targetSeq` as consumed so later tab switches restore reading state instead. */
+  onTargetReached?(): void;
   /** Opens the Preferences. */
   onPreferences?(): void;
   /** Whether the window is currently in `F11` fullscreen. */
   isFullscreen?: boolean;
   /** Toggles `F11` fullscreen from reader shortcuts (including inside flowing books). */
   onToggleFullscreen?(): void;
+  /** Forwards global tab/app shortcuts captured inside the flowing reader's isolated iframe. */
+  onReaderShortcut?(key: Shortcut): void;
 }
 
 export function ReaderView({
   book,
   options,
   onBack,
+  onSessionClosed,
   probe,
   target = null,
+  targetSeq = 0,
+  onTargetReached,
   onPreferences,
   isFullscreen = false,
   onToggleFullscreen,
+  onReaderShortcut,
 }: ReaderViewProps): React.JSX.Element {
   const t = useT();
   const surface = useRef<HTMLDivElement>(null);
@@ -521,6 +553,12 @@ export function ReaderView({
   }, [kind]);
 
   const onShortcut = useRef<(key: Shortcut) => void>(() => {});
+  const onSessionClosedRef = useRef(onSessionClosed);
+  onSessionClosedRef.current = onSessionClosed;
+  const onTargetReachedRef = useRef(onTargetReached);
+  onTargetReachedRef.current = onTargetReached;
+  const onReaderShortcutRef = useRef(onReaderShortcut);
+  onReaderShortcutRef.current = onReaderShortcut;
 
   // Opening and closing the document.
   useEffect(() => {
@@ -535,136 +573,150 @@ export function ReaderView({
       const canvas = document.createElement('canvas');
       canvas.className = 'reader-canvas';
       container.append(canvas);
-      FixedReader.open({
-        options,
-        canvas,
-        document: book.path,
-        shortcuts: false,
-        bench: null,
-        signal: abort.signal,
-        onStatus: setStatus,
-        onFatal: (message) => setError(message),
-        onSelection: (chosen) => {
-          const box = canvas.getBoundingClientRect();
-          const rect = chosen.rect === null ? null : { ...chosen.rect, x: chosen.rect.x + box.left, y: chosen.rect.y + box.top };
-          setActiveMark(null);
-          setSelection(chosen.spans.length === 0 ? null : { kind: 'fixed', spans: chosen.spans, text: chosen.text, rect });
-        },
-        onMarkClick: (id, rect) => {
-          const box = canvas.getBoundingClientRect();
-          setSelection(null);
-          setActiveMark({ uuid: id, rect: { ...rect, x: rect.x + box.left, y: rect.y + box.top } });
-        },
-        onRegion: (region, rect) => {
-          const box = canvas.getBoundingClientRect();
-          setActiveMark(null);
-          setSelection(
-            region === null
-              ? null
-              : { kind: 'region', region, text: '', source: null, reading: true, rect: rect === null ? null : { ...rect, x: rect.x + box.left, y: rect.y + box.top } },
-          );
-          if (region !== null) {
-            // Read at once, so a copy has it by the time it is asked for.
-            void readRegion(region).then((read) => {
-              setSelection((now) =>
-                now?.kind === 'region' && now.region === region ? { ...now, text: read?.text ?? '', source: read?.source ?? null, reading: false } : now,
-              );
-            });
-          }
-        },
-      })
-        .then(async (reader) => {
-          if (cancelled) {
-            await reader.close();
-            return;
-          }
-          fixed.current = reader;
-          await reader.ready();
-          const session = reader.session;
-          if (session !== null) {
-            api
-              .fixedAnnotations(session.id)
-              .then((views) => {
-                if (!cancelled) {
-                  store.load(views.map(fixedEntry));
-                }
-              })
-              .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
-            invoke<OutlineItem[]>('document_outline', { session: session.id })
-              .then((items) => {
-                if (!cancelled) {
-                  setOutline(items);
-                }
-              })
-              .catch(() => setOutline([]));
-          }
-          setReady(true);
+      void readerLifecycle.then(() => {
+        if (cancelled) {
+          return;
+        }
+        FixedReader.open({
+          options,
+          canvas,
+          document: book.path,
+          shortcuts: false,
+          bench: null,
+          signal: abort.signal,
+          onStatus: setStatus,
+          onFatal: (message) => setError(message),
+          onSelection: (chosen) => {
+            const box = canvas.getBoundingClientRect();
+            const rect = chosen.rect === null ? null : { ...chosen.rect, x: chosen.rect.x + box.left, y: chosen.rect.y + box.top };
+            setActiveMark(null);
+            setSelection(chosen.spans.length === 0 ? null : { kind: 'fixed', spans: chosen.spans, text: chosen.text, rect });
+          },
+          onMarkClick: (id, rect) => {
+            const box = canvas.getBoundingClientRect();
+            setSelection(null);
+            setActiveMark({ uuid: id, rect: { ...rect, x: rect.x + box.left, y: rect.y + box.top } });
+          },
+          onRegion: (region, rect) => {
+            const box = canvas.getBoundingClientRect();
+            setActiveMark(null);
+            setSelection(
+              region === null
+                ? null
+                : { kind: 'region', region, text: '', source: null, reading: true, rect: rect === null ? null : { ...rect, x: rect.x + box.left, y: rect.y + box.top } },
+            );
+            if (region !== null) {
+              // Read at once, so a copy has it by the time it is asked for.
+              void readRegion(region).then((read) => {
+                setSelection((now) =>
+                  now?.kind === 'region' && now.region === region ? { ...now, text: read?.text ?? '', source: read?.source ?? null, reading: false } : now,
+                );
+              });
+            }
+          },
         })
-        .catch((reason: unknown) => {
-          if (!cancelled) {
-            setError(String(reason instanceof Error ? reason.message : reason));
-          }
-        });
+          .then(async (reader) => {
+            if (cancelled) {
+              await enqueueReaderClose(() => reader.close());
+              return;
+            }
+            fixed.current = reader;
+            await reader.ready();
+            const session = reader.session;
+            if (session !== null) {
+              api
+                .fixedAnnotations(session.id)
+                .then((views) => {
+                  if (!cancelled) {
+                    store.load(views.map(fixedEntry));
+                  }
+                })
+                .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
+              invoke<OutlineItem[]>('document_outline', { session: session.id })
+                .then((items) => {
+                  if (!cancelled) {
+                    setOutline(items);
+                  }
+                })
+                .catch(() => setOutline([]));
+            }
+            setReady(true);
+          })
+          .catch((reason: unknown) => {
+            if (!cancelled) {
+              setError(String(reason instanceof Error ? reason.message : reason));
+            }
+          });
+      });
       return () => {
         cancelled = true;
         abort.abort();
         const reader = fixed.current;
         fixed.current = null;
         canvas.remove();
-        void reader?.close();
+        if (reader !== null) {
+          void enqueueReaderClose(() => reader.close()).then(() => onSessionClosedRef.current?.());
+        }
       };
     }
-    FlowReader.open(container, book.documentId, { mode: 'paginated', animated: true, style: style ?? DEFAULT_STYLE }, {
-      relocate: setRelocation,
-      saved: setSaved,
-      shortcut: (key) => onShortcut.current(key),
-      link: setLink,
-      layout: () => {},
-      error: (message) => setError(message),
-      selection: (chosen) => {
-        setActiveMark(null);
-        setSelection(
-          chosen.start === null || chosen.end === null
-            ? null
-            : { kind: 'flow', start: chosen.start, end: chosen.end, text: chosen.text, rect: chosen.rect },
-        );
-      },
-      markClick: (id, rect) => {
-        setSelection(null);
-        setActiveMark({ uuid: id, rect });
-      },
-    })
-      .then(async (reader) => {
-        if (cancelled) {
-          await reader.close();
-          return;
-        }
-        flow.current = reader;
-        setFlowMode(reader.currentMode);
-        setFlowAnimated(reader.isAnimated);
-        setToc(reader.info.toc);
-        setReady(true);
-        reader.focus();
-        api
-          .flowAnnotations(book.documentId)
-          .then((views) => {
-            if (!cancelled) {
-              store.load(views.map(flowEntry));
-            }
-          })
-          .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
+    void readerLifecycle.then(() => {
+      if (cancelled) {
+        return;
+      }
+      FlowReader.open(container, book.documentId, { mode: 'paginated', animated: true, style: style ?? DEFAULT_STYLE }, {
+        relocate: setRelocation,
+        saved: setSaved,
+        shortcut: (key) => onShortcut.current(key),
+        link: setLink,
+        layout: () => {},
+        error: (message) => setError(message),
+        selection: (chosen) => {
+          setActiveMark(null);
+          setSelection(
+            chosen.start === null || chosen.end === null
+              ? null
+              : { kind: 'flow', start: chosen.start, end: chosen.end, text: chosen.text, rect: chosen.rect },
+          );
+        },
+        markClick: (id, rect) => {
+          setSelection(null);
+          setActiveMark({ uuid: id, rect });
+        },
       })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(String(reason instanceof Error ? reason.message : reason));
-        }
-      });
+        .then(async (reader) => {
+          if (cancelled) {
+            await enqueueReaderClose(() => reader.close());
+            return;
+          }
+          flow.current = reader;
+          setFlowMode(reader.currentMode);
+          setFlowAnimated(reader.isAnimated);
+          setToc(reader.info.toc);
+          setReady(true);
+          reader.focus();
+          api
+            .flowAnnotations(book.documentId)
+            .then((views) => {
+              if (!cancelled) {
+                store.load(views.map(flowEntry));
+              }
+            })
+            .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
+        })
+        .catch((reason: unknown) => {
+          if (!cancelled) {
+            setError(String(reason instanceof Error ? reason.message : reason));
+          }
+        });
+    });
     return () => {
       cancelled = true;
       abort.abort();
       const reader = flow.current;
       flow.current = null;
-      void reader?.close();
+      if (reader !== null) {
+        void enqueueReaderClose(() => reader.close()).then(() => onSessionClosedRef.current?.());
+      }
     };
     // The style only matters for opening: later changes go to the open reader.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -673,13 +725,14 @@ export function ReaderView({
   useEffect(updateProbe, [ready, error, updateProbe]);
 
   // A match found in the book's text, shown once the book is open: on a page, at its word; in a
-  // flowing book, at the very place. Gone to once, so the person can read on from there.
-  const reached = useRef(false);
+  // flowing book, at the very place. Gone to once per requested target, so the person can read on.
+  const reachedSeq = useRef(-1);
   useEffect(() => {
-    if (!ready || target === null || reached.current) {
+    if (!ready || target === null || reachedSeq.current === targetSeq) {
       return;
     }
-    reached.current = true;
+    reachedSeq.current = targetSeq;
+    onTargetReachedRef.current?.();
     if (target.kind === 'page') {
       const session = fixed.current?.session;
       const page = target.page;
@@ -699,7 +752,7 @@ export function ReaderView({
         flow.current?.focus();
       })
       .catch((reason: unknown) => setNotice(t('reader.matchUnshown', { reason: String(reason) })));
-  }, [ready, target]);
+  }, [ready, target, targetSeq]);
 
   // The reader draws what the store has, every time it changes.
   useEffect(() => {
@@ -876,7 +929,7 @@ export function ReaderView({
     const reader = fixed.current ?? flow.current;
     fixed.current = null;
     flow.current = null;
-    await reader?.close();
+    await enqueueReaderClose(() => reader?.close());
     onBack();
   }, [onBack]);
 
@@ -914,6 +967,9 @@ export function ReaderView({
           return;
         case 'fullscreen':
           onToggleFullscreen?.();
+          return;
+        default:
+          onReaderShortcutRef.current?.(key);
           return;
       }
     },

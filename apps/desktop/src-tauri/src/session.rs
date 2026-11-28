@@ -685,9 +685,47 @@ pub fn app_state(app: &AppHandle) -> State<'_, AppState> {
     app.state::<AppState>()
 }
 
+/// Maximum length kept when synchronizing the native Win32 taskbar / `Alt+Tab` window title.
+const MAX_WINDOW_TITLE_CHARS: usize = 256;
+
+fn sanitize_window_title(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_WINDOW_TITLE_CHARS)
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "Musaeum".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Synchronizes the native OS window title (`Alt+Tab` and taskbar) with the active tab without
+/// granting broad `plugin:window` capabilities to the webview.
+#[tauri::command]
+pub fn set_window_title(window: WebviewWindow, title: String) {
+    let safe = sanitize_window_title(&title);
+    let _ = window.set_title(&safe);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::take_matching_session;
+    use super::{sanitize_window_title, take_matching_session};
+
+    #[test]
+    fn sanitizes_window_titles_for_taskbar_and_alt_tab() {
+        assert_eq!(sanitize_window_title(""), "Musaeum");
+        assert_eq!(sanitize_window_title("   \n\t  "), "Musaeum");
+        assert_eq!(sanitize_window_title("Dune — Musaeum"), "Dune — Musaeum");
+        assert_eq!(
+            sanitize_window_title("Dom\0 Casmurro\n — Musaeum"),
+            "Dom Casmurro — Musaeum"
+        );
+        let huge = "A".repeat(400);
+        assert_eq!(sanitize_window_title(&huge).len(), 256);
+    }
 
     #[test]
     fn stale_session_close_does_not_evict_a_newer_session() {

@@ -47,11 +47,29 @@ const TEXT = [
   ['text', 'mark'],
   ['window-close-text', 'window-close-bg'],
   ['window-close-text', 'window-close-active'],
+  ['tab-active-text', 'tab-active-bg'],
+  ['tab-inactive-text', 'tab-inactive-bg'],
+  ['tab-inactive-text', 'tab-hover-bg'],
+  ['text', 'tab-strip-bg'],
+  ['text', 'tab-hover-bg'],
+  ['tab-close-fg', 'tab-active-bg'],
+  ['tab-close-fg', 'tab-inactive-bg'],
+  ['tab-close-fg', 'tab-hover-bg'],
+  ['tab-close-fg', 'tab-close-hover-bg'],
+  ['tab-close-hover-fg', 'tab-close-hover-bg'],
 ];
 /** What is not text but has to be seen: 3:1 against every ground it stands on. */
-const NON_TEXT = ['focus', 'control-line', 'star', 'accent', 'scrollbar-thumb-hover', 'scrollbar-thumb-active'].flatMap((fg) =>
-  GROUNDS.map((bg) => [fg, bg]),
-);
+const NON_TEXT = [
+  ...['focus', 'control-line', 'star', 'accent', 'scrollbar-thumb-hover', 'scrollbar-thumb-active'].flatMap((fg) =>
+    GROUNDS.map((bg) => [fg, bg]),
+  ),
+  ['focus', 'tab-strip-bg'],
+  ['focus', 'tab-active-bg'],
+  ['focus', 'tab-hover-bg'],
+  ['focus', 'tab-close-hover-bg'],
+  ['accent', 'tab-active-bg'],
+  ['accent', 'tab-strip-bg'],
+];
 
 describe('the colors', () => {
   it('are the same in both dark blocks, and every one has a dark value', () => {

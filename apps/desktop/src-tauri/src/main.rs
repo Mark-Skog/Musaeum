@@ -175,6 +175,7 @@ fn main() {
             shelf::set_reader_setting,
             session::startup_options,
             session::uptime_ms,
+            session::set_window_title,
             session::open_delivery_probe,
             session::open_session,
             session::close_session,

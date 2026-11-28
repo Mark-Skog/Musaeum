@@ -16,16 +16,9 @@ import {
   GridListItem,
   GridListLoadMoreItem,
   GridLayout,
-  Header,
   Input,
-  Menu,
-  MenuItem,
-  MenuSection,
-  MenuTrigger,
-  Popover,
   Row,
   SearchField,
-  Separator,
   Size,
   Table,
   TableBody,
@@ -370,7 +363,11 @@ export interface LibraryMemory {
 
 export const FRESH_LIBRARY: LibraryMemory = { typed: '', searchIn: 'titles', filter: { kind: 'all' }, view: 'grid' };
 
+export type LibraryMenuAction = 'add-folder' | 'manage-folders' | 'calibre' | 'export-jsonld' | 'import-jsonld' | 'fields';
+
 export interface LibraryViewProps {
+  /** Whether the Library (`'home'`) tab is currently visible and interactive. */
+  active?: boolean;
   info: LibraryInfo | null;
   folders: FolderEntry[];
   generation: number;
@@ -387,9 +384,36 @@ export interface LibraryViewProps {
   calibreRequest?: { folder: string; at: number } | null;
   /** Opens the Preferences. */
   onPreferences?(): void;
+  /** Exposes library menu actions to the unified top-left gear menu in `TitleBar`. */
+  actionsRef?: React.MutableRefObject<((action: LibraryMenuAction) => void) | null>;
+  /** Reports whether library-wide JSON-LD export/import is currently busy. */
+  onExchangeBusyChange?(busy: boolean): void;
+  /** Synchronizes open book tabs when a work's title is edited in the Inspector. */
+  onWorkSaved?(workId: number, title: string): void;
+  /** Closes open book tabs belonging to an unfollowed root folder tree. */
+  onRootRemoved?(removedFolderIds: ReadonlySet<number>): void;
+  /** Synchronizes open book tabs when duplicate works are merged. */
+  onWorksMerged?(keepWorkId: number, mergedWorkIds: readonly number[]): void;
 }
 
-export function LibraryView({ info, folders, generation, onChanged, onOpen, memory, onRows, onSelection, calibreRequest = null, onPreferences }: LibraryViewProps): React.JSX.Element {
+export function LibraryView({
+  active = true,
+  info,
+  folders,
+  generation,
+  onChanged,
+  onOpen,
+  memory,
+  onRows,
+  onSelection,
+  calibreRequest = null,
+  onPreferences,
+  actionsRef,
+  onExchangeBusyChange,
+  onWorkSaved,
+  onRootRemoved,
+  onWorksMerged,
+}: LibraryViewProps): React.JSX.Element {
   const t = useT();
   const locale = useLocale();
   const prefs = usePreferences();
@@ -411,7 +435,6 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
   const bodyRef = useRef<HTMLDivElement>(null);
   const resizerRef = useRef<HTMLDivElement>(null);
   const sidebarScrollRef = useRef<HTMLElement>(null);
-  const actionsButtonRef = useRef<HTMLButtonElement>(null);
   const toggleButtonRef = useRef<HTMLButtonElement>(null);
 
   const currentWidthRef = useRef(prefWidth);
@@ -452,13 +475,17 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     refreshTaxonomy();
     setVersion((value) => value + 1);
   }, [refreshTaxonomy]);
-  // The whole library's annotations, out and in, from the toolbar's menu.
+  // The whole library's annotations, out and in, from the unified top-left menu.
   const everything = useExchange({ kind: 'library' }, () => changed(), 'library');
   useEffect(() => {
     if (everything.report !== null) {
       setNotice(everything.report.text);
     }
   }, [everything.report]);
+  const exchangeBusy = everything.busy !== null;
+  useEffect(() => {
+    onExchangeBusyChange?.(exchangeBusy);
+  }, [exchangeBusy, onExchangeBusyChange]);
 
   const applyWidthDom = useCallback((width: number) => {
     bodyRef.current?.style.setProperty('--sidebar-width', `${width}px`);
@@ -599,6 +626,13 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
   }, []);
 
   useEffect(() => {
+    if (!active) {
+      const focused = document.activeElement as HTMLElement | null;
+      if (focused !== null && bodyRef.current?.closest('.library')?.contains(focused)) {
+        focused.blur?.();
+      }
+      return;
+    }
     if (info?.open !== true) {
       return;
     }
@@ -620,7 +654,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [info?.open, toggleSidebar]);
+  }, [active, info?.open, toggleSidebar]);
 
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -718,17 +752,19 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
 
   const removeRoot = useCallback(
     async (id: number) => {
+      const removedFolderIds = new Set(folders.filter((entry) => entry.rootId === id).map((entry) => entry.id));
       await api.removeRoot(id);
       if (filter.kind === 'folder') {
-        const active = folders.find((entry) => entry.id === filter.id);
-        if (active?.rootId === id) {
+        const activeFolder = folders.find((entry) => entry.id === filter.id);
+        if (activeFolder?.rootId === id) {
           setFilter({ kind: 'all' });
         }
       }
+      onRootRemoved?.(removedFolderIds);
       onChanged();
       changed();
     },
-    [changed, filter, folders, onChanged],
+    [changed, filter, folders, onChanged, onRootRemoved],
   );
 
   useEffect(() => {
@@ -806,7 +842,7 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     const root = shelf.current;
     (root?.querySelector<HTMLElement>('[aria-selected="true"]') ?? root?.querySelector<HTMLElement>('[role="grid"], [role="treegrid"]'))?.focus();
   }, []);
-  useFocusReturn(current.length > 0 && filter.kind !== 'review', focusShelf);
+  useFocusReturn(active && current.length > 0 && filter.kind !== 'review', focusShelf);
 
   const byIdRef = useRef(byId);
   byIdRef.current = byId;
@@ -931,6 +967,42 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     };
   }, [info?.open, reviewing, inText, view, sidebarCollapsed, panelOpen, coverWidth]);
 
+  const runLibraryAction = useCallback(
+    (action: LibraryMenuAction): void => {
+      switch (action) {
+        case 'add-folder':
+          void addFolders();
+          break;
+        case 'manage-folders':
+          setFoldersOpen(true);
+          break;
+        case 'calibre':
+          setCalibre({ folder: null });
+          break;
+        case 'export-jsonld':
+        case 'import-jsonld':
+          void everything.run(action as ExchangeAction);
+          break;
+        case 'fields':
+          setFieldsOpen(true);
+          break;
+      }
+    },
+    [addFolders, everything],
+  );
+
+  useEffect(() => {
+    if (actionsRef === undefined) {
+      return;
+    }
+    actionsRef.current = runLibraryAction;
+    return () => {
+      if (actionsRef.current === runLibraryAction) {
+        actionsRef.current = null;
+      }
+    };
+  }, [actionsRef, runLibraryAction]);
+
   if (info === null) {
     return <div className="loading">{t('library.loading')}</div>;
   }
@@ -968,15 +1040,29 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
   const panel = reviewing ? null : works.length >= 2 ? (
     <BatchPanel works={works} books={current.length} taxonomy={taxonomy} onSaved={changed} onClose={forget} onMerge={setMerging} />
   ) : single !== null ? (
-    <Inspector key={single.workId} book={single} taxonomy={taxonomy} place={place} onSaved={changed} onClose={forget} />
+    <Inspector
+      key={single.workId}
+      book={single}
+      taxonomy={taxonomy}
+      place={place}
+      onSaved={(saved) => {
+        changed();
+        if (saved !== undefined) {
+          onWorkSaved?.(saved.id, saved.title);
+        }
+      }}
+      onClose={forget}
+    />
   ) : null;
   const merged = (keep: number): void => {
+    const mergedIds = merging ?? [];
     setMerging(null);
     // The merged books are one work now: it is what stays chosen, to see it whole.
     const kept = current.find((book) => book.workId === keep) ?? current[0];
     allAsked.current++;
     setChosen(kept === undefined ? new Map() : new Map([[kept.documentId, { ...kept, workId: keep }]]));
     setNotice(t('library.merged'));
+    onWorksMerged?.(keep, mergedIds);
     changed();
   };
   const status = [
@@ -986,33 +1072,6 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
     ...(everything.busy !== null ? [t('library.exchanging')] : []),
   ].join(' · ');
 
-  const runAction = (key: Key): void => {
-    switch (String(key)) {
-      case 'add-folder':
-        void addFolders();
-        break;
-      case 'manage-folders':
-        actionsButtonRef.current?.focus();
-        setFoldersOpen(true);
-        break;
-      case 'calibre':
-        actionsButtonRef.current?.focus();
-        setCalibre({ folder: null });
-        break;
-      case 'export-jsonld':
-      case 'import-jsonld':
-        void everything.run(String(key) as ExchangeAction);
-        break;
-      case 'fields':
-        actionsButtonRef.current?.focus();
-        setFieldsOpen(true);
-        break;
-      case 'preferences':
-        actionsButtonRef.current?.focus();
-        onPreferences?.();
-        break;
-    }
-  };
   const bodyClasses = ['library-body'];
   if (panelOpen) {
     bodyClasses.push('with-inspector');
@@ -1097,47 +1156,6 @@ export function LibraryView({ info, folders, generation, onChanged, onOpen, memo
               </span>
             </ToggleButton>
           </ToggleButtonGroup>
-          <MenuTrigger>
-            <Button ref={actionsButtonRef} id="library-actions" className="button icon-button" aria-label={t('library.actions.label')}>
-              <span className="icon-box" title={t('library.actions.label')}>
-                <svg className="icon icon-gear" viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" aria-hidden="true">
-                  <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1.02 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-                </svg>
-              </span>
-            </Button>
-            <Popover className="popover menu-popover" placement="bottom end">
-              <Menu className="menu" aria-label={t('library.actions.label')} onAction={runAction}>
-                <MenuItem id="add-folder" className="menu-item">
-                  {t('library.addFolder')}
-                </MenuItem>
-                <MenuItem id="manage-folders" className="menu-item">
-                  {t('sidebar.folders.manage')}
-                </MenuItem>
-                <MenuItem id="calibre" className="menu-item">
-                  {t('library.calibre')}
-                </MenuItem>
-                <Separator className="menu-separator" />
-                <MenuSection>
-                  <Header className="menu-section-header">{t('library.annotations.label')}</Header>
-                  <MenuItem id="export-jsonld" className="menu-item" data-action="export-jsonld" isDisabled={everything.busy !== null}>
-                    {t('library.annotations.export')}
-                  </MenuItem>
-                  <MenuItem id="import-jsonld" className="menu-item" data-action="import-jsonld" isDisabled={everything.busy !== null}>
-                    {t('library.annotations.import')}
-                  </MenuItem>
-                </MenuSection>
-                <Separator className="menu-separator" />
-                <MenuItem id="fields" className="menu-item">
-                  {t('sidebar.fields')}
-                </MenuItem>
-                <Separator className="menu-separator" />
-                <MenuItem id="preferences" className="menu-item" data-action="preferences">
-                  {t('prefs.open')}
-                </MenuItem>
-              </Menu>
-            </Popover>
-          </MenuTrigger>
         </div>
       </header>
       {notice !== null ? (

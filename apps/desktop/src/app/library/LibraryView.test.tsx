@@ -881,6 +881,7 @@ describe('LibraryView Rules of Hooks & stateful lifecycle regression', () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
     expect(container.querySelector('.library-body')).not.toBeNull();
+    expect(container.querySelector('#library-actions')).toBeNull();
     expect(container.querySelectorAll('.book-card')).toHaveLength(2);
     expect(container.querySelector('.inspector-shell.closed')).not.toBeNull();
 
@@ -924,5 +925,27 @@ describe('LibraryView Rules of Hooks & stateful lifecycle regression', () => {
       shelf!.dispatchEvent(wheel);
     });
     expect(wheel.defaultPrevented).toBe(true);
+
+    // 8. When kept mounted behind an open book tab (`active={false}`), Ctrl+B is ignored while state stays intact
+    await act(async () => {
+      root!.render(<LibraryView active={false} info={openInfo} folders={folders} generation={1} onChanged={() => {}} onOpen={() => {}} />);
+    });
+    const ctrlBWhileHidden = Object.assign(new MiniEvent('keydown'), { key: 'b', ctrlKey: true });
+    await act(async () => {
+      (window as unknown as { dispatchEvent(ev: MiniEvent): boolean }).dispatchEvent(ctrlBWhileHidden);
+    });
+    expect(ctrlBWhileHidden.defaultPrevented).toBe(false);
+    expect(container.querySelector('.library-body')!.classList.contains('sidebar-collapsed')).toBe(false);
+
+    // Returning to Home (`active={true}`) restores Ctrl+B immediately without remounting
+    await act(async () => {
+      root!.render(<LibraryView active={true} info={openInfo} folders={folders} generation={1} onChanged={() => {}} onOpen={() => {}} />);
+    });
+    const ctrlBWhileActive = Object.assign(new MiniEvent('keydown'), { key: 'b', ctrlKey: true });
+    await act(async () => {
+      (window as unknown as { dispatchEvent(ev: MiniEvent): boolean }).dispatchEvent(ctrlBWhileActive);
+    });
+    expect(ctrlBWhileActive.defaultPrevented).toBe(true);
+    expect(container.querySelector('.library-body')!.classList.contains('sidebar-collapsed')).toBe(true);
   });
 });

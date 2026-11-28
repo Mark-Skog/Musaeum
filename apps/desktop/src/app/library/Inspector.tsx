@@ -194,7 +194,7 @@ export interface InspectorProps {
   taxonomy: Taxonomy;
   /** The collection the side shows, if the book is in it. */
   place: CollectionPlace | null;
-  onSaved(): void;
+  onSaved(saved?: WorkMetadata): void;
   onClose(): void;
 }
 
@@ -249,7 +249,7 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
       .editWork(work.id, edit)
       .then((saved) => {
         setWork(saved);
-        onSaved();
+        onSaved(saved);
       })
       .catch((reason: unknown) => setError(reasonOf(reason)))
       .finally(() => setSaving(false));
@@ -428,7 +428,7 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
                   isDisabled={place.before === null}
                   onPress={() => {
                     if (place.before !== null) {
-                      api.addToCollection(place.collection, [work.id], { at: 'before', id: place.before }).then(onSaved).catch((reason: unknown) => setError(reasonOf(reason)));
+                      api.addToCollection(place.collection, [work.id], { at: 'before', id: place.before }).then(() => onSaved()).catch((reason: unknown) => setError(reasonOf(reason)));
                     }
                   }}
                 >
@@ -439,7 +439,7 @@ export function Inspector({ book, taxonomy, place, onSaved, onClose }: Inspector
                   isDisabled={place.after === null}
                   onPress={() => {
                     if (place.after !== null) {
-                      api.addToCollection(place.collection, [work.id], { at: 'after', id: place.after }).then(onSaved).catch((reason: unknown) => setError(reasonOf(reason)));
+                      api.addToCollection(place.collection, [work.id], { at: 'after', id: place.after }).then(() => onSaved()).catch((reason: unknown) => setError(reasonOf(reason)));
                     }
                   }}
                 >

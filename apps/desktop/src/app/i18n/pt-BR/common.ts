@@ -9,4 +9,8 @@ export const common = {
   'common.window.maximize': 'Maximizar',
   'common.window.restore': 'Restaurar',
   'common.window.close': 'Fechar',
+  'common.window.bookTitle': '{title} — Musaeum',
+  'common.tabs.label': 'Abas abertas',
+  'common.tabs.home': 'Biblioteca',
+  'common.tabs.closeTab': 'Fechar {title}',
 };
