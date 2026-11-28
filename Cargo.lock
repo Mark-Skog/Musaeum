@@ -518,7 +518,7 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corpus-check"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "blake3",
  "gen-fixtures",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "gen-fixtures"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "flate2",
  "jpeg-encoder",
@@ -2084,7 +2084,7 @@ dependencies = [
 
 [[package]]
 name = "library-bench"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "gen-fixtures",
  "musaeum-library",
@@ -2310,7 +2310,7 @@ checksum = "a8afc6df942f4c022d70c5725e18df1a705773870e5b7f96fde94ca0334ce77a"
 
 [[package]]
 name = "musaeum-archive"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "cc",
  "gen-fixtures",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "gen-fixtures",
  "musaeum-flow",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "jpeg-encoder",
  "musaeum-ingest",
@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-desktop"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "blake3",
  "musaeum-core",
@@ -2374,14 +2374,14 @@ dependencies = [
 
 [[package]]
 name = "musaeum-djvu"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "musaeum-flow"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chardetng",
  "cssparser",
@@ -2399,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-fs"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
@@ -2407,11 +2407,11 @@ dependencies = [
 
 [[package]]
 name = "musaeum-i18n"
-version = "1.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "musaeum-ingest"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "flate2",
  "musaeum-flow",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-library"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "blake3",
  "flate2",
@@ -2448,7 +2448,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-ocr"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "musaeum-sandbox",
  "serde",
@@ -2458,7 +2458,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-ocr-worker"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "gen-fixtures",
  "musaeum-ocr",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-pdf-annot"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "blake3",
  "flate2",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-render-djvu"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "gen-fixtures",
  "musaeum-core",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-render-pdf"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "flate2",
  "gen-fixtures",
@@ -2515,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-render-raster"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "fast_image_resize",
  "gen-fixtures",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "musaeum-report"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "blake3",
  "flate2",
@@ -2541,14 +2541,14 @@ dependencies = [
 
 [[package]]
 name = "musaeum-sandbox"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "musaeum-shm"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
@@ -2556,21 +2556,21 @@ dependencies = [
 
 [[package]]
 name = "musaeum-tesseract"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "musaeum-vision"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "musaeum-worker"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "memmap2",
  "musaeum-core",
@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "pool-bench"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "musaeum-core",
  "musaeum-sandbox",
@@ -3484,7 +3484,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-audit"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "musaeum-core",
  "musaeum-library",
@@ -4920,7 +4920,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "visual-check"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "gen-fixtures",
  "musaeum-core",

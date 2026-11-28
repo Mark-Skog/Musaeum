@@ -5,6 +5,43 @@ estão em [`docs/adr/`](docs/adr/); o procedimento de uma versão, em [`docs/rel
 O formato segue o [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/), e as versões, o
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## 1.2.0 — 2026-11-28
+
+Abas de múltiplos livros integradas à barra de título Win32, preservação instantânea da biblioteca
+em memória e suspensão determinística de sessões WebGL2/workers em segundo plano.
+
+### Adicionado
+
+- **Barra de abas unificada estilo Adobe Acrobat (`40 px`):** botão rápido de Preferências (`⚙`),
+  aba fixa Casa (`🏠`) conectada à biblioteca e faixa rolável horizontal de livros abertos com
+  deduplicação automática, fechamento via `×` ou botão do meio, espaçador de arrasto garantido
+  (`min-width: 56 px`), alinhamento exato de `WM_NCHITTEST` em 100%/125%/150%/200% DPI e título
+  nativo dinâmico na barra de tarefas e no `Alt+Tab`.
+- **Atalhos globais de abas (inclusive dentro de EPUB/MOBI/AZW3/FB2):** `Ctrl+Tab` /
+  `Ctrl+Shift+Tab`, `Ctrl+W` / `Ctrl+F4` e `Ctrl+1`..`Ctrl+9` (`Ctrl+1` retorna à biblioteca),
+  preservando combinações `AltGr` em teclados ABNT2.
+- **Preservação da biblioteca em `0 ms`:** a grade virtualizada, a posição de rolagem, a busca, os
+  filtros e o painel de Detalhes permanecem em memória ao alternar entre livros e `🏠`; o botão
+  `← Biblioteca` alterna para a aba Casa mantendo o livro aberto.
+- **Snapshots completos por aba (`ReaderTabSnapshot`):** preserva e reidrata sem salto visual a
+  página, deslocamento exato de viewport, zoom, modo de ajuste, spreads, posição/CFI fluido,
+  ferramenta ativa e filtros do painel de anotações, protegendo contra sobrescrita por padrões
+  durante carregamentos assíncronos.
+- **Suspensão determinística de GPU, SHM e workers (teto rígido de 1 sessão ativa):** abas em
+  segundo plano liberam explicitamente recursos WebGL2 (`TileRenderer.destroy()`,
+  `WEBGL_lose_context`), caches e workers; na aba Casa (`🏠`), o aplicativo mantém `0` sessões de
+  renderização e `0` buffers `ICoreWebView2SharedBuffer` ativos.
+- **Tratamento isolado de casos de borda:** detecção em disco de arquivos movidos ou excluídos ao
+  reabrir uma aba suspensa (com erro localizado e ação para fechar apenas aquela aba), sincronização
+  automática ao editar/mesclar/remover obras na biblioteca e persistência segura da aba ativa ao
+  fechar a janela (`CloseGuard`).
+
+### Corrigido
+
+- **Controles `VisuallyHidden` dentro de `ScrollFrame`:** ancoragem CSS (`position: relative`) nos
+  controles React Aria e nos contêineres roláveis internos (`.prefs-body`, `.inspector-body`, etc.),
+  garantindo que os inputs ocultos de acessibilidade acompanhem a rolagem 1:1 com seus rótulos.
+
 ## 1.1.0 — 2026-11-25
 
 Polimento visual e ergonômico da biblioteca, barra de título nativa customizada para Windows 10/11 e
