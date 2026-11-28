@@ -26,6 +26,8 @@ interface InitSnapshot {
   sessionId: number;
   ringTag: number | null;
   slabTag: number | null;
+  initialPage: number | null;
+  initialZoom: number | null;
 }
 
 function makeBuffer(magic: number, tag = 0, byteLength = 4096): ArrayBuffer {
@@ -132,6 +134,8 @@ describe('FixedReader session lifecycle and shared-buffer serialization', () => 
               sessionId: raw.session.id,
               ringTag: raw.direct ? new Uint32Array(raw.direct.ring)[3] : null,
               slabTag: raw.direct ? new Uint32Array(raw.direct.slab)[3] : null,
+              initialPage: raw.initialState?.page ?? null,
+              initialZoom: raw.initialState?.zoom ?? null,
             });
             this.emit({
               type: 'ready',
@@ -341,7 +345,7 @@ describe('FixedReader session lifecycle and shared-buffer serialization', () => 
     expect(openCalls).toEqual(['synthetic-large.pdf']);
     expect(closeCalls).toEqual([]);
     expect(reader.session?.id).toBe(1);
-    expect(inits).toEqual([{ sessionId: 1, ringTag: 1, slabTag: 1 }]);
+    expect(inits).toEqual([{ sessionId: 1, ringTag: 1, slabTag: 1, initialPage: null, initialZoom: null }]);
     expect(terminatedWorkers).toBe(1);
 
     // Idempotent close sends the exact session id once.
@@ -383,9 +387,295 @@ describe('FixedReader session lifecycle and shared-buffer serialization', () => 
     // Session 1 was cleanly closed by id before Session 2 opened, and Session 2 got its own buffers.
     expect(closeCalls).toEqual([1]);
     expect(secondReader.session?.id).toBe(2);
-    expect(inits).toEqual([{ sessionId: 2, ringTag: 2, slabTag: 2 }]);
+    expect(inits).toEqual([{ sessionId: 2, ringTag: 2, slabTag: 2, initialPage: null, initialZoom: null }]);
 
     await secondReader.close();
     expect(closeCalls).toEqual([1, 2]);
+  });
+
+  it('aborts intermediate tabs on rapid Tab A -> Tab B -> Tab C -> Home -> Tab A stress switching with <= 1 active session', async () => {
+    let nextSessionId = 1;
+    let activeSessions = 0;
+    let peakActiveSessions = 0;
+    const openCalls: string[] = [];
+    const closeCalls: (number | null)[] = [];
+
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === 'open_delivery_probe') {
+        const ro = makeBuffer(PROBE_MAGIC);
+        const rw = makeBuffer(PROBE_MAGIC);
+        probeRegions = [ro, rw];
+        postSharedBuffer(ro);
+        postSharedBuffer(rw);
+        return;
+      }
+      if (cmd === 'probe_exchange') {
+        const value = (args?.value as number) >>> 0;
+        return probeRegions.map((region) => {
+          const words = new Uint32Array(region);
+          Atomics.store(words, PROBE_HOST_WORD, value);
+          return Atomics.load(words, PROBE_SCRIPT_WORD);
+        });
+      }
+      if (cmd === 'open_session') {
+        const req = args?.args as { document: string };
+        const id = nextSessionId++;
+        openCalls.push(req.document);
+        activeSessions++;
+        peakActiveSessions = Math.max(peakActiveSessions, activeSessions);
+        postSharedBuffer(makeBuffer(RING_MAGIC, id));
+        postSharedBuffer(makeBuffer(SLAB_MAGIC, id));
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return makeSession(id);
+      }
+      if (cmd === 'close_session') {
+        const closedId = (args?.session as number | null | undefined) ?? null;
+        closeCalls.push(closedId);
+        if (closedId !== null && activeSessions > 0) {
+          activeSessions--;
+        }
+        return;
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    });
+
+    const { FixedReader } = await import('./fixed-reader');
+    const options = makeOptions();
+
+    const abortA1 = new AbortController();
+    const abortB = new AbortController();
+    const abortC = new AbortController();
+
+    // Start Tab A, let it enter open_session, then rapidly switch -> Tab B -> Tab C -> Home
+    const openA1 = FixedReader.open({
+      options,
+      canvas: makeCanvas(),
+      document: 'tab-a.pdf',
+      documentId: 101,
+      shortcuts: false,
+      bench: null,
+      signal: abortA1.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    abortA1.abort();
+    const openB = FixedReader.open({
+      options,
+      canvas: makeCanvas(),
+      document: 'tab-b.pdf',
+      documentId: 102,
+      shortcuts: false,
+      bench: null,
+      signal: abortB.signal,
+    });
+    abortB.abort();
+    const openC = FixedReader.open({
+      options,
+      canvas: makeCanvas(),
+      document: 'tab-c.pdf',
+      documentId: 103,
+      shortcuts: false,
+      bench: null,
+      signal: abortC.signal,
+    });
+    // Switch to Home: abort C as well
+    abortC.abort();
+
+    await expect(openA1).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(openB).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(openC).rejects.toMatchObject({ name: 'AbortError' });
+
+    // On Home: 0 active sessions, and queued intermediate tabs B and C never even called open_session!
+    expect(activeSessions).toBe(0);
+    expect(peakActiveSessions).toBe(1);
+    expect(openCalls).toEqual(['tab-a.pdf']);
+    expect(closeCalls).toEqual([1]);
+
+    // Return to Tab A with its saved snapshot: opens cleanly at exact page & zoom
+    const readerA2 = await FixedReader.open({
+      options,
+      canvas: makeCanvas(),
+      document: 'tab-a.pdf',
+      documentId: 101,
+      initialState: {
+        page: 42,
+        u: 0.15,
+        v: 0.68,
+        progress: 0.1,
+        mode: 'continuous',
+        pageTurnAnimation: false,
+        zoom: 1.75,
+        spreads: 'double',
+      },
+      shortcuts: false,
+      bench: null,
+    });
+    await readerA2.ready();
+
+    expect(activeSessions).toBe(1);
+    expect(peakActiveSessions).toBe(1);
+    expect(openCalls).toEqual(['tab-a.pdf', 'tab-a.pdf']);
+    expect(inits).toEqual([
+      { sessionId: 2, ringTag: 2, slabTag: 2, initialPage: 42, initialZoom: 1.75 },
+    ]);
+
+    // Suspend back to Home: session closes deterministically -> 0 active sessions
+    await readerA2.close();
+    expect(activeSessions).toBe(0);
+    expect(closeCalls).toEqual([1, 2]);
+  });
+});
+
+describe('TileRenderer explicit WebGL2 GPU resource cleanup on tab suspension', () => {
+  it('deletes textures, buffers, VAOs, programs and framebuffers, zeroes OffscreenCanvas, and loses context without spurious restore', async () => {
+    const deletedTextures: unknown[] = [];
+    const deletedBuffers: unknown[] = [];
+    const deletedVaos: unknown[] = [];
+    const deletedPrograms: unknown[] = [];
+    const deletedShaders: unknown[] = [];
+    const deletedFramebuffers: unknown[] = [];
+    let loseContextCalls = 0;
+    let nextHandle = 1;
+
+    const canvasListeners = new Map<string, Set<(ev: Event) => void>>();
+    const loseContextExt = {
+      loseContext: () => {
+        loseContextCalls++;
+        // Simulate browser firing webglcontextlost + webglcontextrestored if listeners remained attached
+        let prevented = false;
+        const lostEvent = {
+          preventDefault() {
+            prevented = true;
+          },
+        } as unknown as Event;
+        for (const cb of [...(canvasListeners.get('webglcontextlost') ?? [])]) {
+          cb(lostEvent);
+        }
+        if (prevented) {
+          for (const cb of [...(canvasListeners.get('webglcontextrestored') ?? [])]) {
+            cb({} as Event);
+          }
+        }
+      },
+    };
+
+    const mockGl = {
+      MAX_ARRAY_TEXTURE_LAYERS: 0x88ff,
+      RENDERER: 0x1f01,
+      VERTEX_SHADER: 0x8b31,
+      FRAGMENT_SHADER: 0x8b30,
+      COMPILE_STATUS: 0x8b81,
+      LINK_STATUS: 0x8b82,
+      TEXTURE0: 0x84c0,
+      TEXTURE1: 0x84c1,
+      TEXTURE_2D: 0x0de1,
+      TEXTURE_2D_ARRAY: 0x8c1a,
+      RGBA8: 0x8058,
+      TEXTURE_MIN_FILTER: 0x2801,
+      TEXTURE_MAG_FILTER: 0x2800,
+      TEXTURE_WRAP_S: 0x2802,
+      TEXTURE_WRAP_T: 0x2803,
+      TEXTURE_MAX_LEVEL: 0x813d,
+      LINEAR: 0x2601,
+      LINEAR_MIPMAP_NEAREST: 0x2701,
+      CLAMP_TO_EDGE: 0x812f,
+      UNPACK_ALIGNMENT: 0x0cf5,
+      ARRAY_BUFFER: 0x8892,
+      DYNAMIC_DRAW: 0x88e8,
+      FLOAT: 0x1406,
+      FRAMEBUFFER: 0x8d40,
+      COLOR_ATTACHMENT0: 0x8ce0,
+      DEPTH_TEST: 0x0b71,
+      BLEND: 0x0be2,
+      getParameter: (param: number) => (param === 0x88ff ? 256 : 'Mock GPU'),
+      getExtension: (name: string) => (name === 'WEBGL_lose_context' ? loseContextExt : null),
+      createShader: () => ({ kind: 'shader', id: nextHandle++ }),
+      shaderSource: () => {},
+      compileShader: () => {},
+      getShaderParameter: () => true,
+      getShaderInfoLog: () => '',
+      deleteShader: (s: unknown) => deletedShaders.push(s),
+      createProgram: () => ({ kind: 'program', id: nextHandle++ }),
+      attachShader: () => {},
+      detachShader: () => {},
+      linkProgram: () => {},
+      getProgramParameter: () => true,
+      getProgramInfoLog: () => '',
+      useProgram: () => {},
+      deleteProgram: (p: unknown) => deletedPrograms.push(p),
+      getUniformLocation: () => ({ kind: 'uniform', id: nextHandle++ }),
+      uniform1i: () => {},
+      uniform1f: () => {},
+      uniform2f: () => {},
+      uniform3fv: () => {},
+      createTexture: () => ({ kind: 'texture', id: nextHandle++ }),
+      activeTexture: () => {},
+      bindTexture: () => {},
+      texStorage3D: () => {},
+      texStorage2D: () => {},
+      texParameteri: () => {},
+      pixelStorei: () => {},
+      deleteTexture: (t: unknown) => deletedTextures.push(t),
+      createBuffer: () => ({ kind: 'buffer', id: nextHandle++ }),
+      bindBuffer: () => {},
+      bufferData: () => {},
+      deleteBuffer: (b: unknown) => deletedBuffers.push(b),
+      createVertexArray: () => ({ kind: 'vao', id: nextHandle++ }),
+      bindVertexArray: () => {},
+      enableVertexAttribArray: () => {},
+      vertexAttribPointer: () => {},
+      vertexAttribDivisor: () => {},
+      deleteVertexArray: (v: unknown) => deletedVaos.push(v),
+      createFramebuffer: () => ({ kind: 'fbo', id: nextHandle++ }),
+      bindFramebuffer: () => {},
+      framebufferTexture2D: () => {},
+      deleteFramebuffer: (f: unknown) => deletedFramebuffers.push(f),
+      disable: () => {},
+      clearColor: () => {},
+      viewport: () => {},
+    } as unknown as WebGL2RenderingContext;
+
+    const fakeOffscreen = {
+      width: 1280,
+      height: 800,
+      getContext: () => mockGl,
+      addEventListener: (type: string, cb: (ev: Event) => void, opts?: AddEventListenerOptions) => {
+        let set = canvasListeners.get(type);
+        if (!set) {
+          set = new Set();
+          canvasListeners.set(type, set);
+        }
+        set.add(cb);
+        opts?.signal?.addEventListener('abort', () => set?.delete(cb), { once: true });
+      },
+    } as unknown as OffscreenCanvas;
+
+    const { TileRenderer } = await import('../compositor/renderer');
+    let lostCount = 0;
+    let restoredCount = 0;
+    const renderer = new TileRenderer(
+      fakeOffscreen,
+      64 * 1024 * 1024,
+      () => lostCount++,
+      () => restoredCount++,
+    );
+
+    // 4 shaders compiled across 2 programs, immediately detached & deleted after linking
+    expect(deletedShaders).toHaveLength(4);
+
+    // Destroy deterministically releases every GPU allocation and loses the WebGL2 context once
+    renderer.destroy();
+    renderer.destroy(); // Idempotent
+
+    expect(deletedTextures).toHaveLength(2); // tile 2D_ARRAY + frame 2D texture
+    expect(deletedFramebuffers).toHaveLength(1);
+    expect(deletedBuffers).toHaveLength(2); // tileBuffer + markBuffer
+    expect(deletedVaos).toHaveLength(2); // tileVertexArray + markVertexArray
+    expect(deletedPrograms).toHaveLength(2); // tileProgram + markProgram
+    expect(fakeOffscreen.width).toBe(0);
+    expect(fakeOffscreen.height).toBe(0);
+    expect(loseContextCalls).toBe(1);
+    expect(lostCount).toBe(0);
+    expect(restoredCount).toBe(0);
   });
 });

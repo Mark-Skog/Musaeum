@@ -27,8 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// Unique identifier for our window subclass callback.
 const SUBCLASS_ID: usize = 0x4D55_5354;
-/// Logical height of the React `TitleBar` component, in CSS pixels.
-const TITLEBAR_HEIGHT_CSS_PX: i32 = 36;
+/// Logical height of the React `TitleBar` component (unified Acrobat-style tab bar), in CSS pixels.
+const TITLEBAR_HEIGHT_CSS_PX: i32 = 40;
 /// Logical height of the top resize hit strip when windowed, in CSS pixels.
 const TOP_RESIZE_BAND_CSS_PX: i32 = 6;
 /// Logical width of top-left and top-right diagonal resize corners, in CSS pixels.
@@ -302,38 +302,81 @@ mod tests {
 
     #[test]
     fn scales_metrics_and_maximized_inset_across_dpis() {
-        assert_eq!(scale_for_dpi(36, 96), 36);
-        assert_eq!(scale_for_dpi(36, 144), 54);
-        assert_eq!(scale_for_dpi(36, 192), 72);
+        assert_eq!(scale_for_dpi(TITLEBAR_HEIGHT_CSS_PX, 96), 40);
+        assert_eq!(scale_for_dpi(TITLEBAR_HEIGHT_CSS_PX, 120), 50);
+        assert_eq!(scale_for_dpi(TITLEBAR_HEIGHT_CSS_PX, 144), 60);
+        assert_eq!(scale_for_dpi(TITLEBAR_HEIGHT_CSS_PX, 192), 80);
         assert_eq!(maximized_top_inset(4, 4), 8);
         assert_eq!(maximized_top_inset(6, 6), 12);
     }
 
     #[test]
     fn classifies_windowed_top_resize_edges_and_caption_band() {
-        // Top-left corner within top 6px band -> HTTOPLEFT
+        // 100% DPI (96): top 6px band (capped to min(8, frame_inset)=8 -> max(6,8)=8px)
         assert_eq!(
             classify_caption_hit(SAMPLE_RECT, 105, 52, 96, 8, false, true),
             HTTOPLEFT
         );
-        // Top-right corner within top 6px band -> HTTOPRIGHT
         assert_eq!(
             classify_caption_hit(SAMPLE_RECT, 1095, 52, 96, 8, false, true),
             HTTOPRIGHT
         );
-        // Top center within top resize band -> HTTOP
         assert_eq!(
             classify_caption_hit(SAMPLE_RECT, 500, 53, 96, 8, false, true),
             HTTOP
         );
-        // Below top resize band inside 36px titlebar -> HTCAPTION
+        // Below top resize band inside 40px titlebar (`50..90`) -> HTCAPTION
         assert_eq!(
-            classify_caption_hit(SAMPLE_RECT, 500, 70, 96, 8, false, true),
+            classify_caption_hit(SAMPLE_RECT, 500, 89, 96, 8, false, true),
             HTCAPTION
         );
-        // Below 36px titlebar -> HTCLIENT
+        // At/below 40px titlebar (`y >= 90`) -> HTCLIENT
         assert_eq!(
-            classify_caption_hit(SAMPLE_RECT, 500, 95, 96, 8, false, true),
+            classify_caption_hit(SAMPLE_RECT, 500, 90, 96, 8, false, true),
+            HTCLIENT
+        );
+
+        // 125% DPI (120): titlebar is 50px (`50..100`), resize band is `scale_for_dpi(6, 120) = 8px`, corner is `18px`
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 117, 57, 120, 10, false, true),
+            HTTOPLEFT
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 1082, 57, 120, 10, false, true),
+            HTTOPRIGHT
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 500, 57, 120, 10, false, true),
+            HTTOP
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 500, 99, 120, 10, false, true),
+            HTCAPTION
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 500, 100, 120, 10, false, true),
+            HTCLIENT
+        );
+
+        // 150% DPI (144): titlebar is 60px (`50..110`), resize band is `scale_for_dpi(6, 144) = 9px`, corner is `21px`
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 120, 58, 144, 12, false, true),
+            HTTOPLEFT
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 1079, 58, 144, 12, false, true),
+            HTTOPRIGHT
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 500, 58, 144, 12, false, true),
+            HTTOP
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 500, 109, 144, 12, false, true),
+            HTCAPTION
+        );
+        assert_eq!(
+            classify_caption_hit(SAMPLE_RECT, 500, 110, 144, 12, false, true),
             HTCLIENT
         );
     }
@@ -346,21 +389,51 @@ mod tests {
             right: 1928,
             bottom: 1048,
         };
-        // At screen y = 0 when maximized (`top + 8`), returns HTCAPTION rather than HTTOP
+        // 100% DPI (96): at screen y = 0..39 when maximized (`top + 8`), returns HTCAPTION rather than HTTOP
         assert_eq!(
             classify_caption_hit(max_rect, 400, 0, 96, 8, true, true),
             HTCAPTION
         );
-        // At screen y = 35 when maximized -> still HTCAPTION
         assert_eq!(
-            classify_caption_hit(max_rect, 400, 35, 96, 8, true, true),
+            classify_caption_hit(max_rect, 400, 39, 96, 8, true, true),
             HTCAPTION
         );
-        // At screen y = 36 when maximized -> HTCLIENT
         assert_eq!(
-            classify_caption_hit(max_rect, 400, 36, 96, 8, true, true),
+            classify_caption_hit(max_rect, 400, 40, 96, 8, true, true),
             HTCLIENT
         );
+
+        // 125% DPI (120, inset 10) and 150% DPI (144, inset 12) when maximized
+        let max_125 = RECT {
+            left: -10,
+            top: -10,
+            right: 1930,
+            bottom: 1050,
+        };
+        assert_eq!(
+            classify_caption_hit(max_125, 400, 49, 120, 10, true, true),
+            HTCAPTION
+        );
+        assert_eq!(
+            classify_caption_hit(max_125, 400, 50, 120, 10, true, true),
+            HTCLIENT
+        );
+
+        let max_150 = RECT {
+            left: -12,
+            top: -12,
+            right: 1932,
+            bottom: 1052,
+        };
+        assert_eq!(
+            classify_caption_hit(max_150, 400, 59, 144, 12, true, true),
+            HTCAPTION
+        );
+        assert_eq!(
+            classify_caption_hit(max_150, 400, 60, 144, 12, true, true),
+            HTCLIENT
+        );
+
         // In borderless fullscreen (`framed == false`), never hijacks client area
         assert_eq!(
             classify_caption_hit(SAMPLE_RECT, 500, 52, 96, 8, false, false),

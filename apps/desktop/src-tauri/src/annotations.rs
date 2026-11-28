@@ -77,6 +77,22 @@ impl CharCache {
         kept.push_back((key, Arc::clone(&layer)));
         Some(layer)
     }
+
+    /// Drops cached character layers belonging to a closed fixed-layout session.
+    pub fn remove_session(&self, session_id: u32) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|((kept_session, _), _)| *kept_session != session_id);
+    }
+
+    /// Drops every cached character layer when no fixed-layout session remains open.
+    pub fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
 }
 
 struct SessionPages<'a> {

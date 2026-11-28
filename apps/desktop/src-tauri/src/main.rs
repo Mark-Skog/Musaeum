@@ -33,10 +33,11 @@ mod taxonomy;
 mod titlebar;
 mod webview2;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use std::time::Duration;
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use options::StartupOptions;
-use session::AppState;
+use session::{AppState, CloseGuard};
 
 /// Tauri's defaults, which `additional_browser_args` would otherwise replace.
 const BASE_FEATURES: &str = "msWebOOUI,msPdfOOUI,msSmartScreenProtection";
@@ -78,6 +79,7 @@ fn main() {
 
     let result = tauri::Builder::default()
         .manage(AppState::new(options))
+        .manage(CloseGuard::default())
         .manage(links::OpenedLinks::default())
         .manage(calibre::ChosenFolders::default())
         .manage(annotations::CharCache::default())
@@ -175,9 +177,11 @@ fn main() {
             shelf::set_reader_setting,
             session::startup_options,
             session::uptime_ms,
+            session::set_window_title,
             session::open_delivery_probe,
             session::open_session,
             session::close_session,
+            session::confirm_window_close,
             session::document_outline,
             session::save_reading_state,
             session::pool_stats,
@@ -194,6 +198,7 @@ fn main() {
             session::bench_fail,
         ])
         .setup(move |app| {
+            webview2::record_ui_thread();
             app.state::<AppState>().shelf.set_app(app.handle().clone());
             let theme = app.state::<AppState>().preferences.current().theme;
             let window =
@@ -209,6 +214,34 @@ fn main() {
             if is_app_mode && let Err(error) = titlebar::install(&window) {
                 eprintln!("custom titlebar setup failed: {error}");
             }
+            if is_app_mode {
+                let close_window = window.clone();
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        let guard = app_handle.state::<CloseGuard>();
+                        if guard.intercept_once() {
+                            api.prevent_close();
+                            let _ = close_window.emit("app-close-requested", ());
+                            let fallback_handle = app_handle.clone();
+                            let fallback_window = close_window.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(Duration::from_millis(850));
+                                let guard = fallback_handle.state::<CloseGuard>();
+                                if guard.confirm() {
+                                    let state = fallback_handle.state::<AppState>();
+                                    state.stop_and_release(&fallback_window);
+                                    fallback_handle.state::<annotations::CharCache>().clear();
+                                    book::close(&fallback_handle.state::<book::BookState>());
+                                    state.release_flow_client();
+                                    state.shelf.set_reading(false);
+                                    let _ = fallback_window.close();
+                                }
+                            });
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!());
@@ -217,11 +250,15 @@ fn main() {
         Ok(app) => app.run(|handle, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 // Stop the workers while the WebView2 buffers they map are still alive.
-                handle.state::<AppState>().stop_current_session();
+                let state = handle.state::<AppState>();
+                state.stop_current_session();
+                state.release_flow_client();
+                book::close(&handle.state::<book::BookState>());
+                handle.state::<annotations::CharCache>().clear();
                 // And the OCR's, with the quotes it was reading.
-                handle.state::<AppState>().ocr.shutdown();
+                state.ocr.shutdown();
                 // And the indexer and the covers, finishing what they are writing.
-                handle.state::<AppState>().shelf.close();
+                state.shelf.close();
             }
         }),
         Err(error) => {

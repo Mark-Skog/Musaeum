@@ -26,7 +26,8 @@ import {
 import type { RegionSelection, Tool } from '../../compositor/annotator';
 import type { ReaderStatus } from '../../compositor/messages';
 import { FixedReader } from '../../fixed/fixed-reader';
-import type { StartupOptions } from '../../protocol';
+import { type SavedReadingState, type StartupOptions } from '../../protocol';
+import { enqueueReaderCloseTask, isAbortError } from '../../reader-session-lock';
 import type { FlowMode, Shortcut } from '../../reader/messages';
 import {
   DEFAULT_STYLE,
@@ -34,6 +35,7 @@ import {
   LINE_HEIGHTS,
   MAX_SIZE,
   MIN_SIZE,
+  THEMES,
   type ReadingStyle,
 } from '../../reader/typography';
 import { invoke } from '@tauri-apps/api/core';
@@ -56,7 +58,16 @@ import {
 } from '../api';
 import { formatName } from '../library/LibraryView';
 import { FlowReader, type Relocation } from './flow-reader';
-import { Inspector, NoteEditor, type PdfAction, type PdfActions, type ScreenRect, SelectionToolbar, UndoToast } from './annotations/AnnotationUi';
+import {
+  Inspector,
+  type InspectorFilterState,
+  NoteEditor,
+  type PdfAction,
+  type PdfActions,
+  type ScreenRect,
+  SelectionToolbar,
+  UndoToast,
+} from './annotations/AnnotationUi';
 import { AnnotationStore, draft, type Entry } from './annotations/store';
 import { type ExchangeControls, useExchange } from '../ExchangeSection';
 import { getLocale, type MessageKey, t, tn, useLocale, useT } from '../i18n';
@@ -64,6 +75,7 @@ import { onEscape, useFocusReturn } from '../focus';
 import { ScrollFrame } from '../OverlayScrollbar';
 import { onMotionChange } from '../preferences/store';
 import type { ExchangeAction, ExchangeOutcome } from '../exchange';
+import { deriveFixedFitMode, type ReaderTabSnapshot, resolveFixedSnapshotZoom } from '../tabs-model';
 
 /** What the reader has selected now, in either kind of book, with its box on the screen. */
 export type ReaderSelection =
@@ -86,6 +98,51 @@ const flowEntry = (view: FlowAnnotationView): Entry => ({ annotation: view.annot
 
 const NAVIGATION = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 const STYLE_SETTING = 'typography';
+const LOADING_DELAY_MS = 120;
+
+const MISSING_FILE_RE =
+  /arquivo deste livro não está mais na pasta|book's file is no longer in its folder|cannot find the file specified|não pode encontrar o arquivo especificado|no such file or directory|os error 2|\benoent\b/i;
+
+export function isMissingBookFileError(message: string): boolean {
+  return MISSING_FILE_RE.test(message);
+}
+
+function fixedStateFromSnapshot(snapshot: ReaderTabSnapshot | undefined): SavedReadingState | null {
+  if (snapshot === undefined || snapshot.layout !== 'fixed' || snapshot.page === undefined) {
+    return null;
+  }
+  const v = snapshot.v ?? snapshot.scrollOffset ?? 0;
+  return {
+    page: Math.max(0, Math.trunc(snapshot.page)),
+    u: snapshot.u ?? 0,
+    v,
+    progress: snapshot.progress ?? 0,
+    mode: snapshot.mode ?? 'paginated',
+    pageTurnAnimation: snapshot.pageTurnAnimation ?? true,
+    zoom: resolveFixedSnapshotZoom(snapshot),
+    spreads: snapshot.spreads ?? 'auto',
+  };
+}
+
+function statusFromSnapshot(snapshot: ReaderTabSnapshot | undefined): ReaderStatus | null {
+  const state = fixedStateFromSnapshot(snapshot);
+  if (state === null || snapshot?.pageCount === undefined || snapshot.pageCount <= 0) {
+    return null;
+  }
+  return {
+    type: 'status',
+    mode: state.mode,
+    animating: state.mode === 'paginated' && state.pageTurnAnimation,
+    animationPreference: state.pageTurnAnimation,
+    spreads: state.spreads,
+    zoom: state.zoom,
+    page: state.page,
+    pageCount: snapshot.pageCount,
+    u: state.u,
+    v: state.v,
+    progress: state.progress,
+  };
+}
 
 /** An entry of a fixed-layout document's table of contents, as the host sends it. */
 export interface OutlineItem {
@@ -292,29 +349,60 @@ function TypographyPanel({
 export interface ReaderViewProps {
   book: BookRow;
   options: StartupOptions;
+  /** Switches focus to the Library (`'home'`) tab while keeping this book's tab open. */
   onBack(): void;
+  /** Closes this book's tab completely (used e.g. from the in-tab error screen). */
+  onCloseTab?(): void;
+  /** Called once an unmounted reader finishes flushing its reading position and closing its session. */
+  onSessionClosed?(): void;
+  /** Saved per-tab reader snapshot to rehydrate immediately without visual jumps or default resets. */
+  snapshot?: ReaderTabSnapshot;
+  /** Exposes synchronous snapshot capture for outgoing tab switches before unmount. */
+  snapshotGetterRef?: React.MutableRefObject<(() => ReaderTabSnapshot | undefined) | null>;
+  /** Called on unmount/back with the latest captured snapshot when available. */
+  onSnapshotCapture?(snapshot: ReaderTabSnapshot): void;
+  /** Exposes an async flush-and-close trigger for graceful window shutdown. */
+  flushRef?: React.MutableRefObject<(() => Promise<void>) | null>;
   probe?: React.MutableRefObject<ReaderProbe | null>;
   /** Where to show the book once it is open, instead of where the reading stopped: a match found in its text. */
   target?: ReaderTarget | null;
+  /** Monotonic sequence for `target`, allowing repeated search hits on an already-open tab. */
+  targetSeq?: number;
+  /** Marks the current `targetSeq` as consumed so later tab switches restore reading state instead. */
+  onTargetReached?(): void;
   /** Opens the Preferences. */
   onPreferences?(): void;
   /** Whether the window is currently in `F11` fullscreen. */
   isFullscreen?: boolean;
   /** Toggles `F11` fullscreen from reader shortcuts (including inside flowing books). */
   onToggleFullscreen?(): void;
+  /** Forwards global tab/app shortcuts captured inside the flowing reader's isolated iframe. */
+  onReaderShortcut?(key: Shortcut): void;
 }
 
 export function ReaderView({
   book,
   options,
   onBack,
+  onCloseTab,
+  onSessionClosed,
+  snapshot,
+  snapshotGetterRef,
+  onSnapshotCapture,
+  flushRef,
   probe,
   target = null,
+  targetSeq = 0,
+  onTargetReached,
   onPreferences,
   isFullscreen = false,
   onToggleFullscreen,
+  onReaderShortcut,
 }: ReaderViewProps): React.JSX.Element {
   const t = useT();
+  const kind = book.layout;
+  const initialSnapshotRef = useRef<ReaderTabSnapshot | undefined>(snapshot);
+  const hasOpenedLiveRef = useRef(false);
   const surface = useRef<HTMLDivElement>(null);
   const fixed = useRef<FixedReader | null>(null);
   const flow = useRef<FlowReader | null>(null);
@@ -329,16 +417,45 @@ export function ReaderView({
   );
   const locale = useLocale();
   useEffect(() => flow.current?.setLanguage(), [locale]);
-  const [status, setStatus] = useState<ReaderStatus | null>(null);
-  const [flowMode, setFlowMode] = useState<FlowMode>('paginated');
-  const [flowAnimated, setFlowAnimated] = useState(true);
-  const [relocation, setRelocation] = useState<Relocation | null>(null);
-  const [saved, setSaved] = useState<FlowPosition | null>(null);
-  const [style, setStyle] = useState<ReadingStyle | null>(null);
+  const [status, setStatus] = useState<ReaderStatus | null>(() =>
+    kind === 'fixed' ? statusFromSnapshot(snapshot) : null,
+  );
+  const [flowMode, setFlowMode] = useState<FlowMode>(() =>
+    kind === 'flow' && snapshot?.layout === 'flow' && snapshot.mode !== undefined ? snapshot.mode : 'paginated',
+  );
+  const [flowAnimated, setFlowAnimated] = useState<boolean>(() =>
+    kind === 'flow' && snapshot?.layout === 'flow' && snapshot.pageTurnAnimation !== undefined
+      ? snapshot.pageTurnAnimation
+      : true,
+  );
+  const [relocation, setRelocation] = useState<Relocation | null>(() =>
+    kind === 'flow' && snapshot?.layout === 'flow' && snapshot.readerCfi != null
+      ? {
+          cfi: snapshot.readerCfi,
+          section: snapshot.section ?? 0,
+          progress: snapshot.progress ?? 0,
+          atStart: false,
+          atEnd: false,
+          reason: 'snapshot',
+        }
+      : null,
+  );
+  const [saved, setSaved] = useState<FlowPosition | null>(() =>
+    kind === 'flow' && snapshot?.layout === 'flow' && snapshot.progress != null
+      ? {
+          locator: (snapshot.locator ?? {}) as FlowPosition['locator'],
+          progress: snapshot.progress,
+          saved: true,
+        }
+      : null,
+  );
+  const [style, setStyle] = useState<ReadingStyle | null>(() =>
+    kind === 'flow' && snapshot?.layout === 'flow' && snapshot.style !== undefined ? snapshot.style : null,
+  );
   const [toc, setToc] = useState<NavPoint[]>([]);
   /** A fixed-layout document's table of contents, from its outline, once it was read. */
   const [outline, setOutline] = useState<OutlineItem[] | null>(null);
-  const [tocOpen, setTocOpen] = useState(false);
+  const [tocOpen, setTocOpen] = useState<boolean>(() => snapshot?.tocOpen ?? false);
   const [link, setLinkState] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
   const setLink = useCallback((href: string | null) => {
@@ -347,7 +464,17 @@ export function ReaderView({
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [showLoading, setShowLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (ready || error !== null) {
+      setShowLoading(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowLoading(true), LOADING_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [ready, error]);
   const store = useMemo(
     () =>
       new AnnotationStore(
@@ -397,7 +524,7 @@ export function ReaderView({
   const [selection, setSelection] = useState<ReaderSelection | null>(null);
   const [activeMark, setActiveMark] = useState<{ uuid: string; rect: ScreenRect } | null>(null);
   const [editing, setEditing] = useState<Entry | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState<boolean>(() => snapshot?.annotationsOpen ?? false);
   // A side panel that closes with the focus in it gives the focus back to its button.
   useFocusReturn(tocOpen, () => document.getElementById('toc-toggle')?.focus());
   useFocusReturn(panelOpen, () => document.getElementById('annotations-toggle')?.focus());
@@ -405,9 +532,170 @@ export function ReaderView({
   const lastColor = useRef('yellow');
   const closing = useRef(false);
   /** What a press on a page of a fixed layout does, and whether lines snap. */
-  const [tool, setTool] = useState<Tool>('text');
-  const [snap, setSnap] = useState(true);
-  const kind = book.layout;
+  const [tool, setTool] = useState<Tool>(() =>
+    kind === 'fixed' && snapshot?.layout === 'fixed' && snapshot.tool !== undefined ? snapshot.tool : 'text',
+  );
+  const [snap, setSnap] = useState<boolean>(() =>
+    kind === 'fixed' && snapshot?.layout === 'fixed' && snapshot.snap !== undefined ? snapshot.snap : true,
+  );
+  const initialInspectorState = useMemo<Partial<InspectorFilterState>>(
+    () => ({
+      query: snapshot?.annotationSearch ?? '',
+      colors: snapshot?.annotationFilterColors ? [...snapshot.annotationFilterColors] : [],
+      kind: snapshot?.annotationFilterKind ?? 'all',
+      orphans: snapshot?.annotationFilterOrphans ?? false,
+    }),
+    // Initialized once per mounted tab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const annotFilterRef = useRef<InspectorFilterState>({
+    query: initialInspectorState.query ?? '',
+    colors: initialInspectorState.colors ?? [],
+    kind: initialInspectorState.kind ?? 'all',
+    orphans: initialInspectorState.orphans ?? false,
+  });
+  const handleInspectorStateChange = useCallback((next: InspectorFilterState) => {
+    annotFilterRef.current = next;
+  }, []);
+
+  const liveUiRef = useRef({ tocOpen, panelOpen, tool, snap });
+  liveUiRef.current = { tocOpen, panelOpen, tool, snap };
+  const lastFixedReadingRef = useRef<SavedReadingState | null>(fixedStateFromSnapshot(snapshot));
+  const lastPageCountRef = useRef<number | undefined>(
+    snapshot?.layout === 'fixed' ? snapshot.pageCount : undefined,
+  );
+  const lastFlowStateRef = useRef<{
+    mode: FlowMode;
+    animated: boolean;
+    readerCfi: string | null;
+    section: number | undefined;
+    progress: number | null;
+    locator: Readonly<Record<string, unknown>> | null;
+    style: ReadingStyle | undefined;
+  }>({
+    mode: flowMode,
+    animated: flowAnimated,
+    readerCfi: relocation?.cfi ?? (snapshot?.layout === 'flow' ? (snapshot.readerCfi ?? null) : null),
+    section: relocation?.section ?? (snapshot?.layout === 'flow' ? snapshot.section : undefined),
+    progress: saved?.progress ?? relocation?.progress ?? (snapshot?.layout === 'flow' ? (snapshot.progress ?? null) : null),
+    locator: (saved?.locator as Readonly<Record<string, unknown>> | undefined) ?? (snapshot?.layout === 'flow' ? (snapshot.locator ?? null) : null),
+    style: style ?? (snapshot?.layout === 'flow' ? snapshot.style : undefined),
+  });
+  lastFlowStateRef.current = {
+    mode: flowMode,
+    animated: flowAnimated,
+    readerCfi: relocation?.cfi ?? lastFlowStateRef.current.readerCfi,
+    section: relocation?.section ?? lastFlowStateRef.current.section,
+    progress: saved?.progress ?? relocation?.progress ?? lastFlowStateRef.current.progress,
+    locator: (saved?.locator as Readonly<Record<string, unknown>> | undefined) ?? lastFlowStateRef.current.locator,
+    style: style ?? lastFlowStateRef.current.style,
+  };
+
+  const buildCurrentSnapshot = useCallback((): ReaderTabSnapshot | undefined => {
+    const ui = liveUiRef.current;
+    const filter = annotFilterRef.current;
+    const panelFields = {
+      tocOpen: ui.tocOpen,
+      annotationsOpen: ui.panelOpen,
+      annotationSearch: filter.query,
+      annotationFilterColors: [...filter.colors],
+      annotationFilterKind: filter.kind,
+      annotationFilterOrphans: filter.orphans,
+      capturedAt: Date.now(),
+    };
+
+    if (!hasOpenedLiveRef.current) {
+      // Never overwrite an existing snapshot with default `page = 0` or `zoom = 1` if the user
+      // switches away while the reader is still opening asynchronously.
+      const prior = initialSnapshotRef.current;
+      if (prior !== undefined) {
+        return {
+          ...prior,
+          ...(kind === 'fixed' ? { tool: ui.tool, snap: ui.snap } : {}),
+          ...panelFields,
+        };
+      }
+      const anyPanelChanged =
+        ui.tocOpen ||
+        ui.panelOpen ||
+        filter.query !== '' ||
+        filter.colors.length > 0 ||
+        filter.kind !== 'all' ||
+        filter.orphans ||
+        (kind === 'fixed' && (ui.tool !== 'text' || !ui.snap));
+      if (!anyPanelChanged) {
+        return undefined;
+      }
+      return {
+        layout: kind,
+        ...(kind === 'fixed' ? { tool: ui.tool, snap: ui.snap } : {}),
+        ...panelFields,
+      };
+    }
+
+    if (kind === 'fixed') {
+      const liveFixed = fixed.current?.currentReadingState() ?? lastFixedReadingRef.current;
+      if (liveFixed === null) {
+        return initialSnapshotRef.current !== undefined
+          ? { ...initialSnapshotRef.current, tool: ui.tool, snap: ui.snap, ...panelFields }
+          : undefined;
+      }
+      return {
+        layout: 'fixed',
+        mode: liveFixed.mode,
+        pageTurnAnimation: liveFixed.pageTurnAnimation,
+        page: liveFixed.page,
+        pageCount: lastPageCountRef.current,
+        u: liveFixed.u,
+        v: liveFixed.v,
+        scrollOffset: liveFixed.v,
+        zoom: liveFixed.zoom,
+        fitMode: deriveFixedFitMode(liveFixed.mode, liveFixed.zoom),
+        spreads: liveFixed.spreads,
+        tool: ui.tool,
+        snap: ui.snap,
+        progress: liveFixed.progress,
+        ...panelFields,
+      };
+    }
+
+    const liveFlow = lastFlowStateRef.current;
+    const liveReader = flow.current;
+    const readerCfi = liveReader?.relocation?.cfi ?? liveFlow.readerCfi;
+    const section = liveReader?.relocation?.section ?? liveFlow.section;
+    const progress =
+      liveReader?.savedPosition?.progress ??
+      liveReader?.relocation?.progress ??
+      liveFlow.progress;
+    const locator =
+      (liveReader?.savedPosition?.locator as Readonly<Record<string, unknown>> | undefined) ??
+      liveFlow.locator;
+    return {
+      layout: 'flow',
+      mode: liveReader?.currentMode ?? liveFlow.mode,
+      pageTurnAnimation: liveReader?.isAnimated ?? liveFlow.animated,
+      readerCfi,
+      section,
+      progress,
+      locator,
+      style: liveReader?.currentStyle ?? liveFlow.style,
+      ...panelFields,
+    };
+  }, [kind]);
+
+  useEffect(() => {
+    if (snapshotGetterRef === undefined) {
+      return;
+    }
+    snapshotGetterRef.current = buildCurrentSnapshot;
+    return () => {
+      if (snapshotGetterRef.current === buildCurrentSnapshot) {
+        snapshotGetterRef.current = null;
+      }
+    };
+  }, [snapshotGetterRef, buildCurrentSnapshot]);
+
   const [pdfBusy, setPdfBusy] = useState<PdfAction | null>(null);
   const [pdfReport, setPdfReport] = useState<{ text: string; failed: boolean } | null>(null);
   const isPdf = kind === 'fixed' && book.format.toLowerCase() === 'pdf';
@@ -509,18 +797,69 @@ export function ReaderView({
   }, [probe, kind, book.documentId, ready, error, outline, entries, selection, isPdf, pdfAction, pdfReport, exchange.run, exchange.report]);
   useEffect(updateProbe, [updateProbe]);
 
-  // The typography chosen before, for every flowing book.
+  // The typography chosen before, for every flowing book (unless already restored from the tab snapshot).
   useEffect(() => {
-    if (kind !== 'flow') {
+    if (kind !== 'flow' || style !== null) {
       return;
     }
+    let active = true;
     void api
       .setting<unknown>(STYLE_SETTING)
-      .then((value) => setStyle(isReadingStyle(value) ? value : DEFAULT_STYLE))
-      .catch(() => setStyle(DEFAULT_STYLE));
-  }, [kind]);
+      .then((value) => {
+        if (active) {
+          setStyle(isReadingStyle(value) ? value : DEFAULT_STYLE);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setStyle(DEFAULT_STYLE);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [kind, style]);
 
   const onShortcut = useRef<(key: Shortcut) => void>(() => {});
+  const onSessionClosedRef = useRef(onSessionClosed);
+  onSessionClosedRef.current = onSessionClosed;
+  const onSnapshotCaptureRef = useRef(onSnapshotCapture);
+  onSnapshotCaptureRef.current = onSnapshotCapture;
+  const buildSnapshotRef = useRef(buildCurrentSnapshot);
+  buildSnapshotRef.current = buildCurrentSnapshot;
+  const onTargetReachedRef = useRef(onTargetReached);
+  onTargetReachedRef.current = onTargetReached;
+  const onReaderShortcutRef = useRef(onReaderShortcut);
+  onReaderShortcutRef.current = onReaderShortcut;
+
+  const flushAndClose = useCallback(async (): Promise<void> => {
+    if (closing.current) {
+      return;
+    }
+    const captured = buildSnapshotRef.current();
+    if (captured !== undefined) {
+      onSnapshotCaptureRef.current?.(captured);
+    }
+    closing.current = true;
+    const reader = fixed.current ?? flow.current;
+    fixed.current = null;
+    flow.current = null;
+    if (reader !== null) {
+      await enqueueReaderCloseTask(() => reader.close());
+    }
+  }, []);
+
+  useEffect(() => {
+    if (flushRef === undefined) {
+      return;
+    }
+    flushRef.current = flushAndClose;
+    return () => {
+      if (flushRef.current === flushAndClose) {
+        flushRef.current = null;
+      }
+    };
+  }, [flushRef, flushAndClose]);
 
   // Opening and closing the document.
   useEffect(() => {
@@ -531,31 +870,66 @@ export function ReaderView({
     let cancelled = false;
     const abort = new AbortController();
     closing.current = false;
+    const snapAtOpen = initialSnapshotRef.current;
+
     if (kind === 'fixed') {
       const canvas = document.createElement('canvas');
       canvas.className = 'reader-canvas';
       container.append(canvas);
+      const initialFixed = fixedStateFromSnapshot(snapAtOpen);
       FixedReader.open({
         options,
         canvas,
         document: book.path,
+        documentId: book.documentId,
+        ...(initialFixed !== null ? { initialState: initialFixed } : {}),
         shortcuts: false,
         bench: null,
         signal: abort.signal,
-        onStatus: setStatus,
-        onFatal: (message) => setError(message),
+        onStatus: (nextStatus) => {
+          if (cancelled) {
+            return;
+          }
+          hasOpenedLiveRef.current = true;
+          lastPageCountRef.current = nextStatus.pageCount;
+          lastFixedReadingRef.current = {
+            page: nextStatus.page,
+            u: nextStatus.u,
+            v: nextStatus.v,
+            progress: nextStatus.progress,
+            mode: nextStatus.mode,
+            pageTurnAnimation: nextStatus.animationPreference,
+            zoom: nextStatus.zoom,
+            spreads: nextStatus.spreads,
+          };
+          setStatus(nextStatus);
+        },
+        onFatal: (message) => {
+          if (!cancelled) {
+            setError(message);
+          }
+        },
         onSelection: (chosen) => {
+          if (cancelled) {
+            return;
+          }
           const box = canvas.getBoundingClientRect();
           const rect = chosen.rect === null ? null : { ...chosen.rect, x: chosen.rect.x + box.left, y: chosen.rect.y + box.top };
           setActiveMark(null);
           setSelection(chosen.spans.length === 0 ? null : { kind: 'fixed', spans: chosen.spans, text: chosen.text, rect });
         },
         onMarkClick: (id, rect) => {
+          if (cancelled) {
+            return;
+          }
           const box = canvas.getBoundingClientRect();
           setSelection(null);
           setActiveMark({ uuid: id, rect: { ...rect, x: rect.x + box.left, y: rect.y + box.top } });
         },
         onRegion: (region, rect) => {
+          if (cancelled) {
+            return;
+          }
           const box = canvas.getBoundingClientRect();
           setActiveMark(null);
           setSelection(
@@ -566,6 +940,9 @@ export function ReaderView({
           if (region !== null) {
             // Read at once, so a copy has it by the time it is asked for.
             void readRegion(region).then((read) => {
+              if (cancelled) {
+                return;
+              }
               setSelection((now) =>
                 now?.kind === 'region' && now.region === region ? { ...now, text: read?.text ?? '', source: read?.source ?? null, reading: false } : now,
               );
@@ -575,13 +952,30 @@ export function ReaderView({
       })
         .then(async (reader) => {
           if (cancelled) {
-            await reader.close();
+            await enqueueReaderCloseTask(() => reader.close());
             return;
           }
           fixed.current = reader;
           await reader.ready();
+          if (cancelled) {
+            return;
+          }
+          hasOpenedLiveRef.current = true;
           const session = reader.session;
           if (session !== null) {
+            lastPageCountRef.current = session.pageCount;
+            const restoredReading = reader.currentReadingState();
+            if (restoredReading !== null) {
+              lastFixedReadingRef.current = restoredReading;
+            }
+            const wantedTool = liveUiRef.current.tool;
+            const wantedSnap = liveUiRef.current.snap;
+            if (wantedTool !== 'text') {
+              reader.setTool(wantedTool);
+            }
+            if (!wantedSnap) {
+              reader.setSnap(wantedSnap);
+            }
             api
               .fixedAnnotations(session.id)
               .then((views) => {
@@ -589,57 +983,138 @@ export function ReaderView({
                   store.load(views.map(fixedEntry));
                 }
               })
-              .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
+              .catch((reason: unknown) => {
+                if (!cancelled) {
+                  setNotice(t('reader.annotationsUnread', { reason: String(reason) }));
+                }
+              });
             invoke<OutlineItem[]>('document_outline', { session: session.id })
               .then((items) => {
                 if (!cancelled) {
                   setOutline(items);
                 }
               })
-              .catch(() => setOutline([]));
+              .catch(() => {
+                if (!cancelled) {
+                  setOutline([]);
+                }
+              });
           }
           setReady(true);
         })
         .catch((reason: unknown) => {
-          if (!cancelled) {
+          if (!cancelled && !isAbortError(reason)) {
             setError(String(reason instanceof Error ? reason.message : reason));
           }
         });
+
       return () => {
+        const captured = buildSnapshotRef.current();
+        if (captured !== undefined) {
+          onSnapshotCaptureRef.current?.(captured);
+        }
         cancelled = true;
         abort.abort();
         const reader = fixed.current;
         fixed.current = null;
         canvas.remove();
-        void reader?.close();
+        if (reader !== null) {
+          void enqueueReaderCloseTask(() => reader.close()).then(() => onSessionClosedRef.current?.());
+        }
       };
     }
-    FlowReader.open(container, book.documentId, { mode: 'paginated', animated: true, style: style ?? DEFAULT_STYLE }, {
-      relocate: setRelocation,
-      saved: setSaved,
-      shortcut: (key) => onShortcut.current(key),
-      link: setLink,
-      layout: () => {},
-      error: (message) => setError(message),
-      selection: (chosen) => {
-        setActiveMark(null);
-        setSelection(
-          chosen.start === null || chosen.end === null
-            ? null
-            : { kind: 'flow', start: chosen.start, end: chosen.end, text: chosen.text, rect: chosen.rect },
-        );
+
+    const flowRestore =
+      snapAtOpen?.layout === 'flow'
+        ? {
+            readerCfi: snapAtOpen.readerCfi,
+            progress: snapAtOpen.progress,
+            mode: snapAtOpen.mode,
+            animated: snapAtOpen.pageTurnAnimation,
+            style: snapAtOpen.style ?? style ?? DEFAULT_STYLE,
+          }
+        : undefined;
+
+    FlowReader.open(
+      container,
+      book.documentId,
+      { mode: 'paginated', animated: true, style: style ?? DEFAULT_STYLE },
+      {
+        relocate: (nextReloc) => {
+          if (cancelled) {
+            return;
+          }
+          hasOpenedLiveRef.current = true;
+          lastFlowStateRef.current = {
+            ...lastFlowStateRef.current,
+            readerCfi: nextReloc.cfi,
+            section: nextReloc.section,
+            progress: nextReloc.progress,
+          };
+          setRelocation(nextReloc);
+        },
+        saved: (nextSaved) => {
+          if (cancelled) {
+            return;
+          }
+          lastFlowStateRef.current = {
+            ...lastFlowStateRef.current,
+            progress: nextSaved.progress,
+            locator: nextSaved.locator,
+          };
+          setSaved(nextSaved);
+        },
+        shortcut: (key) => {
+          if (!cancelled) {
+            onShortcut.current(key);
+          }
+        },
+        link: (href) => {
+          if (!cancelled) {
+            setLink(href);
+          }
+        },
+        layout: () => {},
+        error: (message) => {
+          if (!cancelled) {
+            setError(message);
+          }
+        },
+        selection: (chosen) => {
+          if (cancelled) {
+            return;
+          }
+          setActiveMark(null);
+          setSelection(
+            chosen.start === null || chosen.end === null
+              ? null
+              : { kind: 'flow', start: chosen.start, end: chosen.end, text: chosen.text, rect: chosen.rect },
+          );
+        },
+        markClick: (id, rect) => {
+          if (cancelled) {
+            return;
+          }
+          setSelection(null);
+          setActiveMark({ uuid: id, rect });
+        },
       },
-      markClick: (id, rect) => {
-        setSelection(null);
-        setActiveMark({ uuid: id, rect });
-      },
-    })
+      { restore: flowRestore, signal: abort.signal },
+    )
       .then(async (reader) => {
         if (cancelled) {
-          await reader.close();
+          await enqueueReaderCloseTask(() => reader.close());
           return;
         }
         flow.current = reader;
+        hasOpenedLiveRef.current = true;
+        lastFlowStateRef.current = {
+          ...lastFlowStateRef.current,
+          mode: reader.currentMode,
+          animated: reader.isAnimated,
+          style: reader.currentStyle,
+          readerCfi: reader.relocation?.cfi ?? lastFlowStateRef.current.readerCfi ?? reader.info.saved?.readerCfi ?? null,
+        };
         setFlowMode(reader.currentMode);
         setFlowAnimated(reader.isAnimated);
         setToc(reader.info.toc);
@@ -652,19 +1127,30 @@ export function ReaderView({
               store.load(views.map(flowEntry));
             }
           })
-          .catch((reason: unknown) => setNotice(t('reader.annotationsUnread', { reason: String(reason) })));
+          .catch((reason: unknown) => {
+            if (!cancelled) {
+              setNotice(t('reader.annotationsUnread', { reason: String(reason) }));
+            }
+          });
       })
       .catch((reason: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && !isAbortError(reason)) {
           setError(String(reason instanceof Error ? reason.message : reason));
         }
       });
+
     return () => {
+      const captured = buildSnapshotRef.current();
+      if (captured !== undefined) {
+        onSnapshotCaptureRef.current?.(captured);
+      }
       cancelled = true;
       abort.abort();
       const reader = flow.current;
       flow.current = null;
-      void reader?.close();
+      if (reader !== null) {
+        void enqueueReaderCloseTask(() => reader.close()).then(() => onSessionClosedRef.current?.());
+      }
     };
     // The style only matters for opening: later changes go to the open reader.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -673,13 +1159,14 @@ export function ReaderView({
   useEffect(updateProbe, [ready, error, updateProbe]);
 
   // A match found in the book's text, shown once the book is open: on a page, at its word; in a
-  // flowing book, at the very place. Gone to once, so the person can read on from there.
-  const reached = useRef(false);
+  // flowing book, at the very place. Gone to once per requested target, so the person can read on.
+  const reachedSeq = useRef(-1);
   useEffect(() => {
-    if (!ready || target === null || reached.current) {
+    if (!ready || target === null || reachedSeq.current === targetSeq) {
       return;
     }
-    reached.current = true;
+    reachedSeq.current = targetSeq;
+    onTargetReachedRef.current?.();
     if (target.kind === 'page') {
       const session = fixed.current?.session;
       const page = target.page;
@@ -699,7 +1186,7 @@ export function ReaderView({
         flow.current?.focus();
       })
       .catch((reason: unknown) => setNotice(t('reader.matchUnshown', { reason: String(reason) })));
-  }, [ready, target]);
+  }, [ready, target, targetSeq]);
 
   // The reader draws what the store has, every time it changes.
   useEffect(() => {
@@ -869,16 +1356,18 @@ export function ReaderView({
   }, []);
 
   const back = useCallback(async () => {
-    if (closing.current) {
-      return;
-    }
-    closing.current = true;
-    const reader = fixed.current ?? flow.current;
-    fixed.current = null;
-    flow.current = null;
-    await reader?.close();
+    await flushAndClose();
     onBack();
-  }, [onBack]);
+  }, [flushAndClose, onBack]);
+
+  const closeCurrentTab = useCallback(async () => {
+    await flushAndClose();
+    if (onCloseTab !== undefined) {
+      onCloseTab();
+    } else {
+      onBack();
+    }
+  }, [flushAndClose, onCloseTab, onBack]);
 
   const turn = useCallback(
     (step: 1 | -1) => {
@@ -914,6 +1403,9 @@ export function ReaderView({
           return;
         case 'fullscreen':
           onToggleFullscreen?.();
+          return;
+        default:
+          onReaderShortcutRef.current?.(key);
           return;
       }
     },
@@ -1201,7 +1693,7 @@ export function ReaderView({
             </nav>
           </ScrollFrame>
         ) : null}
-        <div ref={surface} className="reader-surface" />
+            <div ref={surface} className={ready ? 'reader-surface is-ready' : 'reader-surface'} style={kind === 'flow' && style !== null ? { background: THEMES[style.theme].background } : undefined} />
         {panelOpen ? (
           <Inspector
             documentId={book.documentId}
@@ -1214,16 +1706,44 @@ export function ReaderView({
             onLink={setLink}
             pdf={pdfActions}
             exchange={exchange}
+            initialState={initialInspectorState}
+            onStateChange={handleInspectorStateChange}
           />
         ) : null}
-        {!ready && error === null ? <div className="reader-loading" role="status" aria-busy="true">{t('reader.opening')}</div> : null}
+        {!ready && error === null ? (
+          <div
+            className="reader-loading"
+            role="status"
+            aria-busy="true"
+            style={kind === 'flow' && style !== null ? { background: THEMES[style.theme].background } : undefined}
+          >
+            {showLoading ? t('reader.opening') : null}
+          </div>
+        ) : null}
         {error !== null ? (
           <div className="reader-error" role="alert">
-            <p>{t('reader.failed')}</p>
-            <p className="error-detail">{error}</p>
-            <Button className="button" onPress={() => void back()}>
-              {t('reader.backToLibrary')}
-            </Button>
+            {isMissingBookFileError(error) ? (
+              <>
+                <p>{t('reader.missingFile.title')}</p>
+                <p className="error-detail">{t('reader.missingFile.detail')}</p>
+                <p className="error-detail">{book.path}</p>
+              </>
+            ) : (
+              <>
+                <p>{t('reader.failed')}</p>
+                <p className="error-detail">{error}</p>
+              </>
+            )}
+            <div className="reader-error-actions">
+              {onCloseTab !== undefined ? (
+                <Button id="close-error-tab" className="button primary" onPress={() => void closeCurrentTab()}>
+                  {t('reader.closeTab')}
+                </Button>
+              ) : null}
+              <Button className="button" onPress={() => void back()}>
+                {t('reader.backToLibrary')}
+              </Button>
+            </div>
           </div>
         ) : null}
         {kind === 'flow' && relocation !== null ? (

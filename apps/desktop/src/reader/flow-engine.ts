@@ -394,7 +394,29 @@ export class FlowEngine {
 
   /** A key pressed in the reader: the book's own keys here, the app's passed up. */
   onKey(event: KeyboardEvent): void {
-    if (event.ctrlKey || event.altKey || event.metaKey) {
+    if (event.ctrlKey && !event.altKey && !event.metaKey) {
+      let ctrlShortcut: Shortcut | null = null;
+      if (event.key === 'Tab') {
+        ctrlShortcut = event.shiftKey ? 'prev-tab' : 'next-tab';
+      } else if (!event.shiftKey && (event.key === 'w' || event.key === 'W' || event.key === 'F4')) {
+        ctrlShortcut = 'close-tab';
+      } else if (!event.shiftKey && event.key === ',') {
+        ctrlShortcut = 'preferences';
+      } else if (!event.shiftKey) {
+        const digit = /^[1-9]$/.test(event.key)
+          ? event.key
+          : (/^Digit([1-9])$/.exec(event.code ?? '')?.[1] ?? null);
+        if (digit !== null) {
+          ctrlShortcut = `tab-${digit}` as Shortcut;
+        }
+      }
+      if (ctrlShortcut !== null) {
+        event.preventDefault();
+        this.send({ type: 'shortcut', key: ctrlShortcut });
+      }
+      return;
+    }
+    if (event.altKey || event.metaKey) {
       return;
     }
     const shortcut: Shortcut | null =

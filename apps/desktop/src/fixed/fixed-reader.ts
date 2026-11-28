@@ -26,6 +26,7 @@ import {
   TILE_BYTES,
 } from '../protocol';
 import { RingPump } from '../ring-pump';
+import { createAbortError, withReaderSessionLock } from '../reader-session-lock';
 import { createSabRing, SabRingProducer } from '../sab-ring';
 import { SharedBufferInbox, type WebviewApi } from '../shared-buffer-inbox';
 import { isMotionReduced } from '../app/preferences/store';
@@ -79,6 +80,10 @@ export interface FixedReaderConfig {
   /** A canvas never used before: its drawing goes to the compositor worker for good. */
   canvas: HTMLCanvasElement;
   document: string;
+  /** Optional library document id so moved/deleted files report a clear missing-file error. */
+  documentId?: number | null;
+  /** Optional in-memory tab snapshot restored immediately before the first frame draws. */
+  initialState?: SavedReadingState | null;
   /** Whether the keys C and A switch the mode and the animation here, as in the page of Phase 2. */
   shortcuts: boolean;
   /** The benchmark's own extras, or null in the app. */
@@ -140,28 +145,6 @@ function inbox(): SharedBufferInbox | null {
 /** The delivery plan, found once per run of the app: the runtime does not change in between. */
 let knownPlan: { evidence: DeliveryEvidence; plan: DeliveryPlan } | null = null;
 
-/**
- * Serializes host shared-buffer probing and session opening so concurrent `FixedReader.open`
- * calls (such as React `StrictMode` double-mounts or rapid book switches) never interleave
- * buffers in `sharedInbox` or spawn overlapping worker pools.
- */
-let hostOpenQueue: Promise<void> = Promise.resolve();
-
-function withHostOpenLock<T>(work: () => Promise<T>): Promise<T> {
-  const run = hostOpenQueue.then(work, work);
-  hostOpenQueue = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-function abortError(): Error {
-  const error = new Error('The document open was cancelled');
-  error.name = 'AbortError';
-  return error;
-}
-
 /** Tries everything the choice of path depends on, on this runtime, right now. */
 async function gatherDeliveryEvidence(
   worker: Worker,
@@ -198,25 +181,31 @@ async function gatherDeliveryEvidence(
 
 async function openOnPath(
   document: string,
+  documentId: number | null | undefined,
   path: DeliveryPath,
   workers: number,
   received: SharedBufferInbox | null,
 ): Promise<OpenedSession> {
   let session: SessionInfo;
+  const openArgs: Record<string, unknown> = { document, delivery: path, workers };
+  if (documentId !== undefined && documentId !== null) {
+    openArgs.documentId = documentId;
+  }
   try {
     session = await invoke<SessionInfo>('open_session', {
-      args: { document, delivery: path, workers },
+      args: openArgs,
     });
   } catch (error) {
     const failure = error as OpenSessionError;
     throw failure.deliveryFailed
-      ? new DeliveryPathFailure(failure.message)
-      : new Error(failure.message);
+      ? new DeliveryPathFailure(failure.message ?? String(error))
+      : new Error(failure.message ?? String(error));
   }
   if (path === 'a') {
     return { session, buffers: null };
   }
   if (received === null) {
+    await invoke('close_session', { session: session.id }).catch(() => {});
     throw new DeliveryPathFailure('chrome.webview is missing');
   }
   try {
@@ -226,6 +215,7 @@ async function openOnPath(
     ]);
     return { session, buffers: { ring, slab } };
   } catch (error) {
+    await invoke('close_session', { session: session.id }).catch(() => {});
     throw new DeliveryPathFailure(error instanceof Error ? error.message : String(error));
   }
 }
@@ -233,13 +223,14 @@ async function openOnPath(
 /** Walks down the plan until a path opens, recording every path that failed on the way. */
 async function openFirstWorkingPath(
   document: string,
+  documentId: number | null | undefined,
   plan: DeliveryPlan,
   workers: number,
   received: SharedBufferInbox | null,
 ): Promise<OpenedSession> {
   for (const path of plan.candidates) {
     try {
-      return await openOnPath(document, path, workers, received);
+      return await openOnPath(document, documentId, path, workers, received);
     } catch (error) {
       if (!(error instanceof DeliveryPathFailure)) {
         throw error;
@@ -365,6 +356,9 @@ export class FixedReader {
   private readonly listeners = new AbortController();
   private pump: RingPump | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private mainRafId = 0;
+  private transferredOffscreen = false;
+  private workerDestroyed = false;
   private compositorReady = false;
   private readyWaiters: (() => void)[] = [];
   private flushWaiters: (() => void)[] = [];
@@ -385,7 +379,7 @@ export class FixedReader {
   /** Opens a document. Rejects if no delivery path can carry its tiles or the file is not one. */
   static async open(config: FixedReaderConfig): Promise<FixedReader> {
     if (config.signal?.aborted) {
-      throw abortError();
+      throw createAbortError();
     }
     const worker = new Worker(new URL('../compositor/worker.ts', import.meta.url), {
       type: 'module',
@@ -401,7 +395,9 @@ export class FixedReader {
   }
 
   send(message: ToWorker, transfer: Transferable[] = []): void {
-    this.worker.postMessage(message, transfer);
+    if (!this.workerDestroyed) {
+      this.worker.postMessage(message, transfer);
+    }
   }
 
   status(): ReaderStatus | null {
@@ -410,6 +406,26 @@ export class FixedReader {
 
   saved(): SavedReadingState[] {
     return this.savedStates.slice();
+  }
+
+  /** Most recent reading state known on the main thread (live frame status, flushed save, or initial state). */
+  currentReadingState(): SavedReadingState | null {
+    if (this.lastStatus !== null) {
+      return {
+        page: this.lastStatus.page,
+        u: this.lastStatus.u,
+        v: this.lastStatus.v,
+        progress: this.lastStatus.progress,
+        mode: this.lastStatus.mode,
+        pageTurnAnimation: this.lastStatus.animationPreference,
+        zoom: this.lastStatus.zoom,
+        spreads: this.lastStatus.spreads,
+      };
+    }
+    if (this.savedStates.length > 0) {
+      return this.savedStates[this.savedStates.length - 1];
+    }
+    return this.config.initialState ?? this.session?.readingState ?? null;
   }
 
   inspect(): Promise<Inspection> {
@@ -518,16 +534,18 @@ export class FixedReader {
     // Listening starts before the host is asked to post anything.
     const received = inbox();
     const selectionStarted = performance.now();
-    const { evidence, plan, session, buffers } = await withHostOpenLock(async () => {
+    const { evidence, plan, session, buffers } = await withReaderSessionLock(async () => {
       if (config.signal?.aborted) {
-        throw abortError();
+        throw createAbortError();
       }
       let nextEvidence: DeliveryEvidence;
       let nextPlan: DeliveryPlan;
+      let probedNow = false;
       if (knownPlan !== null && bench === null) {
         nextEvidence = knownPlan.evidence;
         nextPlan = { ...knownPlan.plan, rejected: [] };
       } else {
+        probedNow = received !== null && options.delivery !== 'a';
         nextEvidence = await gatherDeliveryEvidence(worker, received, options);
         nextPlan = planDelivery(options.delivery, nextEvidence);
         knownPlan = {
@@ -536,17 +554,21 @@ export class FixedReader {
         };
       }
       if (config.signal?.aborted) {
-        throw abortError();
+        if (probedNow) {
+          await invoke('close_session', { session: null }).catch(() => {});
+        }
+        throw createAbortError();
       }
       const opened = await openFirstWorkingPath(
         config.document,
+        config.documentId,
         nextPlan,
         options.workers,
         received,
       );
       if (config.signal?.aborted) {
         await invoke('close_session', { session: opened.session.id }).catch(() => {});
-        throw abortError();
+        throw createAbortError();
       }
       return {
         evidence: nextEvidence,
@@ -586,6 +608,7 @@ export class FixedReader {
 
     const size = devicePixels(canvas);
     const offscreen = canvas.transferControlToOffscreen();
+    this.transferredOffscreen = true;
     const direct = session.delivery === 'c' ? buffers : null;
     const tileBudgetBytes =
       options.tileBudgetMb !== null
@@ -593,24 +616,26 @@ export class FixedReader {
         : options.gpuLayers !== null
           ? options.gpuLayers * TILE_BYTES
           : null;
+    const initMessage: ToWorker = {
+      type: 'init',
+      canvas: offscreen,
+      width: size.width,
+      height: size.height,
+      session,
+      ring,
+      direct: direct !== null ? { slab: direct.slab, ring: direct.ring } : null,
+      // The compositor plays scripted scenarios, and the memory scenario is not one of those.
+      bench: measuringMemory ? null : bench,
+      devicePixelRatio,
+      comfortableScale: bench?.zoom ?? 1.5 * devicePixelRatio,
+      prefersReducedMotion: isMotionReduced(),
+      screenWidth: Math.round(screen.width * devicePixelRatio),
+      screenHeight: Math.round(screen.height * devicePixelRatio),
+      tileBudgetBytes,
+      ...(config.initialState !== undefined ? { initialState: config.initialState } : {}),
+    };
     this.send(
-      {
-        type: 'init',
-        canvas: offscreen,
-        width: size.width,
-        height: size.height,
-        session,
-        ring,
-        direct: direct !== null ? { slab: direct.slab, ring: direct.ring } : null,
-        // The compositor plays scripted scenarios, and the memory scenario is not one of those.
-        bench: measuringMemory ? null : bench,
-        devicePixelRatio,
-        comfortableScale: bench?.zoom ?? 1.5 * devicePixelRatio,
-        prefersReducedMotion: isMotionReduced(),
-        screenWidth: Math.round(screen.width * devicePixelRatio),
-        screenHeight: Math.round(screen.height * devicePixelRatio),
-        tileBudgetBytes,
-      },
+      initMessage,
       direct !== null ? [offscreen, direct.slab, direct.ring] : [offscreen],
     );
 
@@ -630,19 +655,23 @@ export class FixedReader {
 
     let lastFrame = 0;
     const onAnimationFrame = (now: number): void => {
+      this.mainRafId = 0;
+      if (this.finished) {
+        return;
+      }
       if (lastFrame > 0) {
         this.mainFrameIntervals.add(now - lastFrame);
       }
       lastFrame = now;
       this.pump?.poll();
       if (!this.finished) {
-        requestAnimationFrame(onAnimationFrame);
+        this.mainRafId = requestAnimationFrame(onAnimationFrame);
       }
     };
     // Only Path B needs the main thread for tiles, but measuring its responsiveness on both
     // paths is what shows whether the stress test really happened.
     if (this.pump !== null || (bench !== null && !measuringMemory)) {
-      requestAnimationFrame(onAnimationFrame);
+      this.mainRafId = requestAnimationFrame(onAnimationFrame);
     }
   }
 
@@ -718,16 +747,45 @@ export class FixedReader {
     return this.pump?.badSlots ?? 0;
   }
 
-  private dispose(): void {
+  private dispose(destroyedInWorker = false): void {
     this.finished = true;
+    if (this.mainRafId !== 0) {
+      if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(this.mainRafId);
+      }
+      this.mainRafId = 0;
+    }
+    this.pump = null;
     this.listeners.abort();
     this.resizeObserver?.disconnect();
-    this.worker.terminate();
+    this.resizeObserver = null;
+    for (const waiter of this.readyWaiters.splice(0)) {
+      waiter();
+    }
+    if (!this.transferredOffscreen) {
+      try {
+        this.config.canvas.width = 0;
+        this.config.canvas.height = 0;
+      } catch {
+        // Mock or locked canvas in unit tests.
+      }
+    }
+    if (!this.workerDestroyed) {
+      if (!destroyedInWorker && this.transferredOffscreen) {
+        try {
+          this.worker.postMessage({ type: 'destroy' } satisfies ToWorker);
+        } catch {
+          // Ignore if worker is already closing.
+        }
+      }
+      this.workerDestroyed = true;
+      this.worker.terminate();
+    }
   }
 
   /**
-   * Closes the document: the compositor stops, then the host stops the render pool and lets go of
-   * the WebView2 buffers, which nothing on this side uses any more.
+   * Closes the document: the compositor flushes any pending position and Explicitly frees its
+   * WebGL2 resources, then the host stops the render pool and releases the WebView2 buffers.
    */
   async close(): Promise<void> {
     if (this.closePromise !== null) {
@@ -736,19 +794,23 @@ export class FixedReader {
     this.closePromise = (async () => {
       const sessionId = this.session?.id ?? null;
       this.session = null;
+      let destroyedInWorker = false;
       if (this.compositorReady && !this.finished) {
         // The last move may still be waiting out its pause before being sent: it is sent now, and
-        // kept, before anything stops.
+        // GPU resources are explicitly released on the worker thread before termination.
         await Promise.race([
           new Promise<void>((resolve) => {
-            this.flushWaiters.push(resolve);
-            this.send({ type: 'flush' });
+            this.flushWaiters.push(() => {
+              destroyedInWorker = true;
+              resolve();
+            });
+            this.send({ type: 'flush', destroy: true });
           }),
           new Promise<void>((resolve) => setTimeout(resolve, 1000)),
         ]);
         await Promise.all([...this.saving]);
       }
-      this.dispose();
+      this.dispose(destroyedInWorker);
       await invoke('close_session', { session: sessionId });
     })();
     return this.closePromise;

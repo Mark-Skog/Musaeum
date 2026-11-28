@@ -120,6 +120,7 @@ export class TileRenderer implements QuadSink {
   private paperLevel = 0;
   private frameWidth = 0;
   private frameHeight = 0;
+  private tileTexture: WebGLTexture | null = null;
   private tileProgram: WebGLProgram | null = null;
   private tileVertexArray: WebGLVertexArrayObject | null = null;
   private tileBuffer: WebGLBuffer | null = null;
@@ -127,6 +128,8 @@ export class TileRenderer implements QuadSink {
   private markVertexArray: WebGLVertexArrayObject | null = null;
   private markBuffer: WebGLBuffer | null = null;
   private markViewportUniform: WebGLUniformLocation | null = null;
+  private readonly contextListeners = new AbortController();
+  private destroyed = false;
   /** Marks dropped because a frame had more than `MAX_MARKS`. Should stay at zero. */
   droppedMarks = 0;
   /** Quads dropped because the frame exceeded `MAX_QUADS`. Should stay at zero. */
@@ -161,14 +164,29 @@ export class TileRenderer implements QuadSink {
       ? (gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) as string)
       : (gl.getParameter(gl.RENDERER) as string);
 
-    canvas.addEventListener('webglcontextlost', (event) => {
-      event.preventDefault();
-      onContextLost();
-    });
-    canvas.addEventListener('webglcontextrestored', () => {
-      this.createResources();
-      onContextRestored();
-    });
+    const { signal } = this.contextListeners;
+    canvas.addEventListener(
+      'webglcontextlost',
+      (event) => {
+        if (this.destroyed) {
+          return;
+        }
+        event.preventDefault();
+        onContextLost();
+      },
+      { signal },
+    );
+    canvas.addEventListener(
+      'webglcontextrestored',
+      () => {
+        if (this.destroyed) {
+          return;
+        }
+        this.createResources();
+        onContextRestored();
+      },
+      { signal },
+    );
     this.createResources();
   }
 
@@ -183,6 +201,7 @@ export class TileRenderer implements QuadSink {
     gl.uniform3fv(gl.getUniformLocation(program, 'u_paper'), PAPER_COLOR);
 
     const texture = gl.createTexture();
+    this.tileTexture = texture;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
     gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, TILE_SIZE, TILE_SIZE, this.layers);
@@ -250,6 +269,9 @@ export class TileRenderer implements QuadSink {
   }
 
   resize(width: number, height: number): void {
+    if (this.destroyed) {
+      return;
+    }
     this.canvas.width = width;
     this.canvas.height = height;
     this.gl.viewport(0, 0, width, height);
@@ -289,6 +311,9 @@ export class TileRenderer implements QuadSink {
 
   /** Copies one tile to the GPU. The array accepts both normal and shared buffers. */
   upload(layer: number, pixels: Uint8Array): void {
+    if (this.destroyed) {
+      return;
+    }
     const { gl } = this;
     gl.texSubImage3D(
       gl.TEXTURE_2D_ARRAY,
@@ -380,6 +405,9 @@ export class TileRenderer implements QuadSink {
    * box at `x`, `y` in device pixels of the canvas, clamped to it. Null when nothing is left of it.
    */
   readRegion(x: number, y: number, width: number, height: number): Uint8Array | null {
+    if (this.destroyed) {
+      return null;
+    }
     const { gl } = this;
     if (this.frame === null) {
       return null;
@@ -412,6 +440,9 @@ export class TileRenderer implements QuadSink {
    * texture; then the copy of that texture to the screen and the marks over it.
    */
   flush(): void {
+    if (this.destroyed) {
+      return;
+    }
     const { gl } = this;
     const width = this.canvas.width;
     const height = this.canvas.height;
@@ -445,6 +476,77 @@ export class TileRenderer implements QuadSink {
     }
     this.markCount = 1;
   }
+
+  /**
+   * Explicitly deletes all GPU textures, buffers, vertex arrays, shader programs and framebuffers,
+   * shrinks the `OffscreenCanvas` to `0x0`, and releases the WebGL2 context immediately without
+   * triggering a spurious `webglcontextrestored` cycle.
+   */
+  destroy(): void {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    this.contextListeners.abort();
+    this.quadCount = 0;
+    this.markCount = 1;
+
+    const { gl } = this;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    gl.useProgram(null);
+
+    if (this.tileTexture !== null) {
+      gl.deleteTexture(this.tileTexture);
+      this.tileTexture = null;
+    }
+    if (this.frameTexture !== null) {
+      gl.deleteTexture(this.frameTexture);
+      this.frameTexture = null;
+    }
+    if (this.frame !== null) {
+      gl.deleteFramebuffer(this.frame);
+      this.frame = null;
+    }
+    if (this.tileBuffer !== null) {
+      gl.deleteBuffer(this.tileBuffer);
+      this.tileBuffer = null;
+    }
+    if (this.tileVertexArray !== null) {
+      gl.deleteVertexArray(this.tileVertexArray);
+      this.tileVertexArray = null;
+    }
+    if (this.markBuffer !== null) {
+      gl.deleteBuffer(this.markBuffer);
+      this.markBuffer = null;
+    }
+    if (this.markVertexArray !== null) {
+      gl.deleteVertexArray(this.markVertexArray);
+      this.markVertexArray = null;
+    }
+    if (this.tileProgram !== null) {
+      gl.deleteProgram(this.tileProgram);
+      this.tileProgram = null;
+    }
+    if (this.markProgram !== null) {
+      gl.deleteProgram(this.markProgram);
+      this.markProgram = null;
+    }
+    this.viewportUniform = null;
+    this.markViewportUniform = null;
+    this.markPaperLevelUniform = null;
+    this.frameWidth = 0;
+    this.frameHeight = 0;
+
+    this.canvas.width = 0;
+    this.canvas.height = 0;
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+  }
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: GLenum, source: string): WebGLShader {
@@ -455,18 +557,31 @@ function compileShader(gl: WebGL2RenderingContext, type: GLenum, source: string)
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(`shader failed to compile: ${gl.getShaderInfoLog(shader)}`);
+    const info = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`shader failed to compile: ${info}`);
   }
   return shader;
 }
 
 function linkProgram(gl: WebGL2RenderingContext, vertex: string, fragment: string): WebGLProgram {
   const program = gl.createProgram();
-  gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, vertex));
-  gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, fragment));
+  if (program === null) {
+    throw new Error('could not create a shader program');
+  }
+  const vs = compileShader(gl, gl.VERTEX_SHADER, vertex);
+  const fs = compileShader(gl, gl.FRAGMENT_SHADER, fragment);
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
   gl.linkProgram(program);
+  gl.detachShader(program, vs);
+  gl.detachShader(program, fs);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(`shader program failed to link: ${gl.getProgramInfoLog(program)}`);
+    const info = gl.getProgramInfoLog(program);
+    gl.deleteProgram(program);
+    throw new Error(`shader program failed to link: ${info}`);
   }
   return program;
 }

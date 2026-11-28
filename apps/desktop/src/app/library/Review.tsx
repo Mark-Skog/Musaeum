@@ -110,6 +110,10 @@ export interface ReviewViewProps {
   /** Something was merged or turned down: the books and the side are read again. */
   onChanged(): void;
   generation: number;
+  /** Synchronizes open tabs when duplicate works are merged from Review. */
+  onWorksMerged?(keepWorkId: number, mergedWorkIds: readonly number[]): void;
+  /** Synchronizes open tabs when a duplicate file suggestion is accepted in Review. */
+  onSuggestionAccepted?(keepWorkId: number, candidateWorkId: number, candidateDocumentId: number): void;
 }
 
 interface Loaded {
@@ -117,7 +121,7 @@ interface Loaded {
   books: Map<number, BookRow[]>;
 }
 
-export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JSX.Element {
+export function ReviewView({ onChanged, generation, onWorksMerged, onSuggestionAccepted }: ReviewViewProps): React.JSX.Element {
   const t = useT();
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -211,7 +215,17 @@ export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JS
                 <Button className="button" onPress={() => act(api.dismissSuggestion(suggestion.id))}>
                   {t('batch.review.differentFiles')}
                 </Button>
-                <Button className="button primary" onPress={() => act(api.acceptSuggestion(suggestion.id))}>
+                <Button
+                  className="button primary"
+                  onPress={() =>
+                    act(
+                      api.acceptSuggestion(suggestion.id).then((keptDoc) => {
+                        onSuggestionAccepted?.(suggestion.workId, suggestion.candidateWorkId, suggestion.candidateDocumentId);
+                        return keptDoc;
+                      }),
+                    )
+                  }
+                >
                   {t('batch.review.sameFile')}
                 </Button>
               </div>
@@ -223,8 +237,10 @@ export function ReviewView({ onChanged, generation }: ReviewViewProps): React.JS
         <MergeDialog
           works={merging}
           onClose={() => setMerging(null)}
-          onMerged={() => {
+          onMerged={(kept) => {
+            const mergedIds = merging;
             setMerging(null);
+            onWorksMerged?.(kept, mergedIds);
             done();
           }}
         />

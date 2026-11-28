@@ -257,6 +257,23 @@ export class Annotator {
     return this.region?.selection ?? null;
   }
 
+  /** Releases all cached page characters, line models, marks and transient selection state. */
+  dispose(): void {
+    this.pages.clear();
+    this.asked.clear();
+    this.onScreenSince.clear();
+    this.marksByPage.clear();
+    this.linePages.clear();
+    this.askedLines.clear();
+    this.anchor = null;
+    this.focus = null;
+    this.pressing = false;
+    this.moved = false;
+    this.pressedMark = null;
+    this.gesture = null;
+    this.region = null;
+  }
+
   /** The rotation a page is shown with, from its lines or its characters. */
   private rotationOf(page: number): number {
     return this.linePages.get(page)?.rotation ?? this.pages.get(page)?.rotation ?? 0;

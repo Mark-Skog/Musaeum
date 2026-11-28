@@ -1,28 +1,71 @@
 /**
- * The app: the library, and a book open in the reader over it. Going back to the library closes
- * the book, keeping where the reader was, and shows the library as it was left: the same search,
- * in the titles or the text, the same side chosen, the same view.
+ * The app: unified Acrobat-style tab strip at the top of the Win32 window, the Library permanently
+ * mounted in memory (`'home'`) so scroll position, filters, search, selection and Details return in
+ * 0ms, and open book tabs managed by `tabs-model.ts`.
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { StartupOptions } from '../protocol';
+import type { Shortcut } from '../reader/messages';
 import { api, type BookRow, type ReaderTarget, type SelectedBook } from './api';
-import { FRESH_LIBRARY, type LibraryMemory, LibraryView } from './library/LibraryView';
-import { useLibrary } from './library/use-books';
 import { exchangeHooks } from './ExchangeSection';
 import type { ExchangeAction } from './exchange';
-import type { PdfAction } from './reader/annotations/AnnotationUi';
-import { type ReaderProbe, ReaderView } from './reader/ReaderView';
+import { useT } from './i18n';
+import { FRESH_LIBRARY, type LibraryMemory, type LibraryMenuAction, LibraryView } from './library/LibraryView';
+import { useLibrary } from './library/use-books';
 import { PreferencesDialog } from './preferences/PreferencesDialog';
 import { currentPreferences, updatePreferences } from './preferences/store';
-import { TitleBar, useWindowChrome } from './TitleBar';
+import type { PdfAction } from './reader/annotations/AnnotationUi';
+import { type ReaderProbe, ReaderView } from './reader/ReaderView';
+import {
+  activateTab,
+  activeBookTab,
+  closeActiveBookTab,
+  closeAllBookTabs,
+  closeTab,
+  closeTabForDocument,
+  closeTabsForFolders,
+  closeTabsForWork,
+  closeTabsForWorks,
+  createInitialTabsState,
+  HOME_TAB_ID,
+  mergeWorksInTabs,
+  nextTab,
+  openBookTab,
+  prevTab,
+  type ReaderTabSnapshot,
+  selectTabByIndex,
+  setTabSnapshot,
+  type TabId,
+  type TabsState,
+  updateWorkTitleInTabs,
+} from './tabs-model';
+import { TitleBar, type TitleBarMenuAction, useWindowChrome } from './TitleBar';
+
+const WINDOW_CLOSE_FLUSH_MS = 750;
+const WORK_GONE_RE = /(?:a obra \d+ não existe|there is no work \d+)/i;
+
+function isWorkGoneError(reason: unknown): boolean {
+  const message = String(reason instanceof Error ? reason.message : reason);
+  return WORK_GONE_RE.test(message);
+}
+
+function shortcutDigitOf(event: KeyboardEvent): number | null {
+  if (/^[1-9]$/.test(event.key)) {
+    return Number(event.key);
+  }
+  const match = /^Digit([1-9])$/.exec(event.code ?? '');
+  return match !== null ? Number(match[1]) : null;
+}
 
 export function App({ options }: { options: StartupOptions }): React.JSX.Element {
+  const t = useT();
   const library = useLibrary();
-  const [book, setBook] = useState<BookRow | null>(null);
-  const [target, setTarget] = useState<ReaderTarget | null>(null);
+  const [tabs, setTabs] = useState<TabsState>(createInitialTabsState);
+  const consumedTargets = useRef(new Map<string, number>());
   const memory = useRef<LibraryMemory>(FRESH_LIBRARY);
   const chosen = useRef<SelectedBook[]>([]);
   const [calibreRequest, setCalibreRequest] = useState<{ folder: string; at: number } | null>(null);
@@ -33,13 +76,243 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     folder: null,
   });
   const probe = useRef<ReaderProbe | null>(null);
+  const snapshotGetterRef = useRef<(() => ReaderTabSnapshot | undefined) | null>(null);
+  const readerFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const windowClosingRef = useRef(false);
+  const lastLibraryLocationRef = useRef<string | null>(null);
   const opened = useRef(0);
+  const libraryActionsRef = useRef<((action: LibraryMenuAction) => void) | null>(null);
+  const [exchangeBusy, setExchangeBusy] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const openPreferences = useCallback(() => setPreferencesOpen(true), []);
-  const windowTitle = book === null ? 'Musaeum' : book.title;
-  const chrome = useWindowChrome(windowTitle);
 
-  // Ctrl+, opens the Preferences from anywhere; F11 toggles fullscreen in the reader.
+  const activeTab = activeBookTab(tabs);
+  const activeBook = activeTab?.book ?? null;
+  const isHomeActive = activeTab === null;
+  const windowTitle = activeTab === null ? 'Musaeum' : t('common.window.bookTitle', { title: activeTab.title });
+  const chrome = useWindowChrome(windowTitle);
+  const chromeRef = useRef(chrome);
+  chromeRef.current = chrome;
+
+  const transitionTabs = useCallback(
+    (updater: (prev: TabsState) => TabsState) => {
+      const capturedOutgoing = snapshotGetterRef.current?.();
+      setTabs((prev) => {
+        const base =
+          prev.activeTabId !== HOME_TAB_ID && capturedOutgoing !== undefined
+            ? setTabSnapshot(prev, prev.activeTabId, capturedOutgoing)
+            : prev;
+        const next = updater(base);
+        if (next === prev) {
+          return prev;
+        }
+        if (next.activeTabId !== prev.activeTabId) {
+          probe.current = null;
+          if (next.activeTabId === HOME_TAB_ID) {
+            if (chromeRef.current.fullscreen) {
+              void chromeRef.current.setFullscreen(false);
+            }
+            setCalibreRequest(null);
+            library.refresh();
+          }
+        }
+        return next;
+      });
+    },
+    [library],
+  );
+
+  const selectTab = useCallback(
+    (tabId: TabId) => {
+      transitionTabs((prev) => activateTab(prev, tabId));
+    },
+    [transitionTabs],
+  );
+
+  const closeTabById = useCallback(
+    (tabId: string) => {
+      consumedTargets.current.delete(tabId);
+      transitionTabs((prev) => closeTab(prev, tabId));
+    },
+    [transitionTabs],
+  );
+
+  /** Switches back to the Library (`'home'`) tab while keeping the open book's tab in the strip. */
+  const goHome = useCallback(() => {
+    transitionTabs((prev) => activateTab(prev, HOME_TAB_ID));
+  }, [transitionTabs]);
+
+  const handleTitleBarMenuAction = useCallback(
+    (action: TitleBarMenuAction) => {
+      if (action === 'preferences') {
+        setPreferencesOpen(true);
+        return;
+      }
+      if (action === 'manage-folders' || action === 'calibre' || action === 'fields') {
+        transitionTabs((prev) => activateTab(prev, HOME_TAB_ID));
+      }
+      libraryActionsRef.current?.(action);
+    },
+    [transitionTabs],
+  );
+
+  const open = useCallback(
+    (next: BookRow, at?: ReaderTarget) => {
+      opened.current++;
+      transitionTabs((prev) => openBookTab(prev, next, at ?? null));
+    },
+    [transitionTabs],
+  );
+
+  const handleWorkSaved = useCallback((workId: number, nextTitle: string) => {
+    setTabs((prev) => updateWorkTitleInTabs(prev, workId, nextTitle));
+  }, []);
+
+  const handleRootRemoved = useCallback(
+    (removedFolderIds: ReadonlySet<number>) => {
+      transitionTabs((prev) => closeTabsForFolders(prev, removedFolderIds));
+    },
+    [transitionTabs],
+  );
+
+  const handleWorkRemoved = useCallback(
+    (workId: number) => {
+      transitionTabs((prev) => closeTabsForWork(prev, workId));
+    },
+    [transitionTabs],
+  );
+
+  const handleWorksMerged = useCallback((keepWorkId: number, mergedWorkIds: readonly number[]) => {
+    setTabs((prev) => mergeWorksInTabs(prev, keepWorkId, mergedWorkIds));
+    void api
+      .workMetadata(keepWorkId)
+      .then((work) => setTabs((prev) => updateWorkTitleInTabs(prev, keepWorkId, work.title)))
+      .catch(() => {});
+  }, []);
+
+  const handleSuggestionAccepted = useCallback(
+    (keepWorkId: number, candidateWorkId: number, candidateDocumentId: number) => {
+      transitionTabs((prev) => {
+        const afterDoc = closeTabForDocument(prev, candidateDocumentId);
+        return candidateWorkId !== keepWorkId
+          ? mergeWorksInTabs(afterDoc, keepWorkId, [candidateWorkId])
+          : afterDoc;
+      });
+    },
+    [transitionTabs],
+  );
+
+  // Close open tabs from a previous library when switching library databases.
+  useEffect(() => {
+    const location = library.info?.location ?? null;
+    if (
+      lastLibraryLocationRef.current !== null &&
+      location !== null &&
+      location !== lastLibraryLocationRef.current
+    ) {
+      transitionTabs(closeAllBookTabs);
+    }
+    if (location !== null) {
+      lastLibraryLocationRef.current = location;
+    }
+  }, [library.info?.location, transitionTabs]);
+
+  // If any open tab's work was deleted in the library database while open in the background,
+  // close its tab cleanly (note: files moved/deleted on disk keep their `work` row and instead
+  // display the localized missing-file error inside the tab when reactivated).
+  const openWorkIdsKey = [...new Set(tabs.bookTabs.map((tab) => tab.workId))].sort((a, b) => a - b).join(',');
+  useEffect(() => {
+    if (library.info?.open !== true || openWorkIdsKey === '') {
+      return;
+    }
+    let active = true;
+    const workIds = openWorkIdsKey.split(',').map(Number);
+    void Promise.all(
+      workIds.map((workId) =>
+        api.workMetadata(workId).then(
+          () => null,
+          (reason: unknown) => (isWorkGoneError(reason) ? workId : null),
+        ),
+      ),
+    ).then((results) => {
+      if (!active) {
+        return;
+      }
+      const deleted = new Set(results.filter((id): id is number => id !== null));
+      if (deleted.size > 0) {
+        transitionTabs((prev) => closeTabsForWorks(prev, deleted));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [library.generation, library.info?.open, openWorkIdsKey, transitionTabs]);
+
+  const handleWindowClose = useCallback(async () => {
+    if (windowClosingRef.current) {
+      return;
+    }
+    windowClosingRef.current = true;
+    try {
+      const flush = readerFlushRef.current?.();
+      if (flush !== undefined) {
+        await Promise.race([
+          flush,
+          new Promise<void>((resolve) => setTimeout(resolve, WINDOW_CLOSE_FLUSH_MS)),
+        ]);
+      }
+    } catch {
+      // Proceed with shutdown even if saving failed.
+    }
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in (window as unknown as Record<string, unknown>)) {
+      await invoke('confirm_window_close').catch(() => {
+        chromeRef.current.close();
+      });
+    } else {
+      chromeRef.current.close();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in (window as unknown as Record<string, unknown>))) {
+      return;
+    }
+    const stop = listen('app-close-requested', () => {
+      void handleWindowClose();
+    });
+    return () => {
+      void stop.then((unlisten) => unlisten());
+    };
+  }, [handleWindowClose]);
+
+  const handleReaderShortcut = useCallback(
+    (key: Shortcut) => {
+      if (preferencesOpen || document.querySelector('.modal-overlay') !== null) {
+        return;
+      }
+      if (key === 'preferences') {
+        setPreferencesOpen(true);
+      } else if (key === 'next-tab') {
+        transitionTabs(nextTab);
+      } else if (key === 'prev-tab') {
+        transitionTabs(prevTab);
+      } else if (key === 'close-tab') {
+        transitionTabs((prev) => {
+          if (prev.activeTabId !== HOME_TAB_ID) {
+            consumedTargets.current.delete(prev.activeTabId);
+          }
+          return closeActiveBookTab(prev);
+        });
+      } else if (key.startsWith('tab-')) {
+        const digit = Number(key.slice(4));
+        transitionTabs((prev) => selectTabByIndex(prev, digit));
+      }
+    },
+    [preferencesOpen, transitionTabs],
+  );
+
+  // Global shortcuts: Ctrl+, (Preferences), F11 (reader fullscreen), Ctrl+Tab / Ctrl+Shift+Tab,
+  // Ctrl+W / Ctrl+F4, and Ctrl+1..Ctrl+9.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === ',' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
@@ -47,14 +320,42 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
         setPreferencesOpen(true);
         return;
       }
-      if (event.key === 'F11' && !event.ctrlKey && !event.altKey && !event.metaKey && (book !== null || chrome.fullscreen)) {
+      if (event.key === 'F11' && !event.ctrlKey && !event.altKey && !event.metaKey && (!isHomeActive || chrome.fullscreen)) {
         event.preventDefault();
         void chrome.toggleFullscreen();
+        return;
+      }
+      if (preferencesOpen || document.querySelector('.modal-overlay') !== null) {
+        return;
+      }
+      if (event.ctrlKey && !event.altKey && !event.metaKey) {
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          transitionTabs(event.shiftKey ? prevTab : nextTab);
+          return;
+        }
+        if (!event.shiftKey && (event.key === 'w' || event.key === 'W' || event.key === 'F4')) {
+          event.preventDefault();
+          transitionTabs((prev) => {
+            if (prev.activeTabId !== HOME_TAB_ID) {
+              consumedTargets.current.delete(prev.activeTabId);
+            }
+            return closeActiveBookTab(prev);
+          });
+          return;
+        }
+        if (!event.shiftKey) {
+          const digit = shortcutDigitOf(event);
+          if (digit !== null) {
+            event.preventDefault();
+            transitionTabs((prev) => selectTabByIndex(prev, digit));
+          }
+        }
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [book, chrome]);
+  }, [isHomeActive, chrome, preferencesOpen, transitionTabs]);
 
   const onRows = useCallback(
     (list: BookRow[], total: number, shown: { text: string; folder: number | null; filter: unknown }) => {
@@ -67,22 +368,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     chosen.current = books;
   }, []);
 
-  const back = useCallback(() => {
-    probe.current = null;
-    if (chrome.fullscreen) {
-      void chrome.setFullscreen(false);
-    }
-    setBook(null);
-    setTarget(null);
-    setCalibreRequest(null);
-    library.refresh();
-  }, [chrome, library]);
-
-  const open = useCallback((next: BookRow, at?: ReaderTarget) => {
-    opened.current++;
-    setTarget(at ?? null);
-    setBook(next);
-  }, []);
+  const currentTarget = activeTab?.target ?? null;
 
   useEffect(() => {
     if (!options.e2e) {
@@ -92,7 +378,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
     // what the app shows, read exactly; what they do, they do with the input a person would give,
     // except adding a folder, which goes through the system's own dialog.
     (window as unknown as { musaeumApp: unknown }).musaeumApp = {
-      view: () => (book === null ? 'library' : 'reader'),
+      view: () => (activeBook === null ? 'library' : 'reader'),
       library: () => library.info,
       rows: () => rows.current,
       folders: () => library.folders,
@@ -100,7 +386,7 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       addRoot: (path: string) => api.addRoot(path).then((info) => (library.refresh(), info)),
       reader: () => {
         const current = probe.current;
-        if (current === null) {
+        if (activeBook === null || current === null) {
           return null;
         }
         return {
@@ -157,12 +443,12 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       fulltextStatus: () => api.fulltextStatus(),
       fulltextSearch: (query: string) => api.fulltextSearch(query),
       /** Where the book open now was asked to be shown, if at a match. */
-      target: () => target,
+      target: () => currentTarget,
       /** Where a match of the text search is, as the flowing reader names places. */
       flowPlace: (document: number, unit: number, position: number, length: number) => api.fulltextFlowPlace(document, unit, position, length),
       /** Marks a range of the flowing book open now with a note, as the selection toolbar would. */
       annotateFlow: (start: string, end: string, note: string) =>
-        book === null ? Promise.reject(new Error('no book is open')) : api.createFlowAnnotation(book.documentId, start, end, { kind: 'highlight', color: 'yellow', note }),
+        activeBook === null ? Promise.reject(new Error('no book is open')) : api.createFlowAnnotation(activeBook.documentId, start, end, { kind: 'highlight', color: 'yellow', note }),
       /** Shows a page of the open fixed document, as an entry of its outline does. */
       goToPage: (page: number) => probe.current?.fixed?.send({ type: 'go-to-page', page }),
       /** The open fixed document's annotations, whole, with their segments and selectors. */
@@ -213,50 +499,105 @@ export function App({ options }: { options: StartupOptions }): React.JSX.Element
       openPreferences: () => setPreferencesOpen(true),
       /** What the open library's cache holds. */
       cacheReport: () => api.cacheReport(),
+      /** Open tabs and active tab id, for end-to-end verification of tab lifecycle. */
+      tabs: () => ({
+        activeTabId: tabs.activeTabId,
+        bookTabs: tabs.bookTabs.map((tab) => ({
+          id: tab.id,
+          documentId: tab.documentId,
+          workId: tab.workId,
+          title: tab.title,
+          snapshot: tab.snapshot ?? null,
+        })),
+      }),
+      removeWorkTabs: (workId: number) => handleWorkRemoved(workId),
       rects: () => ({
         canvas: document.querySelector('.reader-canvas')?.getBoundingClientRect().toJSON() ?? null,
         frame: document.querySelector('.reader-frame')?.getBoundingClientRect().toJSON() ?? null,
         dpr: devicePixelRatio,
       }),
     };
-  }, [options.e2e, book, library, target]);
+  }, [options.e2e, activeBook, library, currentTarget, tabs, handleWorkRemoved]);
+
+  const unconsumedTarget =
+    activeTab !== null &&
+    activeTab.target !== null &&
+    consumedTargets.current.get(activeTab.id) !== activeTab.targetSeq
+      ? activeTab.target
+      : null;
 
   return (
     <div className="app">
       <TitleBar
-        title={windowTitle}
+        tabs={tabs.bookTabs}
+        activeTabId={tabs.activeTabId}
+        libraryOpen={library.info?.open === true}
+        exchangeBusy={exchangeBusy}
         maximized={chrome.maximized}
         hidden={chrome.fullscreen}
+        onSelectTab={selectTab}
+        onCloseTab={closeTabById}
+        onMenuAction={handleTitleBarMenuAction}
+        onOpenPreferences={openPreferences}
         onMinimize={chrome.minimize}
         onToggleMaximize={chrome.toggleMaximize}
-        onClose={chrome.close}
+        onClose={() => void handleWindowClose()}
       />
-      {book === null ? (
-        <LibraryView
-          info={library.info}
-          folders={library.folders}
-          generation={library.generation}
-          onChanged={library.refresh}
-          onOpen={open}
-          memory={memory}
-          onRows={onRows}
-          onSelection={onSelection}
-          calibreRequest={calibreRequest}
-          onPreferences={openPreferences}
-        />
-      ) : (
-        <ReaderView
-          key={`${book.documentId}-${opened.current}`}
-          book={book}
-          options={options}
-          onBack={back}
-          probe={probe}
-          target={target}
-          onPreferences={openPreferences}
-          isFullscreen={chrome.fullscreen}
-          onToggleFullscreen={() => void chrome.toggleFullscreen()}
-        />
-      )}
+      <div className="app-stage">
+        <div
+          className="library-host"
+          hidden={!isHomeActive}
+          inert={!isHomeActive || undefined}
+          aria-hidden={!isHomeActive || undefined}
+        >
+          <LibraryView
+            active={isHomeActive}
+            info={library.info}
+            folders={library.folders}
+            generation={library.generation}
+            onChanged={library.refresh}
+            onOpen={open}
+            memory={memory}
+            onRows={onRows}
+            onSelection={onSelection}
+            calibreRequest={calibreRequest}
+            onPreferences={openPreferences}
+            actionsRef={libraryActionsRef}
+            onExchangeBusyChange={setExchangeBusy}
+            onWorkSaved={handleWorkSaved}
+            onRootRemoved={handleRootRemoved}
+            onWorksMerged={handleWorksMerged}
+            onSuggestionAccepted={handleSuggestionAccepted}
+          />
+        </div>
+        {activeTab !== null && activeBook !== null ? (
+          <ReaderView
+            key={activeTab.id}
+            book={activeBook}
+            options={options}
+            onBack={goHome}
+            onCloseTab={() => closeTabById(activeTab.id)}
+            onSessionClosed={library.refresh}
+            snapshot={activeTab.snapshot}
+            snapshotGetterRef={snapshotGetterRef}
+            onSnapshotCapture={(captured) => {
+              const tabId = activeTab.id;
+              setTabs((prev) => setTabSnapshot(prev, tabId, captured));
+            }}
+            flushRef={readerFlushRef}
+            probe={probe}
+            target={unconsumedTarget}
+            targetSeq={activeTab.targetSeq}
+            onTargetReached={() => {
+              consumedTargets.current.set(activeTab.id, activeTab.targetSeq);
+            }}
+            onPreferences={openPreferences}
+            isFullscreen={chrome.fullscreen}
+            onToggleFullscreen={() => void chrome.toggleFullscreen()}
+            onReaderShortcut={handleReaderShortcut}
+          />
+        ) : null}
+      </div>
       {preferencesOpen ? <PreferencesDialog onClose={() => setPreferencesOpen(false)} /> : null}
     </div>
   );

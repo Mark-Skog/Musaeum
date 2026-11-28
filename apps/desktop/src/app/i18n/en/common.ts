@@ -11,4 +11,8 @@ export const common: Record<keyof typeof pt, string> = {
   'common.window.maximize': 'Maximize',
   'common.window.restore': 'Restore',
   'common.window.close': 'Close',
+  'common.window.bookTitle': '{title} — Musaeum',
+  'common.tabs.label': 'Open tabs',
+  'common.tabs.home': 'Library',
+  'common.tabs.closeTab': 'Close {title}',
 };

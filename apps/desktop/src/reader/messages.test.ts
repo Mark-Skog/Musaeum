@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { isFromReader, isToReader } from './messages';
+import { FlowEngine } from './flow-engine';
+import { isFromReader, isToReader, SHORTCUT_KEYS } from './messages';
 
 describe('messages from the reader', () => {
   it('accepts the shapes the reader really sends', () => {
@@ -57,6 +58,9 @@ describe('messages of the app reader', () => {
     expect(isFromReader({ type: 'layout', ms: 40, change: 'typography' })).toBe(true);
     expect(isFromReader({ type: 'shortcut', key: 'mode' })).toBe(true);
     expect(isFromReader({ type: 'shortcut', key: 'fullscreen' })).toBe(true);
+    for (const key of SHORTCUT_KEYS) {
+      expect(isFromReader({ type: 'shortcut', key })).toBe(true);
+    }
     expect(isFromReader({ type: 'link', href: 'https://example.org/a' })).toBe(true);
     expect(isFromReader({ type: 'link', href: 'mailto:a@example.org' })).toBe(true);
   });
@@ -68,6 +72,10 @@ describe('messages of the app reader', () => {
     expect(isFromReader({ ...relocate, section: -1 })).toBe(false);
     expect(isFromReader({ ...relocate, reason: 'x'.repeat(100) })).toBe(false);
     expect(isFromReader({ type: 'shortcut', key: 'quit' })).toBe(false);
+    expect(isFromReader({ type: 'shortcut', key: 'tab-0' })).toBe(false);
+    expect(isFromReader({ type: 'shortcut', key: 'tab-10' })).toBe(false);
+    expect(isFromReader({ type: 'shortcut', key: 'close-window' })).toBe(false);
+    expect(isFromReader({ type: 'shortcut', key: 1 })).toBe(false);
     expect(isFromReader({ type: 'link', href: 'javascript:alert(1)' })).toBe(false);
     expect(isFromReader({ type: 'link', href: 'file:///C:/Windows/win.ini' })).toBe(false);
     expect(isFromReader({ type: 'link', href: 'blob:http://book.x.localhost/1' })).toBe(false);
@@ -93,5 +101,51 @@ describe('messages of the app reader', () => {
     expect(isToReader({ type: 'set-mode', mode: 'scroll' })).toBe(false);
     expect(isToReader({ type: 'turn', step: 2 })).toBe(false);
     expect(isToReader({ type: 'set-style', style: { family: 'sans' } })).toBe(false);
+  });
+
+  it('forwards global tab and preferences shortcuts from FlowEngine.onKey while preserving copy and AltGr', () => {
+    const sent: unknown[] = [];
+    const host = { send: (msg: unknown) => sent.push(msg) };
+    const fire = (init: Partial<KeyboardEvent>): { prevented: boolean } => {
+      let prevented = false;
+      const ev = {
+        key: '',
+        code: '',
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+        preventDefault: () => {
+          prevented = true;
+        },
+        ...init,
+      } as unknown as KeyboardEvent;
+      FlowEngine.prototype.onKey.call(host, ev);
+      return { prevented };
+    };
+
+    expect(fire({ key: 'Tab', ctrlKey: true }).prevented).toBe(true);
+    expect(fire({ key: 'Tab', ctrlKey: true, shiftKey: true }).prevented).toBe(true);
+    expect(fire({ key: 'w', ctrlKey: true }).prevented).toBe(true);
+    expect(fire({ key: 'F4', ctrlKey: true }).prevented).toBe(true);
+    expect(fire({ key: '1', ctrlKey: true }).prevented).toBe(true);
+    expect(fire({ key: '9', code: 'Digit9', ctrlKey: true }).prevented).toBe(true);
+    expect(fire({ key: ',', ctrlKey: true }).prevented).toBe(true);
+
+    // Ctrl+C (copy) and AltGr combinations (ctrlKey + altKey on ABNT2) must not be hijacked
+    expect(fire({ key: 'c', ctrlKey: true }).prevented).toBe(false);
+    expect(fire({ key: '1', ctrlKey: true, altKey: true }).prevented).toBe(false);
+    expect(fire({ key: 'w', ctrlKey: true, altKey: true }).prevented).toBe(false);
+
+    expect(sent).toEqual([
+      { type: 'shortcut', key: 'next-tab' },
+      { type: 'shortcut', key: 'prev-tab' },
+      { type: 'shortcut', key: 'close-tab' },
+      { type: 'shortcut', key: 'close-tab' },
+      { type: 'shortcut', key: 'tab-1' },
+      { type: 'shortcut', key: 'tab-9' },
+      { type: 'shortcut', key: 'preferences' },
+    ]);
+    expect(sent.every(isFromReader)).toBe(true);
   });
 });
