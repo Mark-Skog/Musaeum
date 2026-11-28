@@ -600,10 +600,13 @@ governance, phase-by-phase auditing, and manual QA against a real personal libra
 - **Measured Active Coding Agent Execution (`v1.0.0`, Claude Code local `.jsonl` logs):** **35.2 h – 37.0 h**
   (using 10-min and 30-min per-step caps, respectively) across **3 main sessions**, **334 user turns**,
   and **14,286 assistant/tool events** (`2026-10-31` – `2026-11-24`)
-- **Post-1.0 Coding Agent Execution (`v1.1.0` – `v1.2.0`, Antigravity / Gemini 4 Carbon):** Executed
-  across `2026-11-25` – `2026-11-28` *(step-level duration from local Antigravity logs is not aggregated
-  in this summary; excludes human idle time, rate-limit pauses, manual QA, and Gemini architecture/audit
-  sessions, which were not instrumentally timed)*
+- **Measured Active Coding Agent Execution (`v1.1.0` – `v1.2.0`, Antigravity local `transcript_full.jsonl` logs — Gemini 4 Carbon):**
+  **4.5 h – 6.2 h** (using the same 10-min and 30-min per-step caps) across **2 sessions**, **10 explicit
+  user turns**, and **1,339 model/system events** (`1,241` model + `98` system; `1,349` total logged steps,
+  `2026-11-25` – `2026-11-28`)
+- **Combined Measured Coding Agent Execution (`v1.0.0` – `v1.2.0`):** **39.7 h – 43.2 h** *(excludes human
+  idle time, rate-limit pauses, manual QA, and Gemini architecture/audit sessions, which were not
+  instrumentally timed)*
 - **Verified Quality Gates at `v1.2.0`:**
   - **866** Rust tests and **279** Vitest tests passing (`cargo fmt`, `clippy -D warnings`,
     `tsc --noEmit`, `cargo deny`, and `npm audit` clean; green GitHub Actions CI)
